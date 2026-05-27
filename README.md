@@ -1,6 +1,6 @@
 # Grimoire
 
-**Grimoire** is a hybrid small language model (SLM) engine designed to run efficiently on CPU. It pairs Granville's Radial Basis Function (RBF) interpolator — a no-training, exact retrieval method — with a small quantized LLM for coherent, context-aware response generation. The result is an agent engine that is accurate, explainable, and computationally lean enough to run on a home machine.
+**Grimoire** is a hybrid small language model (SLM) engine designed to run efficiently on CPU. It pairs dr. Vincent Granville's Radial Basis Function (RBF) interpolator; a no-training, exact retrieval method - with a small quantized LLM for coherent, context-aware response generation. The result is an agent engine that is accurate, explainable, and computationally lean enough to run on a home machine.
 
 The first agent built on Grimoire is **Saga**: a domain-specialized chatbot and virtual assistant covering Dungeons & Dragons, mathematics, and data science, with Google Calendar integration for appointment awareness.
 
