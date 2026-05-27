@@ -6,11 +6,11 @@ The first agent built on Grimoire is **Saga**: a domain-specialized chatbot and 
 
 ## Goals
 
-- Run entirely on CPU — no GPU required
+- Run entirely on CPU, no GPU required
 - Zero training cost for domain knowledge (RBF retrieves analytically, one-shot)
 - Full conversational coherence with multi-turn context tracking
 - Modular engine: swap corpora, agents, and tool integrations independently
-- Deterministic, explainable retrieval grounded in a defined corpus — no hallucination on domain facts
+- Deterministic, explainable retrieval grounded in a defined corpus, no hallucination on domain facts
 
 ## Repository Structure
 
