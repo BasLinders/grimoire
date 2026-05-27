@@ -1,0 +1,22 @@
+# Claude Code internals
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+
+# Data and model files
+*.gguf
+*.bin
+data/
+
+# Environment
+.env
+
+# OS
+.DS_Store
+Thumbs.db
