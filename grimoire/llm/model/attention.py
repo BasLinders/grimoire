@@ -241,9 +241,12 @@ class GroupedQueryAttention(nn.Module):
 
         # Apply padding mask if provided.
         if attention_mask is not None:
-            # attention_mask: (batch, seq_len) → broadcast to (batch, 1, 1, seq_len)
-            pad_mask = (1.0 - attention_mask.float()).unsqueeze(1).unsqueeze(2) * float("-inf")
-            scores = scores + pad_mask
+            # attention_mask: (batch, seq_len), 1=real token, 0=padding.
+            # Broadcast to (batch, 1, 1, seq_len) and set padding positions
+            # to -inf using masked_fill.  Multiplication by -inf is avoided
+            # because 0 * -inf = NaN in IEEE 754.
+            pad_mask = attention_mask.unsqueeze(1).unsqueeze(2)  # (batch, 1, 1, seq_len)
+            scores = scores.masked_fill(pad_mask == 0, float("-inf"))
 
         weights = torch.softmax(scores, dim=-1)
         weights = self._dropout(weights)

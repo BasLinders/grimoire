@@ -9,10 +9,10 @@ __pycache__/
 dist/
 build/
 
-# Data and model files
+# Data and model files (top-level data/ directory only — not grimoire/llm/data/)
 *.gguf
 *.bin
-data/
+/data/
 
 # Environment
 .env
