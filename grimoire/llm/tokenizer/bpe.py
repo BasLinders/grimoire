@@ -138,7 +138,7 @@ class BytePairEncoder:
     # Training
     # ------------------------------------------------------------------
 
-    def train(self, corpus_texts: list[str], vocab_size: int = 8192) -> None:
+    def train(self, corpus_texts: list[str], vocab_size: int = 16384) -> None:
         """Learn BPE merge rules from a list of raw text strings.
 
         The training procedure is:
