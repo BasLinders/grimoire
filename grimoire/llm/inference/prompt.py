@@ -47,9 +47,9 @@ from grimoire.llm.tokenizer.special_tokens import (
     USR_ID,
 )
 
-# Special-token overhead in the assembled prompt:
-#   <BOS> <SEP> ... <SEP> <USR> ... <AST>
-_SPECIAL_TOKEN_OVERHEAD = 4  # BOS + SEP + SEP + USR + AST = 5, but BOS counts separately
+# Number of special tokens in a context-bearing prompt:
+#   <BOS> <SEP> {context} <SEP> <USR> {query} <AST>
+_CONTEXT_PROMPT_OVERHEAD = 5
 
 
 class PromptBuilder:
@@ -116,10 +116,14 @@ class PromptBuilder:
                 context_text = " ".join(hint_words)
                 context_ids = self._tokenizer.encode(context_text)
 
+        # Trim the context to fit the budget alongside the query and the
+        # five framing special tokens. If nothing survives the trim, drop the
+        # context block entirely rather than emit a hollow <SEP><SEP> pair the
+        # model never saw during training.
+        budget = self.max_context_tokens - len(query_ids) - _CONTEXT_PROMPT_OVERHEAD
+        context_ids = context_ids[:max(0, budget)]
+
         if context_ids:
-            # Budget: BOS + SEP + context + SEP + USR + query + AST = len + 5
-            budget = self.max_context_tokens - len(query_ids) - 5
-            context_ids = context_ids[:max(0, budget)]
             prompt = [BOS_ID, SEP_ID] + context_ids + [SEP_ID, USR_ID] + query_ids + [AST_ID]
         else:
             prompt = [BOS_ID, USR_ID] + query_ids + [AST_ID]

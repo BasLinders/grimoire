@@ -111,8 +111,11 @@ def generate(
             context = ids[-max_seq:]
             input_tensor = torch.tensor([context], dtype=torch.long, device=device)
 
-            logits = model(input_tensor)            # (1, seq, vocab)
-            next_logits = logits[0, -1, :].float()  # (vocab,)
+            logits = model(input_tensor)          # (1, seq, vocab)
+            # clone(): .float() returns the same tensor when logits is already
+            # float32, so in-place edits below (repetition penalty) would alias
+            # the model's output buffer. Cloning keeps the model output intact.
+            next_logits = logits[0, -1, :].float().clone()  # (vocab,)
 
             # Repetition penalty on the generated portion only.
             if config.repetition_penalty != 1.0 and generated:
