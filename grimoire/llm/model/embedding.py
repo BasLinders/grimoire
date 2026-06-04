@@ -1,17 +1,16 @@
 """Token embedding layer for the GrimoireTransformer.
 
-In a RoPE-based model, positional information is injected inside the
-attention layer by rotating query and key vectors, not by adding a
-positional vector to the token embedding.  This module therefore only
-handles token-to-vector lookup; ``grimoire.llm.model.attention`` handles
-position encoding.
+In this architecture, positional information is injected inside the attention
+layer by RoPE (rotating query and key vectors), not by adding a positional
+vector to the token embedding.  This module therefore only performs the
+token-id → vector lookup; ``grimoire.llm.model.attention`` handles position.
 
-The embedding weights are later weight-tied to the output projection head
-in ``GrimoireTransformer``, so the model uses the same matrix to both
-look up input token representations and to project hidden states back into
-vocabulary logits.  Weight tying reduces the parameter count by
-``vocab_size × d_model`` and empirically improves generalisation for small
-language models (Press & Wolf, 2017).
+The embedding weights are weight-tied to the output projection head in
+``GrimoireTransformer``, so the model uses the same matrix to look up input
+token representations and to project hidden states back into vocabulary
+logits.  Weight tying reduces the parameter count by ``vocab_size × d_model``
+and empirically improves generalisation for small language models
+(Press & Wolf, 2017).
 """
 
 import torch
@@ -23,14 +22,15 @@ from grimoire.llm.model.config import TransformerConfig
 class TokenEmbedding(nn.Module):
     """Maps integer token ids to dense embedding vectors.
 
-    A thin wrapper around ``nn.Embedding`` that scales the output by
-    ``sqrt(d_model)`` following the convention in "Attention is All You
-    Need".  This scaling keeps the embedding magnitudes comparable to the
-    sinusoidal (or rotary) position signals added downstream, preventing
-    the position signal from being drowned out by large embedding values.
+    A thin wrapper around ``nn.Embedding`` plus dropout.  Unlike the original
+    "Attention is All You Need" embedding, the output is deliberately *not*
+    scaled by ``sqrt(d_model)``.  That scaling exists to balance token
+    embeddings against an *additive* positional signal — but this model uses
+    RoPE (applied inside attention) and pre-norm RMSNorm as the first
+    operation of every block, so any constant scale on the embeddings is
+    immediately normalised away and has no effect on the residual stream.
 
     Attributes:
-        d_model: Embedding dimension, copied from the config.
         weight: The underlying ``nn.Embedding`` weight tensor of shape
             ``(vocab_size, d_model)``.  Exposed directly so that
             ``GrimoireTransformer`` can tie it to the output head.
@@ -46,7 +46,6 @@ class TokenEmbedding(nn.Module):
                 and ``dropout``.
         """
         super().__init__()
-        self.d_model = config.d_model
         self._embed = nn.Embedding(config.vocab_size, config.d_model)
         self._dropout = nn.Dropout(config.dropout)
 
@@ -64,7 +63,7 @@ class TokenEmbedding(nn.Module):
         return self._embed.weight
 
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
-        """Look up token embeddings and apply scaling and dropout.
+        """Look up token embeddings and apply dropout.
 
         Args:
             input_ids: Integer tensor of shape ``(batch_size, seq_len)``
@@ -72,10 +71,6 @@ class TokenEmbedding(nn.Module):
 
         Returns:
             Float tensor of shape ``(batch_size, seq_len, d_model)``
-            containing scaled, dropout-regularised embedding vectors.
+            containing the dropout-regularised embedding vectors.
         """
-        x = self._embed(input_ids)
-        # Scale by sqrt(d_model) to keep embedding magnitudes stable relative
-        # to the position encoding signal injected later in the attention layer.
-        x = x * (self.d_model ** 0.5)
-        return self._dropout(x)
+        return self._dropout(self._embed(input_ids))

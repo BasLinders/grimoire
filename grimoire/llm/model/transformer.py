@@ -30,10 +30,12 @@ The tie is implemented by setting ``output_head.weight = embedding.weight``
 after construction. Both modules then point to the same ``nn.Parameter``.
 """
 
+from typing import Optional
+
 import torch
 import torch.nn as nn
 
-from grimoire.llm.model.block import TransformerBlock
+from grimoire.llm.model.block import RMSNorm, TransformerBlock
 from grimoire.llm.model.config import TransformerConfig
 from grimoire.llm.model.embedding import TokenEmbedding
 
@@ -106,7 +108,7 @@ class GrimoireTransformer(nn.Module):
     def forward(
         self,
         input_ids: torch.Tensor,
-        attention_mask: torch.Tensor | None = None,
+        attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Compute next-token logits for a batch of token sequences.
 
