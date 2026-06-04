@@ -92,8 +92,8 @@ class PaddingCollator:
             padded = pad_sequence(flipped, batch_first=True, padding_value=fill)
             return padded.flip(1)
 
-        input_ids     = left_pad(list(inputs),  self.pad_id)
-        target_ids    = left_pad(list(targets), self.pad_id)
-        attention_mask = left_pad(masks,         0)
+        input_ids = left_pad(list(inputs), self.pad_id)
+        target_ids = left_pad(list(targets), self.pad_id)
+        attention_mask = left_pad(masks, 0)
 
         return input_ids, target_ids, attention_mask
