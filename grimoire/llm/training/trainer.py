@@ -48,15 +48,13 @@ from pathlib import Path
 from typing import Optional
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
 from grimoire.llm.data.collator import PaddingCollator
-from grimoire.llm.model.config import TransformerConfig
 from grimoire.llm.model.transformer import GrimoireTransformer
 from grimoire.llm.tokenizer.special_tokens import PAD_ID
-from grimoire.llm.training.checkpoint import save_checkpoint
+from grimoire.llm.training.checkpoint import load_checkpoint, save_checkpoint
 
 
 class Trainer:
@@ -137,6 +135,9 @@ class Trainer:
         self.save_every = save_every
         self.checkpoint_dir = Path(checkpoint_dir)
         self._step = 0
+        # Most recent interval-averaged training loss, refreshed at each log
+        # point and stored in checkpoints for reference.
+        self._last_avg_loss: float = 0.0
 
         # --- Device setup -----------------------------------------------
         if device is None:
@@ -293,9 +294,12 @@ class Trainer:
                 if self._step % self.log_every == 0:
                     elapsed   = time.time() - t0
                     lr_now    = self._scheduler.get_last_lr()[0]
+                    # running_loss is the sum of per-optimizer-step losses
+                    # since the last log point; divide to report the mean.
+                    self._last_avg_loss = running_loss / self.log_every
                     print(
                         f"step {self._step:>6} / {self.total_steps} | "
-                        f"loss {running_loss:.4f} | "
+                        f"loss {self._last_avg_loss:.4f} | "
                         f"lr {lr_now:.2e} | "
                         f"{elapsed:.1f}s"
                     )
@@ -311,7 +315,7 @@ class Trainer:
                         optimizer=self._optimizer,
                         step=self._step,
                         config_dict=self.config.to_dict(),
-                        train_loss=running_loss,
+                        train_loss=self._last_avg_loss,
                         scaler=self._scaler if self._use_amp else None,
                     )
                     print(f"  → checkpoint saved: {ckpt_path}")
@@ -329,8 +333,6 @@ class Trainer:
             path: Path to a checkpoint ``.pt`` file produced by
                 ``save_checkpoint``.
         """
-        from grimoire.llm.training.checkpoint import load_checkpoint
-
         print(f"Resuming from checkpoint: {path}")
         ckpt = load_checkpoint(path)
 

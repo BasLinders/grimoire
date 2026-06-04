@@ -31,6 +31,8 @@ per-dimension scale parameter (no bias term).  This is marginally faster
 than LayerNorm and empirically equivalent in quality.
 """
 
+from typing import Optional
+
 import torch
 import torch.nn as nn
 
@@ -111,7 +113,7 @@ class TransformerBlock(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        attention_mask: torch.Tensor | None = None,
+        attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run one transformer block.
 

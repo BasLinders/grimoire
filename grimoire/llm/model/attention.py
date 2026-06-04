@@ -44,10 +44,10 @@ Setting ``n_kv_heads == 1`` gives Multi-Query Attention (MQA).
 """
 
 import math
+from typing import Optional
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from grimoire.llm.model.config import TransformerConfig
 
@@ -186,7 +186,7 @@ class GroupedQueryAttention(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        attention_mask: torch.Tensor | None = None,
+        attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Compute grouped query attention over a sequence.
 

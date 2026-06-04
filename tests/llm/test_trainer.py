@@ -153,6 +153,11 @@ def test_loss_decreases_on_overfit_corpus() -> None:
             model=model,
             train_dataset=dataset,
             total_steps=20,
+            # Short warmup + real peak LR so the 20-step window actually
+            # exercises learning. With the default 500-step warmup the LR
+            # would crawl at ~1e-5 and no meaningful update would occur.
+            warmup_steps=5,
+            peak_lr=1e-3,
             batch_size=2,
             accumulate_steps=1,
             log_every=999,

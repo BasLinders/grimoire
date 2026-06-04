@@ -133,6 +133,11 @@ class BytePairEncoder:
         self._merges: list[tuple[str, str]] = []
         self._merge_ranks: dict[tuple[str, str], int] = {}
         self._trained: bool = False
+        # Memoised per-word encodings. Word frequencies are heavily skewed
+        # (Zipfian), so caching avoids re-running the merge loop on the same
+        # words millions of times during corpus preprocessing. Reset whenever
+        # the merge table changes (train/load).
+        self._word_cache: dict[str, list[int]] = {}
 
     # ------------------------------------------------------------------
     # Training
@@ -193,11 +198,26 @@ class BytePairEncoder:
         n_merges_needed = vocab_size - len(vocab)
 
         # --- Step 3: iterative BPE merges --------------------------------
+        special_strings = set(SPECIAL_TOKEN_TO_ID)
         for _ in range(n_merges_needed):
             pair_freqs = self._count_pairs(word_freqs)
             if not pair_freqs:
                 break
-            best_pair = max(pair_freqs, key=lambda p: pair_freqs[p])
+            # Select the most frequent pair whose merged form does not collide
+            # with a reserved special token. A collision would reassign the
+            # special token's id and corrupt the reserved range; it is almost
+            # impossible in practice (it requires literal "<PAD>"-style runs in
+            # the corpus) but guarding keeps the invariant exact. Colliding
+            # candidates are dropped and the next-best pair is chosen instead.
+            best_pair: Optional[tuple[str, str]] = None
+            while pair_freqs:
+                candidate = max(pair_freqs, key=lambda p: pair_freqs[p])
+                if candidate[0] + candidate[1] not in special_strings:
+                    best_pair = candidate
+                    break
+                del pair_freqs[candidate]
+            if best_pair is None:
+                break
             merged_symbol = best_pair[0] + best_pair[1]
             vocab[merged_symbol] = len(vocab)
             merges.append(best_pair)
@@ -209,6 +229,7 @@ class BytePairEncoder:
         self._decoder = {v: k for k, v in vocab.items()}
         self._merges = merges
         self._merge_ranks = {pair: rank for rank, pair in enumerate(merges)}
+        self._word_cache = {}
         self._trained = True
 
     @staticmethod
@@ -309,9 +330,12 @@ class BytePairEncoder:
     def _encode_word(self, word: str) -> list[int]:
         """Encode a single pre-tokenised word to a list of BPE ids.
 
-        Converts the word to base byte characters, then applies all merge
-        rules in priority order using a priority-queue approach that
-        processes the highest-priority (lowest-rank) applicable merge first.
+        Converts the word to its base byte-character symbols, then greedily
+        applies merges: at each step the adjacent pair with the lowest merge
+        rank (the highest-priority learned merge) is combined, repeating until
+        no adjacent pair has a known merge rule. The result is memoised in
+        ``self._word_cache`` because the same words recur constantly during
+        corpus preprocessing.
 
         Args:
             word: A single word string (may include a leading space, as
@@ -320,35 +344,32 @@ class BytePairEncoder:
         Returns:
             A list of integer ids for this word's BPE encoding.
         """
-        import heapq
+        cached = self._word_cache.get(word)
+        if cached is not None:
+            return cached
 
-        chars = _bytes_to_chars(word.encode("utf-8"))
-        if len(chars) == 1:
-            return [self._encoder[chars[0]]]
-
-        # Represent the word as a doubly-linked list via parallel prev/next
-        # arrays for O(1) neighbour updates during merges.
-        # For simplicity at this scale, we use a list and rebuild pairs.
-        symbols = list(chars)
+        n_merges = len(self._merges)
+        symbols = _bytes_to_chars(word.encode("utf-8"))
 
         while len(symbols) > 1:
-            # Find the merge with the lowest rank among all adjacent pairs.
-            best_rank = len(self._merges)  # sentinel: no valid merge found
+            # Find the adjacent pair with the lowest (best) merge rank.
+            best_rank = n_merges  # sentinel: no applicable merge found
             best_idx = -1
             for i in range(len(symbols) - 1):
-                pair = (symbols[i], symbols[i + 1])
-                rank = self._merge_ranks.get(pair, len(self._merges))
+                rank = self._merge_ranks.get((symbols[i], symbols[i + 1]), n_merges)
                 if rank < best_rank:
                     best_rank = rank
                     best_idx = i
 
             if best_idx == -1:
-                break  # no applicable merge remains
+                break  # no adjacent pair has a merge rule
 
             merged = symbols[best_idx] + symbols[best_idx + 1]
             symbols = symbols[:best_idx] + [merged] + symbols[best_idx + 2:]
 
-        return [self._encoder[sym] for sym in symbols]
+        ids = [self._encoder[sym] for sym in symbols]
+        self._word_cache[word] = ids
+        return ids
 
     @staticmethod
     def _split_on_special_tokens(text: str) -> list[str]:
