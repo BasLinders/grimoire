@@ -5,20 +5,20 @@ This module wires together all architectural components into a single
 
     Token embedding
         ↓
-    N × TransformerBlock  (RMSNorm + GQA + RoPE + SwiGLU)
+    N × TransformerBlock (RMSNorm + GQA + RoPE + SwiGLU)
         ↓
     Final RMSNorm
         ↓
     Output linear head (weight-tied to embedding)
         ↓
-    Logits  shape: (batch, seq_len, vocab_size)
+    Logits shape: (batch, seq_len, vocab_size)
 
 Weight tying
 ------------
 The input embedding matrix (shape ``vocab_size × d_model``) and the
 output projection matrix (same shape) share the same underlying tensor.
 This means the model uses the same learned representation when embedding
-an input token and when predicting that token as output.  Benefits:
+an input token and when predicting that token as output. Benefits:
 
 - Saves ``vocab_size × d_model × 4`` bytes (≈ 32 MB for our config).
 - Empirically improves perplexity for small models by regularising the
@@ -27,7 +27,7 @@ an input token and when predicting that token as output.  Benefits:
   Models").
 
 The tie is implemented by setting ``output_head.weight = embedding.weight``
-after construction.  Both modules then point to the same ``nn.Parameter``.
+after construction. Both modules then point to the same ``nn.Parameter``.
 """
 
 from typing import Optional
@@ -44,7 +44,7 @@ class GrimoireTransformer(nn.Module):
     """Decoder-only transformer language model with GQA, RoPE, and SwiGLU.
 
     The model takes a sequence of token ids and returns a logit distribution
-    over the vocabulary for each position.  During training the target is
+    over the vocabulary for each position. During training the target is
     to predict the next token at each position (causal language modelling).
     During inference the logits at the *last* position are sampled to
     generate the next token.
@@ -55,24 +55,26 @@ class GrimoireTransformer(nn.Module):
         blocks: ``nn.ModuleList`` of ``TransformerBlock`` instances.
         final_norm: ``RMSNorm`` applied after the last block.
         output_head: Linear projection from ``d_model`` to ``vocab_size``.
-            Weight-tied to ``embedding.weight``; no bias.
+        Weight-tied to ``embedding.weight``; no bias.
     """
 
     def __init__(self, config: TransformerConfig) -> None:
         """Construct the full transformer from a config.
 
         Args:
-            config: Model hyperparameters.  All submodules are built from
-                this single object so the model is fully determined by it.
+            config: Model hyperparameters. All submodules are built from
+            this single object so the model is fully determined by it.
         """
         super().__init__()
         self.config = config
 
-        self.embedding   = TokenEmbedding(config)
-        self.blocks      = nn.ModuleList(
+        self.embedding = TokenEmbedding(config)
+        self.blocks = nn.ModuleList(
             [TransformerBlock(config) for _ in range(config.n_layers)]
         )
-        self.final_norm  = RMSNorm(config.d_model)
+        # Import RMSNorm from block to avoid re-defining it.
+        from grimoire.llm.model.block import RMSNorm
+        self.final_norm = RMSNorm(config.d_model)
         self.output_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
 
         # Weight tying: share the embedding matrix with the output projection.
@@ -87,7 +89,7 @@ class GrimoireTransformer(nn.Module):
 
         Uses the GPT-2 convention of scaling residual projection weights by
         ``1 / sqrt(2 × n_layers)`` to prevent the residual stream from
-        growing in magnitude with depth.  All other weights are initialised
+        growing in magnitude with depth. All other weights are initialised
         with ``std = 0.02``; biases (where present) are zeroed.
         """
         residual_scale = (2 * self.config.n_layers) ** -0.5
@@ -142,7 +144,7 @@ class GrimoireTransformer(nn.Module):
 
         Args:
             trainable_only: If ``True`` (default), count only parameters
-                with ``requires_grad=True``.  Set to ``False`` to include
+                with ``requires_grad=True``. Set to ``False`` to include
                 frozen parameters as well.
 
         Returns:

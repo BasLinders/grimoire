@@ -106,9 +106,9 @@ class TransformerBlock(nn.Module):
         """
         super().__init__()
         self.attn_norm = RMSNorm(config.d_model)
-        self.attn      = GroupedQueryAttention(config)
-        self.ffn_norm  = RMSNorm(config.d_model)
-        self.ffn       = SwiGLUFeedForward(config)
+        self.attn = GroupedQueryAttention(config)
+        self.ffn_norm = RMSNorm(config.d_model)
+        self.ffn = SwiGLUFeedForward(config)
 
     def forward(
         self,

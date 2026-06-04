@@ -28,9 +28,9 @@ grimoire/
 │   │   ├── training/       # Trainer, checkpointing, train entry point
 │   │   └── inference/      # Prompt builder, sampler, inference engine         planned
 │   ├── rbf/                # Granville RBF retrieval engine                    planned
-│   ├── state/              # Conversation state and rolling history             planned
-│   ├── router/             # Intent detection and tool routing                  planned
-│   └── tools/              # Tool integrations (Google Calendar, etc.)          planned
+│   ├── state/              # Conversation state and rolling history            planned
+│   ├── router/             # Intent detection and tool routing                 planned
+│   └── tools/              # Tool integrations (Google Calendar, etc.)         planned
 ├── agents/
 │   └── saga/               # Saga agent — D&D, math, data science, calendar    planned
 ├── data/                   # Corpus data files (gitignored)

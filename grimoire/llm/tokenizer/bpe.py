@@ -76,7 +76,7 @@ def _build_byte_char_maps() -> tuple[dict[int, str], dict[str, int]]:
     """Build bidirectional maps between byte values (0-255) and characters.
 
     Printable ASCII characters (33–126 and 161–172, 174–255) map to
-    themselves.  The remaining bytes map sequentially to characters
+    themselves. The remaining bytes map sequentially to characters
     starting at U+0100 so every byte has a unique, unambiguous
     character representation.
 
@@ -108,7 +108,7 @@ class BytePairEncoder:
     """Byte-level BPE tokenizer that can be trained, saved, and loaded.
 
     After training, the encoder maps arbitrary text to lists of integer ids
-    and back.  It is safe to use across Python sessions as long as the
+    and back. It is safe to use across Python sessions as long as the
     vocabulary file is the same.
 
     Attributes:
@@ -296,7 +296,7 @@ class BytePairEncoder:
         """Encode a string into a list of integer token ids.
 
         The text is first split into words using the same pattern used
-        during training.  Each word is converted to base byte characters
+        during training. Each word is converted to base byte characters
         and then BPE merges are applied greedily in the order they were
         learned (lowest rank = highest priority).
 
@@ -382,7 +382,7 @@ class BytePairEncoder:
             text: Raw input that may contain special token strings.
 
         Returns:
-            A list of string segments.  Special tokens appear as isolated
+            A list of string segments. Special tokens appear as isolated
             elements; all other text appears as plain segments between them.
         """
         pattern = "(" + "|".join(re.escape(t) for t in ALL_SPECIAL_TOKENS) + ")"
@@ -396,7 +396,7 @@ class BytePairEncoder:
         """Decode a list of token ids back to a string.
 
         Each id is converted back to its string symbol via the decoder
-        dict.  Special token symbols are passed through as their literal
+        dict. Special token symbols are passed through as their literal
         strings (e.g. id 3 → ``"<SEP>"``).  All other symbols are
         byte-character sequences that are converted back to UTF-8 bytes
         and then decoded to a string.
@@ -405,7 +405,7 @@ class BytePairEncoder:
             ids: A list of integer token ids as returned by ``encode``.
 
         Returns:
-            The decoded string.  Guaranteed to round-trip losslessly for
+            The decoded string. Guaranteed to round-trip losslessly for
             any input that does not contain literal special token strings.
 
         Raises:
@@ -447,7 +447,7 @@ class BytePairEncoder:
         - ``"vocab_size"``: the total vocabulary size as an integer.
 
         Args:
-            path: File path to write.  Parent directories are created if
+            path: File path to write. Parent directories are created if
                 they do not exist.
 
         Raises:
@@ -468,7 +468,7 @@ class BytePairEncoder:
         """Load a previously saved encoder from a JSON file.
 
         Args:
-            path: File path to read.  Must be a file written by ``save``.
+            path: File path to read. Must be a file written by ``save``.
 
         Returns:
             A fully initialised ``BytePairEncoder`` ready to encode and

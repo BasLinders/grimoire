@@ -214,7 +214,7 @@ class GroupedQueryAttention(nn.Module):
         # Q: (batch, n_heads,    seq_len, head_dim)
         # K: (batch, n_kv_heads, seq_len, head_dim)
         # V: (batch, n_kv_heads, seq_len, head_dim)
-        q = self.q_proj(x).view(batch, seq_len, self.n_heads,    self.head_dim).transpose(1, 2)
+        q = self.q_proj(x).view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
         k = self.k_proj(x).view(batch, seq_len, self.n_kv_heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(x).view(batch, seq_len, self.n_kv_heads, self.head_dim).transpose(1, 2)
 
