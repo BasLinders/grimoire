@@ -111,7 +111,7 @@ def generate(
             context = ids[-max_seq:]
             input_tensor = torch.tensor([context], dtype=torch.long, device=device)
 
-            logits = model(input_tensor)          # (1, seq, vocab)
+            logits = model(input_tensor)            # (1, seq, vocab)
             next_logits = logits[0, -1, :].float()  # (vocab,)
 
             # Repetition penalty on the generated portion only.
