@@ -11,7 +11,7 @@ Gate criteria:
 
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -23,6 +23,7 @@ from grimoire.llm.inference.sampler import GenerationConfig
 from grimoire.llm.model.config import TransformerConfig
 from grimoire.llm.model.transformer import GrimoireTransformer
 from grimoire.llm.tokenizer.bpe import BytePairEncoder
+from grimoire.llm.tokenizer.special_tokens import SEP_ID, USR_ID
 from grimoire.llm.training.checkpoint import save_checkpoint
 
 
@@ -141,6 +142,92 @@ def test_engine_missing_tokenizer_raises() -> None:
                 tokenizer_path="/tmp/grimoire_no_such_bpe.json",
                 device="cpu",
             )
+
+
+def test_corpus_context_reaches_prompt() -> None:
+    """The corpus results must actually be injected into the prompt.
+
+    This is the integration assertion the smoke tests above do not make:
+    we patch ``generate`` to capture the prompt_ids the engine builds and
+    confirm the corpus context block (SEP…SEP) is present.
+    """
+    corpus = GrimoireCorpus()
+    corpus.add_text(
+        "A grappled creature has its speed reduced to zero. "
+        "The grapple condition ends if the grappler is incapacitated.",
+        source="test",
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt, tok = _save_artifacts(tmp)
+        engine = InferenceEngine(
+            checkpoint_path=ckpt,
+            tokenizer_path=tok,
+            corpus=corpus,
+            device="cpu",
+        )
+        # Sanity check: the corpus genuinely returns results for this query,
+        # otherwise the assertion below would be vacuous.
+        assert engine.corpus.query("grapple speed", top_k=3), (
+            "Corpus returned no results; test would be vacuous."
+        )
+
+        captured: dict[str, list[int]] = {}
+
+        def _fake_generate(model, prompt_ids, config=None, device="cpu"):
+            captured["prompt_ids"] = prompt_ids
+            return []
+
+        with patch("grimoire.llm.inference.engine.generate", _fake_generate):
+            engine.respond("grapple speed", top_k_corpus=3)
+
+    assert "prompt_ids" in captured, "generate() was never called."
+    assert SEP_ID in captured["prompt_ids"], (
+        "Corpus context block (SEP) did not reach the prompt — "
+        "the corpus→PromptBuilder wiring is broken."
+    )
+
+
+def test_no_corpus_means_no_context_block() -> None:
+    """Without a corpus the prompt must be the query-only layout (no SEP)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt, tok = _save_artifacts(tmp)
+        engine = InferenceEngine(
+            checkpoint_path=ckpt,
+            tokenizer_path=tok,
+            corpus=None,
+            device="cpu",
+        )
+
+        captured: dict[str, list[int]] = {}
+
+        def _fake_generate(model, prompt_ids, config=None, device="cpu"):
+            captured["prompt_ids"] = prompt_ids
+            return []
+
+        with patch("grimoire.llm.inference.engine.generate", _fake_generate):
+            engine.respond("fire bolt")
+
+    assert SEP_ID not in captured["prompt_ids"], "No corpus should mean no SEP block."
+    assert USR_ID in captured["prompt_ids"], "Query-only prompt must still mark the user turn."
+
+
+def test_top_k_corpus_forwarded_to_query() -> None:
+    """respond(top_k_corpus=N) must pass N through to corpus.query."""
+    corpus = MagicMock()
+    corpus.query.return_value = []   # empty → query-only prompt, still valid
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt, tok = _save_artifacts(tmp)
+        engine = InferenceEngine(
+            checkpoint_path=ckpt,
+            tokenizer_path=tok,
+            corpus=corpus,
+            gen_config=GenerationConfig(max_new_tokens=2, temperature=1e-8, top_k=1, top_p=1.0),
+            device="cpu",
+        )
+        engine.respond("anything", top_k_corpus=7)
+
+    corpus.query.assert_called_once_with("anything", top_k=7)
 
 
 def test_per_call_gen_config_override() -> None:
