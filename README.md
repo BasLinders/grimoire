@@ -21,12 +21,12 @@ The first agent built on Grimoire is **Saga**: a domain-specialised chatbot cove
 grimoire/
 ├── grimoire/
 │   ├── corpus/             # Corpus ingestion, stemming, multi-token indexing  ✓
-│   ├── llm/                # Scratch-built transformer LLM                     ✓ (phases 1–3)
+│   ├── llm/                # Scratch-built transformer LLM                     ✓ (phases 1–4)
 │   │   ├── tokenizer/      # Byte-level BPE tokenizer
 │   │   ├── model/          # Decoder-only transformer (GQA, RoPE, SwiGLU, RMSNorm)
 │   │   ├── data/           # TokenizedDataset, PaddingCollator, preprocessing
 │   │   ├── training/       # Trainer, checkpointing, train entry point
-│   │   └── inference/      # Prompt builder, sampler, inference engine         planned
+│   │   └── inference/      # PromptBuilder, sampler, InferenceEngine           ✓
 │   ├── rbf/                # Granville RBF retrieval engine                    planned
 │   ├── state/              # Conversation state and rolling history            planned
 │   ├── router/             # Intent detection and tool routing                 planned
@@ -68,7 +68,7 @@ flowchart TD
 | **BPE Tokenizer** | Byte-level Byte-Pair Encoding; vocab size 16 384; lossless round-trip for any Unicode input | ✓ done |
 | **GrimoireTransformer** | Scratch-built decoder-only transformer (~25 M params); GQA, RoPE, SwiGLU, RMSNorm, weight-tied output head | ✓ done |
 | **Training Pipeline** | AdamW + cosine-warmup LR, fp16 AMP, gradient accumulation, checkpointing | ✓ done |
-| **Inference Engine** | PromptBuilder (corpus → prompt), KV-cache sampler (greedy / top-p / top-k) | planned |
+| **Inference Engine** | PromptBuilder (corpus → prompt), autoregressive sampler (temperature / top-k / top-p / repetition penalty), end-to-end `respond()` API. KV-cache deferred to a later phase | ✓ done |
 | **Conversation State** | Rolling multi-turn history injected into every prompt | planned |
 | **Intent Router** | Routes calendar intents to Google Calendar API; all knowledge queries to the corpus engine | planned |
 
@@ -155,6 +155,32 @@ for r in results:
     print(r.multi_token, r.score)
 ```
 
+### Generating a response (Python API)
+
+The `InferenceEngine` ties everything together: it loads a trained
+checkpoint and tokenizer, optionally queries a corpus for grounding, builds
+the prompt, and generates a response.
+
+```python
+from grimoire.corpus import GrimoireCorpus
+from grimoire.llm.inference.engine import InferenceEngine
+from grimoire.llm.inference.sampler import GenerationConfig
+
+corpus = GrimoireCorpus()
+corpus.add_text("A grappled creature has its speed reduced to zero.", source="dnd_srd")
+
+engine = InferenceEngine(
+    checkpoint_path="checkpoints/step_0005000.pt",
+    tokenizer_path="data/tokenizer/bpe.json",
+    corpus=corpus,                       # optional — omit for ungrounded generation
+    gen_config=GenerationConfig(temperature=0.8, top_p=0.9, top_k=50),
+)
+
+print(engine.respond("What happens when a creature is grappled?"))
+```
+
+The engine auto-detects CUDA and falls back to CPU when no GPU is available.
+
 ## Development
 
 ```bash
@@ -162,7 +188,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-All 82 tests pass across the corpus and LLM modules.
+All 106 tests pass across the corpus and LLM modules (tokenizer, model, data, training, and inference).
 
 ## References
 
