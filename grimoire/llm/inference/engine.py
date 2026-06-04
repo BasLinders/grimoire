@@ -104,9 +104,13 @@ class InferenceEngine:
         self.tokenizer = BytePairEncoder.load(tokenizer_path)
 
         self.corpus = corpus
+        # A prompt can never usefully exceed the model's context window; clamp
+        # so PromptBuilder never emits a prompt that generate() would silently
+        # left-truncate (which could drop the <USR>/context framing).
+        effective_context = min(max_context_tokens, config.max_seq_len)
         self.prompt_builder = PromptBuilder(
             tokenizer=self.tokenizer,
-            max_context_tokens=max_context_tokens,
+            max_context_tokens=effective_context,
         )
         self.gen_config = gen_config if gen_config is not None else GenerationConfig()
 
