@@ -258,6 +258,41 @@ def _toggle_ingest_inputs(mode: str):
 # Chat tab logic
 # ---------------------------------------------------------------------------
 
+_AGENTS_JSON = "agents.json"
+
+
+def _load_agent_names() -> list[str]:
+    """Return display names from agents.json, or [] if the file is missing."""
+    try:
+        from grimoire.agents.registry import AgentRegistry
+        return AgentRegistry(_AGENTS_JSON).display_names()
+    except (FileNotFoundError, ValueError):
+        return []
+
+
+def load_agent(display_name: str) -> tuple[object, object, str, str, str]:
+    """Load an agent by display name.
+
+    Returns (engine, conv_state, status, checkpoint_path, vocab_path).
+    The last two values are passed back so the manual path fields reflect what
+    was actually loaded.
+    """
+    from grimoire.agents.registry import AgentRegistry
+    from grimoire.state.conversation import ConversationState
+
+    registry = AgentRegistry(_AGENTS_JSON)
+    cfg = registry.get_by_display_name(display_name)
+    engine = registry.build_engine(cfg.key)
+    state = ConversationState()
+    return (
+        engine,
+        state,
+        f"Agent '{cfg.display_name}' loaded.  {cfg.description}",
+        cfg.checkpoint,
+        cfg.vocab,
+    )
+
+
 def load_engine(
     checkpoint_path: str,
     vocab_path: str,
@@ -480,26 +515,43 @@ def build_app() -> gr.Blocks:
         # ----------------------------------------------------------------
         with gr.Tab("Chat"):
             gr.Markdown(
-                "Load a checkpoint and have a multi-turn conversation. "
+                "Select a named agent **or** load any checkpoint manually. "
                 "Conversation history is maintained automatically."
             )
             engine_state = gr.State(value=None)
             conv_state   = gr.State(value=None)
 
-            with gr.Row():
-                chat_ckpt   = gr.Textbox(label="Checkpoint path (.pt)")
-                chat_vocab  = gr.Textbox(
-                    label="Vocabulary path (.json)",
-                    value="data/tokenizer/bpe.json",
-                )
-                load_btn    = gr.Button("Load model")
-            load_status = gr.Textbox(label="Status", interactive=False)
+            # ---- Agent selector -----------------------------------------
+            _agent_names = _load_agent_names()
+            with gr.Group(visible=bool(_agent_names)) as agent_group:
+                gr.Markdown("### Select agent")
+                with gr.Row():
+                    agent_dropdown = gr.Dropdown(
+                        choices=_agent_names,
+                        value=_agent_names[0] if _agent_names else None,
+                        label="Agent",
+                        scale=3,
+                    )
+                    agent_load_btn = gr.Button("Load agent", scale=1)
+                agent_status = gr.Textbox(label="Agent status", interactive=False)
 
+            # ---- Manual load --------------------------------------------
+            with gr.Accordion("Load checkpoint manually", open=not bool(_agent_names)):
+                with gr.Row():
+                    chat_ckpt  = gr.Textbox(label="Checkpoint path (.pt)")
+                    chat_vocab = gr.Textbox(
+                        label="Vocabulary path (.json)",
+                        value="data/tokenizer/bpe.json",
+                    )
+                    load_btn = gr.Button("Load model")
+                load_status = gr.Textbox(label="Status", interactive=False)
+
+            # ---- Generation controls ------------------------------------
             with gr.Row():
-                chat_temp   = gr.Slider(0.1, 2.0,  value=0.8,  step=0.05, label="Temperature")
-                chat_top_k  = gr.Slider(1,   200,  value=50,   step=1,    label="Top-k")
-                chat_top_p  = gr.Slider(0.1, 1.0,  value=0.9,  step=0.05, label="Top-p")
-                chat_tokens = gr.Slider(16,  512,  value=128,  step=8,    label="Max new tokens")
+                chat_temp   = gr.Slider(0.1, 2.0, value=0.8,  step=0.05, label="Temperature")
+                chat_top_k  = gr.Slider(1,   200, value=50,   step=1,    label="Top-k")
+                chat_top_p  = gr.Slider(0.1, 1.0, value=0.9,  step=0.05, label="Top-p")
+                chat_tokens = gr.Slider(16,  512, value=128,  step=8,    label="Max new tokens")
 
             chat_query    = gr.Textbox(label="Your query", lines=3)
             chat_response = gr.Textbox(label="Response", lines=8, interactive=False)
@@ -507,6 +559,12 @@ def build_app() -> gr.Blocks:
                 chat_btn  = gr.Button("Send", variant="primary")
                 clear_btn = gr.Button("Clear conversation")
 
+            # ---- Event wiring -------------------------------------------
+            agent_load_btn.click(
+                fn=load_agent,
+                inputs=[agent_dropdown],
+                outputs=[engine_state, conv_state, agent_status, chat_ckpt, chat_vocab],
+            )
             load_btn.click(
                 fn=load_engine,
                 inputs=[chat_ckpt, chat_vocab],
