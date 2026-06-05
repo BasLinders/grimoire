@@ -16,6 +16,9 @@ dependencies = [
 dev = [
     "pytest>=8.0",
 ]
+ui = [
+    "gradio>=4.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
