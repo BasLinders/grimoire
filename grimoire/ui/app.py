@@ -33,6 +33,7 @@ Usage
     # then open http://localhost:7860
 """
 
+import os
 import queue
 import threading
 from pathlib import Path
@@ -395,7 +396,10 @@ def clear_conversation(conv_state) -> tuple[object, str]:
 def build_app() -> gr.Blocks:
     """Assemble and return the Gradio Blocks app."""
     with gr.Blocks(title="Grimoire") as app:
-        gr.Markdown("# Grimoire")
+        with gr.Row():
+            gr.Markdown("# Grimoire")
+            shutdown_btn = gr.Button("⏻ Shut down", scale=0, min_width=110)
+        shutdown_btn.click(fn=lambda: os._exit(0), inputs=[], outputs=[])
 
         # ----------------------------------------------------------------
         with gr.Tab("Preprocess"):
