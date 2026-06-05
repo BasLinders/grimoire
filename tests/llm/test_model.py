@@ -166,11 +166,12 @@ def test_swiglu_output_shape(cfg: TransformerConfig) -> None:
 # ---------------------------------------------------------------------------
 
 def test_gqa_output_shape(cfg: TransformerConfig) -> None:
-    """GQA must return a tensor of shape (batch, seq_len, d_model)."""
+    """GQA must return (output, None) with output shape (batch, seq_len, d_model)."""
     attn = GroupedQueryAttention(cfg)
     x = torch.randn(2, 8, cfg.d_model)
-    out = attn(x)
+    out, present_kv = attn(x)
     assert out.shape == (2, 8, cfg.d_model)
+    assert present_kv is None  # use_cache=False by default
 
 
 def test_gqa_output_shape_with_mask(cfg: TransformerConfig) -> None:
@@ -179,8 +180,33 @@ def test_gqa_output_shape_with_mask(cfg: TransformerConfig) -> None:
     x = torch.randn(2, 8, cfg.d_model)
     mask = torch.ones(2, 8)
     mask[0, 6:] = 0   # last two positions are padding in the first sequence
-    out = attn(x, attention_mask=mask)
+    out, _ = attn(x, attention_mask=mask)
     assert out.shape == (2, 8, cfg.d_model)
+
+
+def test_gqa_use_cache_returns_kv(cfg: TransformerConfig) -> None:
+    """With use_cache=True, GQA must return present_kv tensors of the right shape."""
+    attn = GroupedQueryAttention(cfg)
+    x = torch.randn(1, 6, cfg.d_model)
+    out, present_kv = attn(x, use_cache=True)
+    assert out.shape == (1, 6, cfg.d_model)
+    assert present_kv is not None
+    k, v = present_kv
+    assert k.shape == (1, cfg.n_kv_heads, 6, cfg.head_dim)
+    assert v.shape == (1, cfg.n_kv_heads, 6, cfg.head_dim)
+
+
+def test_gqa_cache_extends_on_second_call(cfg: TransformerConfig) -> None:
+    """Passing past_kv must extend the cache and keep output shape consistent."""
+    attn = GroupedQueryAttention(cfg)
+    x1 = torch.randn(1, 4, cfg.d_model)
+    _, past_kv = attn(x1, use_cache=True)
+
+    x2 = torch.randn(1, 1, cfg.d_model)
+    out2, present_kv = attn(x2, past_kv=past_kv, use_cache=True)
+    assert out2.shape == (1, 1, cfg.d_model)
+    # Cache must now hold 4 + 1 = 5 positions.
+    assert present_kv[0].shape[2] == 5
 
 
 # ---------------------------------------------------------------------------
@@ -188,10 +214,12 @@ def test_gqa_output_shape_with_mask(cfg: TransformerConfig) -> None:
 # ---------------------------------------------------------------------------
 
 def test_block_output_shape(cfg: TransformerConfig) -> None:
-    """TransformerBlock must return a tensor of shape (batch, seq_len, d_model)."""
+    """TransformerBlock must return (output, None) with correct shape."""
     block = TransformerBlock(cfg)
     x = torch.randn(2, 8, cfg.d_model)
-    assert block(x).shape == x.shape
+    out, present_kv = block(x)
+    assert out.shape == x.shape
+    assert present_kv is None  # use_cache=False by default
 
 
 # ---------------------------------------------------------------------------
@@ -291,4 +319,35 @@ def test_model_serialisation(model: GrimoireTransformer, cfg: TransformerConfig)
 
     assert torch.allclose(logits_before, logits_after, atol=1e-6), (
         "Logits changed after serialisation/deserialisation."
+    )
+
+
+def test_kv_cache_matches_full_forward(
+    model: GrimoireTransformer, cfg: TransformerConfig
+) -> None:
+    """Cached generation must produce identical logits to a full forward pass.
+
+    Strategy: run the full prompt through once (no cache), then run the
+    prompt again with use_cache=True and feed one additional token.  The
+    logits for that final token must match a single full-sequence forward
+    pass over prompt + token.
+    """
+    model.eval()
+    prompt = torch.randint(1, cfg.vocab_size, (1, 6))
+    new_token = torch.randint(1, cfg.vocab_size, (1, 1))
+
+    with torch.no_grad():
+        # Reference: full forward over prompt + new_token together.
+        full_input = torch.cat([prompt, new_token], dim=1)
+        logits_full = model(full_input)          # (1, 7, vocab)
+        ref_logits = logits_full[0, -1, :]       # last position
+
+        # Cached: prompt pass, then single-token pass.
+        _, past_kvs = model(prompt, use_cache=True)
+        logits_cached, _ = model(new_token, past_kvs=past_kvs, use_cache=True)
+        cached_logits = logits_cached[0, -1, :]  # last position
+
+    assert torch.allclose(ref_logits, cached_logits, atol=1e-5), (
+        "KV-cache produced different logits from a full forward pass. "
+        "RoPE position offset or cache concatenation is incorrect."
     )
