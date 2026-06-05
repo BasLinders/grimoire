@@ -103,6 +103,8 @@ class Trainer:
         device: Optional[str] = None,
         num_workers: int = 0,
         on_log: Optional[Callable[[int, float, float], None]] = None,
+        on_save: Optional[Callable[[int, float], None]] = None,
+        on_done: Optional[Callable[[int, float], None]] = None,
     ) -> None:
         """Set up the trainer, optimizer, scheduler, and data loader.
 
@@ -132,6 +134,11 @@ class Trainer:
                 (the default) only stdout is used — existing behaviour is
                 unchanged.  The training UI registers a callback here to
                 stream live loss updates without polling stdout.
+            on_save: Optional callable invoked each time a checkpoint is
+                written, with ``(step: int, elapsed: float)`` where
+                ``elapsed`` is total seconds since training started.
+            on_done: Optional callable invoked once when training finishes,
+                with ``(total_steps: int, elapsed: float)``.
         """
         self.config = model.config
         self.peak_lr = peak_lr
@@ -146,6 +153,8 @@ class Trainer:
         self._step = 0
         self._last_avg_loss: float = 0.0
         self._on_log = on_log
+        self._on_save = on_save
+        self._on_done = on_done
 
         # --- Device setup -----------------------------------------------
         if device is None:
@@ -240,7 +249,8 @@ class Trainer:
         data_iter   = iter(self._loader)
         micro_count = 0
         running_loss = 0.0
-        t0 = time.time()
+        t_start = time.time()
+        t0 = t_start
 
         print(
             f"Training on {self.device.upper()} | "
@@ -300,7 +310,8 @@ class Trainer:
 
                 # --- Logging -------------------------------------------
                 if self._step % self.log_every == 0:
-                    elapsed   = time.time() - t0
+                    elapsed_interval = time.time() - t0
+                    elapsed_total    = time.time() - t_start
                     lr_now    = self._scheduler.get_last_lr()[0]
                     # running_loss is the sum of per-optimizer-step losses
                     # since the last log point; divide to report the mean.
@@ -309,15 +320,16 @@ class Trainer:
                         f"step {self._step:>6} / {self.total_steps} | "
                         f"loss {self._last_avg_loss:.4f} | "
                         f"lr {lr_now:.2e} | "
-                        f"{elapsed:.1f}s"
+                        f"{elapsed_interval:.1f}s"
                     )
                     if self._on_log is not None:
-                        self._on_log(self._step, self._last_avg_loss, lr_now)
+                        self._on_log(self._step, self._last_avg_loss, lr_now, elapsed_total)
                     running_loss = 0.0
                     t0 = time.time()
 
                 # --- Checkpointing -------------------------------------
                 if self._step % self.save_every == 0:
+                    elapsed_total = time.time() - t_start
                     ckpt_path = self.checkpoint_dir / f"step_{self._step:07d}.pt"
                     save_checkpoint(
                         path=str(ckpt_path),
@@ -329,8 +341,13 @@ class Trainer:
                         scaler=self._scaler if self._use_amp else None,
                     )
                     print(f"  → checkpoint saved: {ckpt_path}")
+                    if self._on_save is not None:
+                        self._on_save(self._step, elapsed_total)
 
-        print(f"\nTraining complete. Final step: {self._step}")
+        elapsed_total = time.time() - t_start
+        print(f"\nTraining complete. Final step: {self._step} | total time: {elapsed_total:.1f}s")
+        if self._on_done is not None:
+            self._on_done(self._step, elapsed_total)
 
     # ------------------------------------------------------------------
     # Resume helper

@@ -230,11 +230,11 @@ def test_checkpoint_missing_file_raises() -> None:
 # ---------------------------------------------------------------------------
 
 def test_on_log_callback_fires() -> None:
-    """on_log must be called with (step, loss, lr) at each log interval."""
-    log_calls: list[tuple[int, float, float]] = []
+    """on_log must be called with (step, loss, lr, elapsed) at each log interval."""
+    log_calls: list[tuple[int, float, float, float]] = []
 
-    def capture(step: int, loss: float, lr: float) -> None:
-        log_calls.append((step, loss, lr))
+    def capture(step: int, loss: float, lr: float, elapsed: float) -> None:
+        log_calls.append((step, loss, lr, elapsed))
 
     with tempfile.TemporaryDirectory() as tmp:
         cfg = _tiny_config()
@@ -261,10 +261,11 @@ def test_on_log_callback_fires() -> None:
     assert len(log_calls) == 2, f"Expected 2 on_log calls, got {len(log_calls)}."
     steps = [c[0] for c in log_calls]
     assert steps == [5, 10], f"Expected steps [5, 10], got {steps}."
-    for step, loss, lr in log_calls:
+    for step, loss, lr, elapsed in log_calls:
         assert isinstance(step, int)
         assert loss > 0
         assert lr > 0
+        assert elapsed >= 0
 
 
 def test_on_log_none_does_not_raise() -> None:

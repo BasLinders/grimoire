@@ -54,16 +54,34 @@ def _list_checkpoints(checkpoint_dir: str) -> list[str]:
     return sorted(str(f) for f in p.glob("*.pt"))
 
 
+def _fmt_elapsed(seconds: float) -> str:
+    """Format a duration in seconds as a human-readable string."""
+    h, rem = divmod(int(seconds), 3600)
+    m, s   = divmod(rem, 60)
+    if h:
+        return f"{h}h {m:02d}m {s:02d}s"
+    if m:
+        return f"{m}m {s:02d}s"
+    return f"{s}s"
+
+
 def _stream_training(train_fn) -> Generator[str, None, None]:
     """Run a training function in a background thread and stream loss lines.
 
-    ``train_fn`` receives an ``on_log(step, loss, lr)`` callback.
+    ``train_fn`` receives ``on_log``, ``on_save``, and ``on_done`` callbacks.
     Wraps ``_stream_task`` with a training-specific message formatter.
     """
     def _wrapped(on_progress):
-        def on_log(step: int, loss: float, lr: float) -> None:
-            on_progress(f"step {step:>6} | loss {loss:.4f} | lr {lr:.2e}")
-        train_fn(on_log)
+        def on_log(step: int, loss: float, lr: float, elapsed: float) -> None:
+            on_progress(f"step {step:>6} | loss {loss:.4f} | lr {lr:.2e} | {_fmt_elapsed(elapsed)}")
+
+        def on_save(step: int, elapsed: float) -> None:
+            on_progress(f"  ✔ checkpoint saved  step {step}  [{_fmt_elapsed(elapsed)}]")
+
+        def on_done(step: int, elapsed: float) -> None:
+            on_progress(f"\nTraining complete — {step} steps in {_fmt_elapsed(elapsed)}")
+
+        train_fn(on_log, on_save, on_done)
 
     yield from _stream_task(_wrapped)
 
@@ -129,7 +147,7 @@ def run_pretrain(
     from grimoire.llm.model.transformer import GrimoireTransformer
     from grimoire.llm.training.trainer import Trainer
 
-    def _train(on_log):
+    def _train(on_log, on_save, on_done):
         device = "cuda" if torch.cuda.is_available() else "cpu"
         model_config = TransformerConfig()
         model = GrimoireTransformer(model_config)
@@ -147,6 +165,8 @@ def run_pretrain(
             checkpoint_dir=checkpoint_dir,
             device=device,
             on_log=on_log,
+            on_save=on_save,
+            on_done=on_done,
         ).train()
 
     yield from _wrap_with_buttons(_stream_training(_train))
@@ -179,7 +199,7 @@ def run_finetune(
     from grimoire.llm.training.checkpoint import load_checkpoint
     from grimoire.llm.training.trainer import Trainer
 
-    def _train(on_log):
+    def _train(on_log, on_save, on_done):
         device = "cuda" if torch.cuda.is_available() else "cpu"
         ckpt = load_checkpoint(resume)
         config = TransformerConfig.from_dict(ckpt["config"])
@@ -204,6 +224,8 @@ def run_finetune(
             checkpoint_dir=checkpoint_dir,
             device=device,
             on_log=on_log,
+            on_save=on_save,
+            on_done=on_done,
         ).train(resume_from=None)
 
     yield from _wrap_with_buttons(_stream_training(_train))
