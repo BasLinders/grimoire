@@ -30,11 +30,16 @@ class IndexEntry:
         source: An optional label identifying the source document
             (e.g. ``"dnd_srd"``, ``"wikipedia_ml"``). Useful for
             filtering results by domain.
+        excerpt: A short window of the original (unstemmed) text
+            surrounding this multi-token. Used by ``PromptBuilder`` as
+            richer prompt context than the stemmed ``next_token`` alone.
+            ``None`` when the index was populated without excerpt support.
     """
 
     next_token: Optional[str]
     frequency: int = 1
     source: Optional[str] = None
+    excerpt: Optional[str] = None
 
     def increment(self) -> None:
         """Increase the frequency count by one.
@@ -66,6 +71,7 @@ class CorpusIndex:
         multi_token: tuple[str, ...],
         next_token: Optional[str] = None,
         source: Optional[str] = None,
+        excerpt: Optional[str] = None,
     ) -> None:
         """Insert a multi-token into the index or increment its frequency.
 
@@ -79,12 +85,14 @@ class CorpusIndex:
             next_token: The stemmed word that followed this multi-token
                 in the source text. Defaults to ``None``.
             source: Label of the originating document. Defaults to ``None``.
+            excerpt: A short window of the original unstemmed text
+                surrounding this multi-token. Defaults to ``None``.
         """
         if multi_token in self._store:
             self._store[multi_token].increment()
         else:
             self._store[multi_token] = IndexEntry(
-                next_token=next_token, source=source
+                next_token=next_token, source=source, excerpt=excerpt
             )
 
     def get(self, multi_token: tuple[str, ...]) -> Optional[IndexEntry]:

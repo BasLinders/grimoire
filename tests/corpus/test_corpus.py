@@ -117,3 +117,41 @@ class TestGrimoireCorpus:
         corpus = GrimoireCorpus(n=4)
         count = corpus.add_text("The wizard cast a powerful fireball spell at the enemy.")
         assert count > 0
+
+
+class TestExcerpts:
+    def setup_method(self):
+        self.corpus = GrimoireCorpus(n=4)
+        self.corpus.add_text(
+            "A grappled creature has its speed reduced to zero.",
+            source="dnd_srd",
+        )
+
+    def test_query_results_have_excerpts(self):
+        results = self.corpus.query("grapple speed", top_k=3)
+        assert all(r.excerpt is not None for r in results), (
+            "All results should carry an excerpt when add_text is used."
+        )
+
+    def test_excerpt_contains_original_words(self):
+        results = self.corpus.query("grapple speed", top_k=1)
+        excerpt = results[0].excerpt
+        # The excerpt must contain recognisable words from the original text
+        # (unstemmed), not the stemmed index tokens.
+        assert any(w in excerpt for w in ("grappled", "creature", "speed", "zero")), (
+            f"Excerpt does not look like original text: {excerpt!r}"
+        )
+
+    def test_excerpt_within_window(self):
+        from grimoire.corpus.corpus import _EXCERPT_WINDOW
+        results = self.corpus.query("grapple speed", top_k=3)
+        for r in results:
+            assert len(r.excerpt) <= _EXCERPT_WINDOW + 50, (
+                f"Excerpt suspiciously long: {len(r.excerpt)} chars"
+            )
+
+    def test_index_add_without_excerpt_gives_none(self):
+        from grimoire.corpus.index import CorpusIndex
+        idx = CorpusIndex()
+        idx.add(("a", "b", "c", "d"), next_token="next")
+        assert idx.get(("a", "b", "c", "d")).excerpt is None

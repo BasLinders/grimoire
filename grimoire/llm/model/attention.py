@@ -187,72 +187,97 @@ class GroupedQueryAttention(nn.Module):
         self,
         x: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+        past_kv: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+        use_cache: bool = False,
+    ) -> tuple[torch.Tensor, Optional[tuple[torch.Tensor, torch.Tensor]]]:
         """Compute grouped query attention over a sequence.
 
         Steps:
         1. Project ``x`` into queries, keys, and values.
         2. Reshape into per-head views.
-        3. Apply RoPE rotation to queries and keys.
-        4. Expand K and V to match the number of query heads (GQA repeat).
-        5. Compute scaled dot-product attention with causal mask.
-        6. Concatenate heads and project back to ``d_model``.
+        3. Apply RoPE rotation to queries and keys (position offset accounts
+           for any previously cached tokens).
+        4. Prepend cached K/V from previous steps when ``past_kv`` is given.
+        5. Expand K and V to match the number of query heads (GQA repeat).
+        6. Compute scaled dot-product attention with causal mask.
+        7. Concatenate heads and project back to ``d_model``.
 
         Args:
-            x: Input tensor of shape ``(batch, seq_len, d_model)``.
-            attention_mask: Optional boolean or float tensor of shape
-                ``(batch, seq_len)`` where ``True`` / ``1`` marks real tokens
-                and ``False`` / ``0`` marks padding.  Padding positions are
-                set to ``-inf`` before the softmax so they receive zero weight.
+            x: Input tensor of shape ``(batch, seq_len, d_model)``.  During
+                cached generation ``seq_len`` is 1 (one new token per step).
+            attention_mask: Optional tensor of shape ``(batch, full_seq_len)``
+                where ``1`` marks real tokens and ``0`` marks padding.
+            past_kv: Cached ``(k, v)`` tensors from previous steps, each of
+                shape ``(batch, n_kv_heads, past_len, head_dim)``.  ``None``
+                on the first (prompt) pass and during training.
+            use_cache: When ``True``, return the updated KV tensors as the
+                second element of the output tuple.  Always ``False`` during
+                training so the training path is unchanged.
 
         Returns:
-            Output tensor of shape ``(batch, seq_len, d_model)``.
+            A tuple ``(output, present_kv)`` where:
+            - ``output`` has shape ``(batch, seq_len, d_model)``.
+            - ``present_kv`` is ``(k_full, v_full)`` when ``use_cache=True``,
+              or ``None`` otherwise.
         """
         batch, seq_len, _ = x.shape
+        past_len = past_kv[0].shape[2] if past_kv is not None else 0
 
         # --- Project and reshape ----------------------------------------
         # Q: (batch, n_heads,    seq_len, head_dim)
         # K: (batch, n_kv_heads, seq_len, head_dim)
         # V: (batch, n_kv_heads, seq_len, head_dim)
-        q = self.q_proj(x).view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+        q = self.q_proj(x).view(batch, seq_len, self.n_heads,    self.head_dim).transpose(1, 2)
         k = self.k_proj(x).view(batch, seq_len, self.n_kv_heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(x).view(batch, seq_len, self.n_kv_heads, self.head_dim).transpose(1, 2)
 
         # --- Apply RoPE to Q and K only (not V) -------------------------
-        cos = self._cos[:seq_len]
-        sin = self._sin[:seq_len]
+        # Use the correct position offset so cached tokens keep their
+        # original rotations and new tokens rotate at positions
+        # past_len … past_len + seq_len - 1.
+        cos = self._cos[past_len : past_len + seq_len]
+        sin = self._sin[past_len : past_len + seq_len]
         q = _apply_rope(q, cos, sin)
         k = _apply_rope(k, cos, sin)
+
+        # --- Prepend cached K/V -----------------------------------------
+        if past_kv is not None:
+            k = torch.cat([past_kv[0], k], dim=2)
+            v = torch.cat([past_kv[1], v], dim=2)
+
+        present_kv: Optional[tuple[torch.Tensor, torch.Tensor]] = (k, v) if use_cache else None
+        full_seq = k.shape[2]  # past_len + seq_len
 
         # --- Expand K and V for GQA ------------------------------------
         # Repeat each KV head n_groups times so dimensions align with Q.
         # expand + reshape is cheaper than repeat (no memory copy on most backends).
-        k = k.unsqueeze(2).expand(batch, self.n_kv_heads, self.n_groups, seq_len, self.head_dim)
-        k = k.reshape(batch, self.n_heads, seq_len, self.head_dim)
-        v = v.unsqueeze(2).expand(batch, self.n_kv_heads, self.n_groups, seq_len, self.head_dim)
-        v = v.reshape(batch, self.n_heads, seq_len, self.head_dim)
+        k = k.unsqueeze(2).expand(batch, self.n_kv_heads, self.n_groups, full_seq, self.head_dim)
+        k = k.reshape(batch, self.n_heads, full_seq, self.head_dim)
+        v = v.unsqueeze(2).expand(batch, self.n_kv_heads, self.n_groups, full_seq, self.head_dim)
+        v = v.reshape(batch, self.n_heads, full_seq, self.head_dim)
 
         # --- Scaled dot-product attention --------------------------------
         scale = math.sqrt(self.head_dim)
-        scores = torch.matmul(q, k.transpose(-2, -1)) / scale  # (batch, n_heads, seq_len, seq_len)
+        # scores: (batch, n_heads, seq_len, full_seq)
+        scores = torch.matmul(q, k.transpose(-2, -1)) / scale
 
-        # Apply causal mask (slice to current seq_len × seq_len).
-        scores = scores + self._mask[:seq_len, :seq_len]
+        # Apply causal mask. With a cache, query positions are
+        # past_len … past_len+seq_len-1 attending to all full_seq positions.
+        causal = self._mask[past_len : past_len + seq_len, :full_seq]
+        scores = scores + causal
 
         # Apply padding mask if provided.
         if attention_mask is not None:
-            # attention_mask: (batch, seq_len), 1=real token, 0=padding.
-            # Broadcast to (batch, 1, 1, seq_len) and set padding positions
-            # to -inf using masked_fill.  Multiplication by -inf is avoided
-            # because 0 * -inf = NaN in IEEE 754.
-            pad_mask = attention_mask.unsqueeze(1).unsqueeze(2)  # (batch, 1, 1, seq_len)
+            pad_mask = attention_mask.unsqueeze(1).unsqueeze(2)  # (batch,1,1,full_seq)
             scores = scores.masked_fill(pad_mask == 0, float("-inf"))
 
         weights = torch.softmax(scores, dim=-1)
+        # Guard against all-inf rows (fully-padded edge case) producing NaN.
+        weights = torch.nan_to_num(weights, nan=0.0)
         weights = self._dropout(weights)
 
         # --- Merge heads and project ------------------------------------
         # (batch, n_heads, seq_len, head_dim) → (batch, seq_len, n_heads × head_dim)
         out = torch.matmul(weights, v)
         out = out.transpose(1, 2).contiguous().view(batch, seq_len, self.n_heads * self.head_dim)
-        return self.o_proj(out)
+        return self.o_proj(out), present_kv

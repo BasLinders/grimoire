@@ -114,17 +114,28 @@ class TransformerBlock(nn.Module):
         self,
         x: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+        past_kv: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+        use_cache: bool = False,
+    ) -> tuple[torch.Tensor, Optional[tuple[torch.Tensor, torch.Tensor]]]:
         """Run one transformer block.
 
         Args:
             x: Input tensor of shape ``(batch, seq_len, d_model)``.
-            attention_mask: Optional padding mask of shape
-                ``(batch, seq_len)`` passed through to the attention module.
+            attention_mask: Optional padding mask passed through to attention.
+            past_kv: Optional cached ``(k, v)`` from previous steps.
+            use_cache: When ``True``, return updated KV tensors.
 
         Returns:
-            Output tensor of shape ``(batch, seq_len, d_model)``.
+            A tuple ``(output, present_kv)`` where ``output`` has shape
+            ``(batch, seq_len, d_model)`` and ``present_kv`` is the updated
+            KV cache when ``use_cache=True``, otherwise ``None``.
         """
-        x = x + self.attn(self.attn_norm(x), attention_mask=attention_mask)
+        attn_out, present_kv = self.attn(
+            self.attn_norm(x),
+            attention_mask=attention_mask,
+            past_kv=past_kv,
+            use_cache=use_cache,
+        )
+        x = x + attn_out
         x = x + self.ffn(self.ffn_norm(x))
-        return x
+        return x, present_kv

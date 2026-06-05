@@ -46,13 +46,18 @@ class _EOSModel(nn.Module):
     def __init__(self, vocab_size: int) -> None:
         super().__init__()
         self.config = TransformerConfig(vocab_size=vocab_size, max_seq_len=32)
-        # Single parameter so PyTorch doesn't complain about empty state.
         self._dummy = nn.Parameter(torch.zeros(1))
 
-    def forward(self, input_ids: torch.Tensor, **_kwargs) -> torch.Tensor:
+    def forward(self, input_ids: torch.Tensor, use_cache: bool = False,
+                past_kvs=None, **_kwargs):
         batch, seq = input_ids.shape
+        past_len = past_kvs[0][0].shape[2] if past_kvs is not None else 0
         logits = torch.full((batch, seq, self.config.vocab_size), -1e9)
-        logits[:, :, EOS_ID] = 1e9   # always argmax to EOS
+        logits[:, :, EOS_ID] = 1e9
+        if use_cache:
+            full = past_len + seq
+            kv = (torch.zeros(batch, 1, full, 1), torch.zeros(batch, 1, full, 1))
+            return logits, [kv]
         return logits
 
 
@@ -65,10 +70,16 @@ class _ConstantModel(nn.Module):
         self._dummy = nn.Parameter(torch.zeros(1))
         self.chosen_token = chosen_token
 
-    def forward(self, input_ids: torch.Tensor, **_kwargs) -> torch.Tensor:
+    def forward(self, input_ids: torch.Tensor, use_cache: bool = False,
+                past_kvs=None, **_kwargs):
         batch, seq = input_ids.shape
+        past_len = past_kvs[0][0].shape[2] if past_kvs is not None else 0
         logits = torch.full((batch, seq, self.config.vocab_size), -1e9)
         logits[:, :, self.chosen_token] = 1e9
+        if use_cache:
+            full = past_len + seq
+            kv = (torch.zeros(batch, 1, full, 1), torch.zeros(batch, 1, full, 1))
+            return logits, [kv]
         return logits
 
 

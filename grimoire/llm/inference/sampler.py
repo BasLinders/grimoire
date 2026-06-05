@@ -105,22 +105,27 @@ def generate(
     ids = list(prompt_ids)
     generated: list[int] = []
 
+    # --- Prompt pass (full sequence, cache populated) -------------------
+    # Truncate from the left if the prompt itself exceeds max_seq_len.
+    prompt_context = ids[-max_seq:]
+    prompt_tensor = torch.tensor([prompt_context], dtype=torch.long, device=device)
+
+    with torch.no_grad():
+        logits, past_kvs = model(prompt_tensor, use_cache=True)
+
+    next_logits = logits[0, -1, :].float().clone()
+
+    # --- Autoregressive generation loop (one token at a time) -----------
+    # After the prompt pass we feed only the single newly sampled token on
+    # each step; the KV cache holds the full context so the model sees the
+    # whole history at O(1) cost per step instead of O(n).
     with torch.no_grad():
         for _ in range(config.max_new_tokens):
-            # Truncate from the left if the sequence exceeds max_seq_len.
-            context = ids[-max_seq:]
-            input_tensor = torch.tensor([context], dtype=torch.long, device=device)
-
-            logits = model(input_tensor)          # (1, seq, vocab)
-            # clone(): .float() returns the same tensor when logits is already
-            # float32, so in-place edits below (repetition penalty) would alias
-            # the model's output buffer. Cloning keeps the model output intact.
-            next_logits = logits[0, -1, :].float().clone()  # (vocab,)
+            # Apply sampling filters to the logits from the previous step.
 
             # Repetition penalty on the generated portion only.
             if config.repetition_penalty != 1.0 and generated:
-                unique_generated = set(generated)
-                for token_id in unique_generated:
+                for token_id in set(generated):
                     if next_logits[token_id] > 0:
                         next_logits[token_id] /= config.repetition_penalty
                     else:
@@ -141,7 +146,6 @@ def generate(
             if config.top_p < 1.0:
                 sorted_logits, sorted_indices = torch.sort(next_logits, descending=True)
                 cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
-                # Remove tokens once cumulative probability exceeds top_p.
                 # Shift by one so the token that pushes us over the threshold is kept.
                 remove_mask = cumulative_probs - F.softmax(sorted_logits, dim=-1) > config.top_p
                 sorted_logits[remove_mask] = float("-inf")
@@ -151,12 +155,26 @@ def generate(
 
             # Sample from the filtered distribution.
             probs = F.softmax(next_logits, dim=-1)
-            next_token = torch.multinomial(probs, num_samples=1).item()
+            next_token = int(torch.multinomial(probs, num_samples=1).item())
 
             if next_token == EOS_ID:
                 break
 
-            ids.append(next_token)
             generated.append(next_token)
+
+            # Truncate the cache when it has reached max_seq_len so RoPE
+            # position indices and the causal mask never go out of bounds.
+            # Drop the oldest token from every layer's K and V.
+            past_len = past_kvs[0][0].shape[2]
+            if past_len >= max_seq - 1:
+                past_kvs = [
+                    (kv[0][:, :, 1:, :], kv[1][:, :, 1:, :])
+                    for kv in past_kvs
+                ]
+
+            # Feed the single new token with the updated cache.
+            token_tensor = torch.tensor([[next_token]], dtype=torch.long, device=device)
+            logits, past_kvs = model(token_tensor, past_kvs=past_kvs, use_cache=True)
+            next_logits = logits[0, -1, :].float().clone()
 
     return generated

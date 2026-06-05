@@ -118,3 +118,39 @@ def test_query_only_structure(tokenizer: BytePairEncoder) -> None:
     assert ids[-1] == AST_ID
     # No SEP anywhere.
     assert SEP_ID not in ids
+
+
+def test_excerpt_preferred_over_next_token(tokenizer: BytePairEncoder) -> None:
+    """PromptBuilder should use excerpt when available, ignoring next_token."""
+    from grimoire.corpus.corpus import QueryResult
+
+    excerpt_result = QueryResult(
+        multi_token=("a", "b", "c", "d"),
+        next_token="grappl",          # stemmed — should NOT appear if excerpt present
+        score=1.0,
+        source=None,
+        excerpt="A grappled creature has its speed reduced to zero.",
+    )
+    builder = PromptBuilder(tokenizer, max_context_tokens=256)
+    ids = builder.build("what is grapple", results=[excerpt_result])
+    decoded = tokenizer.decode(ids)
+    assert "grappled" in decoded or "creature" in decoded, (
+        "Excerpt text should appear in the decoded prompt."
+    )
+
+
+def test_next_token_fallback_when_no_excerpt(tokenizer: BytePairEncoder) -> None:
+    """When excerpt is None, next_token is used as context."""
+    from grimoire.corpus.corpus import QueryResult
+
+    no_excerpt = QueryResult(
+        multi_token=("a", "b", "c", "d"),
+        next_token="speed",
+        score=1.0,
+        source=None,
+        excerpt=None,
+    )
+    builder = PromptBuilder(tokenizer, max_context_tokens=256)
+    ids = builder.build("query", results=[no_excerpt])
+    # SEP block should be present (context was injected via next_token).
+    assert SEP_ID in ids

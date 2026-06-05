@@ -10,7 +10,7 @@ Typical usage:
     corpus.add_text("A grappled creature has its speed reduced to zero.", source="dnd_srd")
     results = corpus.query("grapple speed movement", top_k=3)
     for r in results:
-        print(r.multi_token, r.score, r.next_token)
+        print(r.multi_token, r.score, r.excerpt)
 
 Phase 2 note:
     The ``query`` method currently scores results with Jaccard similarity
@@ -25,6 +25,10 @@ Phase 2 note:
 
 from dataclasses import dataclass
 from typing import Optional
+
+# Maximum number of characters retained as an excerpt around each n-gram.
+# Short enough to fit inside the prompt budget; long enough to be readable.
+_EXCERPT_WINDOW = 200
 
 from grimoire.corpus.index import CorpusIndex
 from grimoire.corpus.stemmer import GrimoireStemmer
@@ -47,12 +51,70 @@ class QueryResult:
             interpolation value ``f_pred(x)`` in Phase 2.
         source: Label of the document this multi-token was ingested from,
             or ``None`` if no source was provided at ingestion time.
+        excerpt: A short window of the original unstemmed text surrounding
+            this multi-token, e.g. ``"A grappled creature has its speed
+            reduced to zero."``. Used by ``PromptBuilder`` as richer prompt
+            context than the stemmed ``next_token``. ``None`` when the
+            corpus was built without excerpt support.
     """
 
     multi_token: tuple[str, ...]
     next_token: Optional[str]
     score: float
     source: Optional[str]
+    excerpt: Optional[str] = None
+
+
+def _extract_excerpt(
+    text: str,
+    words: list[str],
+    word_offsets: list[int],
+    ngram_index: int,
+    n: int,
+) -> Optional[str]:
+    """Extract a short readable window of original text around an n-gram.
+
+    Locates the character span of the n-gram in the original text and
+    expands it by up to ``_EXCERPT_WINDOW`` characters on each side,
+    snapping to word boundaries to avoid mid-word cuts.
+
+    Args:
+        text: The full original (unstemmed) text that was ingested.
+        words: The text split on whitespace, pre-computed by the caller.
+        word_offsets: Character offset of each word in ``words`` within
+            ``text``, pre-computed by the caller.
+        ngram_index: Index of the first word of the n-gram in ``words``.
+        n: N-gram window size.
+
+    Returns:
+        A stripped excerpt string, or ``None`` when the n-gram falls
+        outside the available word range.
+    """
+    if ngram_index >= len(word_offsets):
+        return None
+    end_idx = min(ngram_index + n - 1, len(words) - 1)
+
+    start_char = word_offsets[ngram_index]
+    end_char = word_offsets[end_idx] + len(words[end_idx])
+
+    # Expand the window symmetrically and snap to word boundaries.
+    half = _EXCERPT_WINDOW // 2
+    window_start = max(0, start_char - half)
+    window_end = min(len(text), end_char + half)
+
+    # Snap left boundary forward to the next word start.
+    if window_start > 0:
+        space = text.rfind(" ", 0, window_start + 1)
+        if space != -1:
+            window_start = space + 1
+
+    # Snap right boundary back to the last word end.
+    if window_end < len(text):
+        space = text.find(" ", window_end - 1)
+        if space != -1:
+            window_end = space
+
+    return text[window_start:window_end].strip()
 
 
 class GrimoireCorpus:
@@ -102,9 +164,21 @@ class GrimoireCorpus:
         """
         tokens = self._stemmer.tokenize_and_stem(text)
         multi_tokens = self._tokenizer.build(tokens)
+        # Build a word-boundary position list for excerpt extraction.
+        # Split the original text on whitespace to locate word offsets so we
+        # can slice a readable window around each n-gram's position.
+        words = text.split()
+        word_offsets: list[int] = []
+        pos = 0
+        for w in words:
+            idx = text.find(w, pos)
+            word_offsets.append(idx)
+            pos = idx + len(w)
+
         for i, mt in enumerate(multi_tokens):
             next_tok = tokens[i + self.n] if i + self.n < len(tokens) else None
-            self._index.add(mt, next_token=next_tok, source=source)
+            excerpt = _extract_excerpt(text, words, word_offsets, i, self.n)
+            self._index.add(mt, next_token=next_tok, source=source, excerpt=excerpt)
         return len(multi_tokens)
 
     def query(self, text: str, top_k: int = 5) -> list[QueryResult]:
@@ -163,6 +237,7 @@ class GrimoireCorpus:
                 next_token=self._index.get(mt).next_token,
                 score=score,
                 source=self._index.get(mt).source,
+                excerpt=self._index.get(mt).excerpt,
             )
             for mt, score in ranked
         ]

@@ -108,12 +108,19 @@ class PromptBuilder:
         """
         query_ids = self._tokenizer.encode(query)
 
-        # Build context text from next_token hints (stemmed words).
+        # Build context text from corpus results.
+        # Prefer the unstemmed excerpt when available (Phase 5+); fall back
+        # to the stemmed next_token for corpora built without excerpt support.
         context_ids: list[int] = []
         if results:
-            hint_words = [r.next_token for r in results if r.next_token]
-            if hint_words:
-                context_text = " ".join(hint_words)
+            context_parts: list[str] = []
+            for r in results:
+                if r.excerpt:
+                    context_parts.append(r.excerpt)
+                elif r.next_token:
+                    context_parts.append(r.next_token)
+            if context_parts:
+                context_text = " ".join(context_parts)
                 context_ids = self._tokenizer.encode(context_text)
 
         # Trim the context to fit the budget alongside the query and the
