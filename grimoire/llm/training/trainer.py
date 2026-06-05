@@ -45,7 +45,7 @@ Mixed precision (fp16 AMP)
 import math
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import torch
 import torch.nn.functional as F
@@ -83,6 +83,9 @@ class Trainer:
         _optimizer: ``AdamW`` optimizer.
         _scheduler: Lambda-based LR scheduler.
         _step: Current global optimizer step count.
+        _on_log: Optional callback invoked at each log point with
+            ``(step, avg_loss, lr)``.  Used by the training UI to stream
+            live progress without polling stdout.
     """
 
     def __init__(
@@ -99,6 +102,7 @@ class Trainer:
         checkpoint_dir: str = "checkpoints",
         device: Optional[str] = None,
         num_workers: int = 0,
+        on_log: Optional[Callable[[int, float, float], None]] = None,
     ) -> None:
         """Set up the trainer, optimizer, scheduler, and data loader.
 
@@ -123,6 +127,11 @@ class Trainer:
             device: ``"cuda"``, ``"cpu"``, or ``None`` (auto-detect).
             num_workers: Number of DataLoader worker processes.  Keep at 0
                 on Windows to avoid multiprocessing issues.
+            on_log: Optional callable invoked at each log interval with
+                ``(step: int, avg_loss: float, lr: float)``.  When ``None``
+                (the default) only stdout is used — existing behaviour is
+                unchanged.  The training UI registers a callback here to
+                stream live loss updates without polling stdout.
         """
         self.config = model.config
         self.peak_lr = peak_lr
@@ -135,9 +144,8 @@ class Trainer:
         self.save_every = save_every
         self.checkpoint_dir = Path(checkpoint_dir)
         self._step = 0
-        # Most recent interval-averaged training loss, refreshed at each log
-        # point and stored in checkpoints for reference.
         self._last_avg_loss: float = 0.0
+        self._on_log = on_log
 
         # --- Device setup -----------------------------------------------
         if device is None:
@@ -303,6 +311,8 @@ class Trainer:
                         f"lr {lr_now:.2e} | "
                         f"{elapsed:.1f}s"
                     )
+                    if self._on_log is not None:
+                        self._on_log(self._step, self._last_avg_loss, lr_now)
                     running_loss = 0.0
                     t0 = time.time()
 

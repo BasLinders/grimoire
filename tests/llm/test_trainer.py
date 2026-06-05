@@ -229,6 +229,51 @@ def test_checkpoint_missing_file_raises() -> None:
 # LR schedule shape
 # ---------------------------------------------------------------------------
 
+def test_on_log_callback_fires() -> None:
+    """on_log must be called with (step, loss, lr) at each log interval."""
+    log_calls: list[tuple[int, float, float]] = []
+
+    def capture(step: int, loss: float, lr: float) -> None:
+        log_calls.append((step, loss, lr))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = _tiny_config()
+        model = GrimoireTransformer(cfg)
+        corpus_path = _write_corpus(500, cfg.vocab_size, tmp)
+        dataset = TokenizedDataset(corpus_path, seq_len=cfg.max_seq_len, stride=cfg.max_seq_len)
+        trainer = Trainer(
+            model=model,
+            train_dataset=dataset,
+            total_steps=10,
+            warmup_steps=2,
+            peak_lr=1e-3,
+            batch_size=2,
+            accumulate_steps=1,
+            log_every=5,
+            save_every=999,
+            checkpoint_dir=tmp,
+            device="cpu",
+            on_log=capture,
+        )
+        trainer.train()
+
+    # log_every=5, total_steps=10 → expect exactly 2 calls (at step 5 and 10).
+    assert len(log_calls) == 2, f"Expected 2 on_log calls, got {len(log_calls)}."
+    steps = [c[0] for c in log_calls]
+    assert steps == [5, 10], f"Expected steps [5, 10], got {steps}."
+    for step, loss, lr in log_calls:
+        assert isinstance(step, int)
+        assert loss > 0
+        assert lr > 0
+
+
+def test_on_log_none_does_not_raise() -> None:
+    """Omitting on_log (default None) must produce no error."""
+    with tempfile.TemporaryDirectory() as tmp:
+        trainer, _ = _make_trainer(tmp, total_steps=2)
+        trainer.train()  # must not raise
+
+
 def test_lr_schedule_warmup_and_decay() -> None:
     """LR should rise during warmup and then decrease after peak."""
     cfg = _tiny_config()
