@@ -33,7 +33,7 @@ import json
 import re
 from collections import defaultdict
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from grimoire.llm.tokenizer.special_tokens import (
     ALL_SPECIAL_TOKENS,
@@ -143,7 +143,12 @@ class BytePairEncoder:
     # Training
     # ------------------------------------------------------------------
 
-    def train(self, corpus_texts: list[str], vocab_size: int = 16384) -> None:
+    def train(
+        self,
+        corpus_texts: list[str],
+        vocab_size: int = 16384,
+        on_progress: Optional[Callable[[int, int], None]] = None,
+    ) -> None:
         """Learn BPE merge rules from a list of raw text strings.
 
         The training procedure is:
@@ -165,6 +170,10 @@ class BytePairEncoder:
             vocab_size: Target vocabulary size including the 6 special
                 tokens and the 256 base byte symbols.  Must be at least
                 262 (6 special + 256 base).  Defaults to 8192.
+
+            on_progress: Optional callable invoked every 200 merge steps with
+                ``(current_merge: int, total_merges: int)``.  Use this to
+                stream live progress to a UI without polling stdout.
 
         Raises:
             ValueError: If ``vocab_size`` is less than 262.
@@ -199,7 +208,7 @@ class BytePairEncoder:
 
         # --- Step 3: iterative BPE merges --------------------------------
         special_strings = set(SPECIAL_TOKEN_TO_ID)
-        for _ in range(n_merges_needed):
+        for merge_step in range(n_merges_needed):
             pair_freqs = self._count_pairs(word_freqs)
             if not pair_freqs:
                 break
@@ -222,6 +231,8 @@ class BytePairEncoder:
             vocab[merged_symbol] = len(vocab)
             merges.append(best_pair)
             word_freqs = self._apply_merge(word_freqs, best_pair, merged_symbol)
+            if on_progress is not None and merge_step % 200 == 0:
+                on_progress(merge_step, n_merges_needed)
 
         # --- Step 4: store results ---------------------------------------
         self.vocab_size = len(vocab)
