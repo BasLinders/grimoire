@@ -1,0 +1,15 @@
+{
+    "saga": {
+        "display_name": "Saga",
+        "description": "D&D rules, encounter mathematics, and data-science assistant.",
+        "checkpoint":   "checkpoints/saga/latest.pt",
+        "vocab":        "data/tokenizer/bpe.json",
+        "corpus_dirs":  ["data/corpus/saga/"],
+        "gen_config": {
+            "max_new_tokens": 256,
+            "temperature":    0.8,
+            "top_k":          50,
+            "top_p":          0.9
+        }
+    }
+}
