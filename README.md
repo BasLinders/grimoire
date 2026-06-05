@@ -1,42 +1,54 @@
 # Grimoire
 
-**Grimoire** is a hybrid small language model (SLM) engine built from scratch, designed to run on a home machine with GPU acceleration. It pairs a corpus retrieval engine (based on dr. Vincent Granville's Radial Basis Function interpolator) with a scratch-built transformer LLM for coherent, context-aware response generation. The result is an agent engine that is accurate, explainable, and grounded in a defined corpus — no hallucination on domain facts.
+**Grimoire** is a hybrid small language model (SLM) engine built entirely from scratch, designed to run on consumer hardware with optional GPU acceleration. It pairs a corpus retrieval engine with a scratch-built transformer LLM — the retrieval engine provides grounded domain facts, the LLM provides coherent language and conversational flow.
 
-Grimoire is intentionally domain-agnostic. Agents are configurations of the engine: each agent declares which corpora it uses, which tools it has access to, and its conversational persona. The engine stays the same.
+Grimoire is intentionally domain-agnostic. Agents are named configurations: each agent declares its corpus, its checkpoint, and its generation defaults. The engine stays the same.
 
-The first agent built on Grimoire is **Saga**: a domain-specialised chatbot covering Dungeons & Dragons, mathematics, and data science, with Google Calendar integration.
+The first agent built on Grimoire is **Saga**: a focused domain chatbot covering Dungeons & Dragons rules, encounter mathematics, and probability / data science.
 
 ## Goals
 
 - Run on consumer hardware (CPU or CUDA GPU — no cloud required)
-- Zero *domain* training cost: corpus retrieval handles facts; the LLM handles language and conversation flow
+- Zero domain training cost: corpus retrieval handles facts; the LLM handles language and conversation
 - Full conversational coherence with multi-turn context tracking
-- Modular engine: swap corpora, agents, and tool integrations independently
-- Deterministic, explainable retrieval grounded in a defined corpus — no hallucination on domain facts
-- Built from scratch as a learning project: tokenizer, transformer architecture, training loop, and fine-tuning pipeline are all hand-written
+- Modular: swap corpora, agents, and checkpoints independently
+- Deterministic, explainable retrieval — no hallucination on domain facts
+- Built from scratch as a learning project: tokenizer, transformer, training loop, and fine-tuning pipeline are all hand-written
 
 ## Repository Structure
 
 ```
 grimoire/
 ├── grimoire/
-│   ├── corpus/             # Corpus ingestion, stemming, multi-token indexing  ✓
-│   ├── llm/                # Scratch-built transformer LLM                     ✓
-│   │   ├── tokenizer/      # Byte-level BPE tokenizer (16 384 vocab)
+│   ├── agents/             # Agent registry — loads agents.json, builds InferenceEngine  ✓
+│   ├── corpus/             # Corpus ingestion, stemming, n-gram index, Jaccard retrieval  ✓
+│   ├── llm/                # Scratch-built transformer LLM                                ✓
+│   │   ├── tokenizer/      # Byte-level BPE tokenizer (vocab size 16 384)
 │   │   ├── model/          # Decoder-only transformer (GQA, RoPE, SwiGLU, RMSNorm)
 │   │   ├── data/           # TokenizedDataset, PaddingCollator, ConversationDataset
 │   │   ├── training/       # Trainer, checkpointing, pretrain + finetune entry points
 │   │   └── inference/      # PromptBuilder, KV-cache sampler, InferenceEngine
-│   ├── state/              # Conversation state and rolling multi-turn history  ✓
-│   ├── cli/                # Interactive terminal chat loop                     ✓
-│   ├── ui/                 # Gradio training/fine-tuning/chat UI                ✓
-│   ├── router/             # Intent detection and tool routing                  planned
-│   └── tools/              # Tool integrations (Google Calendar, etc.)          planned
-├── agents/
-│   └── saga/               # Saga agent — D&D, math, data science, calendar    planned
-├── data/                   # Corpus data files (gitignored)
+│   ├── state/              # ConversationState — rolling multi-turn history + prompt build  ✓
+│   ├── cli/                # Interactive terminal chat loop                                ✓
+│   └── ui/                 # Gradio app — Pre-train, Fine-tune, Ingest, Chat tabs          ✓
+├── agents.json             # Named agent configurations (checkpoint, vocab, corpus, gen defaults)
+├── scripts/
+│   ├── build_saga_corpus.py        # Download D&D 5e SRD + copy math references
+│   ├── finetune_saga.py            # Fine-tune a checkpoint on the Saga dataset
+│   ├── validate_finetune_data.py   # Pre-flight check on any JSONL dataset
+│   ├── finetune_data/
+│   │   └── saga_v1.jsonl           # 30 Q&A examples (D&D rules, encounter math, probability)
+│   └── saga_references/            # Hand-authored math/probability reference .txt files
 ├── docs/                   # Setup guides (training, inference)
-└── tests/                  # 144 tests — all green
+├── data/                   # Runtime data — gitignored (corpus bins, tokenizer, checkpoints)
+│   ├── raw/                # Source .txt files for pre-training corpus
+│   ├── processed/          # Tokenised corpus.bin
+│   ├── tokenizer/          # bpe.json — trained BPE vocabulary
+│   ├── corpus/
+│   │   └── saga/           # Populated by scripts/build_saga_corpus.py
+│   └── finetune/           # Any additional fine-tuning datasets
+├── checkpoints/            # Saved model checkpoints — gitignored
+└── tests/                  # 227 unit tests + 15 integration tests — all green
 ```
 
 ## Architecture
@@ -45,39 +57,36 @@ grimoire/
 
 ```mermaid
 flowchart TD
-    A([User message]) --> B[Conversation State Manager]
+    A([User message]) --> B[ConversationState\nrolling turn history]
 
-    B --> C{Intent Router}
+    B --> C[GrimoireCorpus\nJaccard retrieval]
+    C --> D[(Corpus Index\nn-gram hash map)]
+    D -->|top-k excerpts| E
 
-    C -->|knowledge query| D[Grimoire Corpus Engine]
-    C -->|calendar intent| E[Google Calendar API]
+    B -->|packed prompt ids| E[GrimoireTransformer\nPromptBuilder → KV-cache sampler]
 
-    D --> F[(Corpus Index\nnested hash map)]
-    F -->|top-k passages + scores| G
-
-    B -->|rolling history| G[GrimoireTransformer\nPromptBuilder → Sampler]
-
-    G --> H([Coherent response])
-    E --> H
+    E --> F([Response])
+    F --> B
 ```
 
-### Component Roles
+### Component Table
 
 | Component | Role | Status |
 |---|---|---|
-| **Corpus Engine** | Ingests text, indexes stemmed 4-gram multi-tokens in a hash map, retrieves top-k passages by Jaccard similarity | ✓ done |
-| **BPE Tokenizer** | Byte-level Byte-Pair Encoding; vocab size 16 384; lossless round-trip for any Unicode input | ✓ done |
+| **BPE Tokenizer** | Byte-level Byte-Pair Encoding; vocab 16 384; lossless round-trip for any Unicode | ✓ done |
+| **Corpus Engine** | Ingests text, indexes stemmed 4-gram multi-tokens, retrieves top-k passages by Jaccard similarity with unstemmed excerpts | ✓ done |
+| **Corpus Scraper** | `ingest()` dispatcher for web URLs (HTML + Markdown), PDFs, DOCX, Markdown files, plain text, and images (OCR) | ✓ done |
 | **GrimoireTransformer** | Scratch-built decoder-only transformer (~25 M params); GQA, RoPE, SwiGLU, RMSNorm, weight-tied output head | ✓ done |
-| **Training Pipeline** | AdamW + cosine-warmup LR, fp16 AMP, gradient accumulation, checkpointing; `on_log` callback for live UI streaming | ✓ done |
-| **Inference Engine** | PromptBuilder (corpus → prompt), KV-cache autoregressive sampler (temperature / top-k / top-p / repetition penalty), `respond()` and `chat()` API | ✓ done |
-| **KV-Cache** | Caches K/V projections so each generation step costs O(1) instead of O(n²); sliding-window truncation at `max_seq_len` | ✓ done |
-| **Instruction Fine-tuning** | Second training pass on `{user, assistant, context?}` JSONL examples; response-only loss masking so only answer tokens contribute to the loss | ✓ done |
-| **Training UI** | Gradio web app: Pre-train tab, Fine-tune tab, and multi-turn Chat tab with live loss streaming and conversation history | ✓ done |
-| **Conversation State** | `ConversationState` maintains a rolling turn history; `build_prompt_ids()` packs history newest-first within the token budget, then fills remaining space with corpus context | ✓ done |
-| **Corpus Scraper** | Ingestion utility for web URLs, PDFs, DOCX, Markdown, and images (OCR) — converts sources to corpus `.txt` files | phase 2.5 |
-| **Integration Tests** | End-to-end test suite covering the full pipeline: pre-train → fine-tune → load → corpus attach → multi-turn `chat()`. Catches wiring bugs that unit tests miss. | phase 7.5 |
-| **Intent Router** | Routes calendar intents to Google Calendar API; all knowledge queries to the corpus engine | planned |
-| **Tool Integrations** | Google Calendar read/write | planned |
+| **Training Pipeline** | AdamW + cosine-warmup LR, fp16 AMP, gradient accumulation, checkpointing; `on_log` callback for live loss streaming | ✓ done |
+| **Instruction Fine-tuning** | `ConversationDataset` on `{user, assistant, context?}` JSONL; response-only loss masking | ✓ done |
+| **Inference Engine** | PromptBuilder (corpus → prompt), KV-cache autoregressive sampler (temperature / top-k / top-p / repetition penalty), `respond()` and `chat()` | ✓ done |
+| **KV-Cache** | Caches K/V projections: O(n²) → O(1) per generation step; sliding-window truncation at `max_seq_len` | ✓ done |
+| **Conversation State** | `ConversationState` packs rolling history newest-first within the token budget, then fills remaining space with corpus context | ✓ done |
+| **Training UI** | Gradio app: Pre-train, Fine-tune, Ingest, and Chat tabs with live loss streaming | ✓ done |
+| **Agent Registry** | `AgentRegistry` reads `agents.json`; `build_engine(key)` returns a ready `InferenceEngine` with corpus auto-loaded | ✓ done |
+| **Saga Corpus** | 24 D&D 5e SRD sections + 4 hand-authored math/probability reference files; built by `scripts/build_saga_corpus.py` | ✓ done |
+| **Saga Fine-tune Dataset** | 30 Q&A examples (D&D rules, encounter math, probability) in `scripts/finetune_data/saga_v1.jsonl` | ✓ done |
+| **Integration Tests** | End-to-end: BPE train → corpus build → model pretrain → checkpoint → engine load → multi-turn `chat()` | ✓ done |
 
 ### Multi-turn prompt format
 
@@ -88,26 +97,28 @@ flowchart TD
                                      <USR> current query <AST>
 ```
 
-The first turn of every session is identical to the single-turn fine-tuning format — no distribution shift from the training data.
+History is packed newest-first within the token budget. The corpus context fills whatever space remains after history. If the budget is exhausted the oldest turns are dropped first, then the context is trimmed. The current query is always preserved.
 
 ### Why Hybrid
 
-The corpus engine and the LLM cover each other's weaknesses:
+| Approach | Strength | Weakness |
+|---|---|---|
+| LLM alone | Fluent, coherent, conversational | Hallucinates domain facts; expensive to specialise |
+| Corpus alone | Accurate, deterministic, explainable | Cannot track context or produce natural sentences |
+| **Grimoire (hybrid)** | Grounded facts from corpus + coherent language from LLM | Slightly more complex setup |
 
-- **LLM alone** — fluent and coherent, but hallucinates domain facts and requires expensive fine-tuning to specialise
-- **Corpus alone** — accurate and deterministic, but cannot track conversational context or generate natural sentences
-- **Together** — the corpus retrieves grounded passages; the LLM reads them and produces a coherent, context-aware response. No domain-specific fine-tuning required — new knowledge comes from adding to the corpus, not retraining.
+New domain knowledge requires only adding `.txt` files to the corpus and calling `corpus.add_text()` — no retraining.
 
 ### LLM Architecture
 
-The transformer uses four improvements over the GPT-2 baseline, all from openly published research:
+The transformer uses four improvements over the GPT-2 baseline:
 
 | Technique | Replaces | Benefit |
 |---|---|---|
-| **RMSNorm** | LayerNorm | Removes mean-centering; marginally faster, equally stable (Zhang & Sennrich, 2019) |
-| **RoPE** | Learned positional embeddings | Encodes relative position via rotation; zero extra parameters (Su et al., 2021) |
-| **SwiGLU** | GELU feed-forward | Gated activation; consistently outperforms GELU at the same parameter budget (Shazeer, 2020) |
-| **Grouped Query Attention** | Standard multi-head attention | `n_kv_heads=2` vs `n_heads=8`; 4× smaller KV cache at inference (Ainslie et al., 2023) |
+| **RMSNorm** | LayerNorm | Removes mean-centering; marginally faster, equally stable |
+| **RoPE** | Learned positional embeddings | Encodes relative position via rotation; zero extra parameters |
+| **SwiGLU** | GELU feed-forward | Gated activation; consistently outperforms GELU at equal parameter budget |
+| **Grouped Query Attention** | Multi-head attention | `n_kv_heads=2` vs `n_heads=8`; 4× smaller KV cache at inference |
 
 Default configuration: `vocab_size=16384`, `d_model=512`, `n_layers=6`, `n_heads=8`, `n_kv_heads=2`, `d_ff=1408`, `max_seq_len=1024` → ~25 M parameters, ~100 MB fp32.
 
@@ -115,39 +126,83 @@ Default configuration: `vocab_size=16384`, `d_model=512`, `n_layers=6`, `n_heads
 
 | Phase | Scope | Status |
 |---|---|---|
-| **1** | BPE tokenizer (byte-level, 16 384 vocab, special tokens) | ✓ done |
-| **2** | Corpus retrieval engine (stemmer, n-gram index, Jaccard scoring) | ✓ done |
+| **1** | BPE tokenizer (byte-level, 16 384 vocab, 6 special tokens) | ✓ done |
+| **2** | Corpus retrieval engine (stemmer, n-gram index, Jaccard scoring, unstemmed excerpts) | ✓ done |
 | **3** | Transformer architecture (GQA, RoPE, SwiGLU, RMSNorm) + training pipeline | ✓ done |
-| **4** | Inference pipeline: PromptBuilder, sampler (temperature/top-k/top-p), InferenceEngine | ✓ done |
-| **5** | KV-cache (O(n²) → O(1) per generation step) + richer corpus context (unstemmed excerpts) | ✓ done |
-| **6** | Instruction fine-tuning: `ConversationDataset`, response-only loss masking, `finetune.py` entry point | ✓ done |
-| **6.5** | Training UI: Gradio app (Pre-train, Fine-tune, Chat tabs) with live loss streaming via `Trainer.on_log` callback | ✓ done |
-| **7** | Conversation state manager: `ConversationState`, `InferenceEngine.chat()`, terminal chat loop | ✓ done |
-| **2.5** | Corpus scraper: web URLs, PDF, DOCX, Markdown, Images (OCR) → corpus `.txt` files | ✓ done |
-| **7.5** | Integration test suite: full pipeline (train → checkpoint → load → corpus → multi-turn chat) in a single fast test run | ✓ done |
-| **8** | Agent registry (`agents.json`) + UI agent selector dropdown in Chat tab | ✓ done |
-| **9** | Saga corpus: D&D SRD, probability tables, encounter-scaling references | ✓ done |
-| **10** | Saga instruction fine-tuning: 30-example JSONL dataset (D&D rules, encounter math, probability) + fine-tune script + validation utility | ✓ done |
+| **4** | Inference pipeline: PromptBuilder, sampler (temperature/top-k/top-p/repetition), InferenceEngine | ✓ done |
+| **5** | KV-cache (O(n²) → O(1) per step) + richer corpus context (unstemmed excerpts) | ✓ done |
+| **6** | Instruction fine-tuning: `ConversationDataset`, response-only loss masking, `finetune.py` | ✓ done |
+| **6.5** | Training UI: Gradio app (Pre-train, Fine-tune, Chat tabs) + `Trainer.on_log` live streaming | ✓ done |
+| **7** | Conversation state: `ConversationState`, `InferenceEngine.chat()`, terminal chat CLI | ✓ done |
+| **2.5** | Corpus scraper: web URLs (HTML + Markdown), PDF, DOCX, Markdown, images (OCR) | ✓ done |
+| **7.5** | Integration test suite: full pipeline from BPE training to multi-turn `chat()` | ✓ done |
+| **8** | Agent registry (`agents.json`) + agent selector dropdown in Chat UI | ✓ done |
+| **9** | Saga corpus: D&D 5e SRD (24 sections) + encounter math + probability references | ✓ done |
+| **10** | Saga instruction fine-tuning: 30-example JSONL dataset + fine-tune + validation scripts | ✓ done |
 
 ### Why two training phases?
 
-Pre-training on raw text teaches the model statistics of language — grammar, facts, style. But it gives the model no reason to *respond* to a question rather than continue the question. Instruction fine-tuning is a lightweight second pass on a small dataset of `(query, response)` pairs formatted in the prompt template the model will see at inference. After fine-tuning the model reliably produces a response after `<AST>` instead of continuing the user's sentence.
+Pre-training on raw text teaches the model language statistics — grammar, facts, style. It gives the model no reason to *respond* to a question rather than continue it.
 
-This is also why adding domain knowledge to Grimoire does **not** require retraining: the corpus handles domain facts at inference time by injecting retrieved passages as prompt context. Fine-tuning only needs to happen once to teach conversation behaviour; it is not repeated when corpora are updated.
+Instruction fine-tuning is a short second pass on `{user, assistant}` pairs. After fine-tuning the model reliably produces a response after `<AST>` instead of continuing the user's sentence.
+
+Domain knowledge lives in the corpus, not the model weights. Fine-tuning teaches *conversation behaviour*; it does not need to be repeated when corpora are updated.
 
 ## Agents
 
-### Saga *(planned)*
+### Saga
 
-Saga is the first Grimoire-based agent. It operates as both a domain chatbot and a personal assistant:
+Saga is the first Grimoire agent. It focuses on:
 
-- **Knowledge domains**: Dungeons & Dragons rules and lore, mathematics, data science
-- **Assistant features**: Google Calendar integration — reads appointments to answer scheduling questions
-- **Design principle**: corpus-grounded answers only. Saga will say it does not know rather than guess.
+- **D&D 5e rules**: conditions, classes, spells, monsters, combat mechanics — sourced from the CC-BY 4.0 Systems Reference Document
+- **Encounter mathematics**: XP budgets, CR scaling, multipliers, action economy
+- **Probability & statistics**: dice distributions, DPR calculations, hit probabilities, death save odds
+
+**Setup:**
+
+```bash
+# 1. Build the Saga corpus (downloads D&D 5e SRD ~1.5 MB, takes ~30 s)
+python scripts/build_saga_corpus.py
+
+# 2. Pre-train a model (or use an existing checkpoint)
+python -m grimoire.llm.training.train
+
+# 3. Validate the fine-tuning dataset
+python scripts/validate_finetune_data.py \
+    --data  scripts/finetune_data/saga_v1.jsonl \
+    --vocab data/tokenizer/bpe.json
+
+# 4. Fine-tune on the Saga dataset
+python scripts/finetune_saga.py \
+    --checkpoint checkpoints/pretrain/step_XXXXXXX.pt \
+    --vocab      data/tokenizer/bpe.json
+
+# 5. Update agents.json with the fine-tuned checkpoint path, then load
+#    Saga from the Chat tab dropdown in the UI.
+python -m grimoire.ui
+```
 
 ## Usage
 
-### Preprocessing your corpus
+### Ingest a corpus source
+
+```bash
+# Web page (HTML)
+python -m grimoire.corpus.ingest --source https://example.com/rules --output data/raw/
+
+# Raw Markdown URL (e.g. GitHub) — detected automatically, no HTML parsing
+python -m grimoire.corpus.ingest --source https://raw.githubusercontent.com/user/repo/main/doc.md --output data/raw/
+
+# Local file (PDF, DOCX, Markdown, plain text)
+python -m grimoire.corpus.ingest --source docs/phb_excerpt.pdf --output data/raw/
+
+# Directory (batch)
+python -m grimoire.corpus.ingest --source docs/ --output data/raw/ --recursive
+```
+
+Or from the **Ingest** tab in `python -m grimoire.ui`.
+
+### Pre-process corpus for training
 
 ```bash
 python -m grimoire.llm.data.preprocessing \
@@ -156,40 +211,14 @@ python -m grimoire.llm.data.preprocessing \
     --vocab  data/tokenizer/bpe.json
 ```
 
-This tokenizes all `.txt` files under `data/raw/`, trains the BPE vocabulary if it does not yet exist, and writes a memory-mapped binary corpus ready for training.
-
-### Training
+### Pre-train
 
 ```bash
 python -m grimoire.llm.training.train
+# or via UI:  python -m grimoire.ui  → Pre-train tab
 ```
 
-Or resuming from a checkpoint:
-
-```bash
-python -m grimoire.llm.training.train --resume checkpoints/step_0001000.pt
-```
-
-**GPU setup (Windows, RTX, CUDA 12.4):**
-
-```bash
-pip install torch --index-url https://download.pytorch.org/whl/cu124
-pip install -e ".[dev]"
-```
-
-The trainer auto-detects CUDA and enables fp16 AMP when available.
-
-### Training UI
-
-```bash
-pip install -e ".[ui]"
-python -m grimoire.ui
-# open http://localhost:7860
-```
-
-Three tabs: **Pre-train** (corpus → checkpoint), **Fine-tune** (checkpoint + JSONL → fine-tuned checkpoint), **Chat** (multi-turn conversation with any checkpoint).
-
-### Fine-tuning
+### Fine-tune
 
 ```bash
 python -m grimoire.llm.training.finetune \
@@ -197,41 +226,21 @@ python -m grimoire.llm.training.finetune \
     --data    data/finetune/examples.jsonl \
     --vocab   data/tokenizer/bpe.json \
     --output  checkpoints/finetune/
+# or via UI:  python -m grimoire.ui  → Fine-tune tab
 ```
 
-See [docs/setup-training.md](docs/setup-training.md) for the full JSONL format and all flags.
-
-### Multi-turn chat (terminal)
+### Chat (terminal)
 
 ```bash
 python -m grimoire.cli.chat \
     --checkpoint checkpoints/finetune/step_0000500.pt \
     --vocab      data/tokenizer/bpe.json \
-    --corpus-dir data/corpus/
+    --corpus-dir data/corpus/saga/
 ```
 
-Commands during chat: `/clear` (reset history), `/history` (review turns), `/quit`.
+Commands: `/clear` (reset history), `/history` (review turns), `/quit`.
 
-### Single-turn inference (Python API)
-
-```python
-from grimoire.corpus.corpus import GrimoireCorpus
-from grimoire.llm.inference.engine import InferenceEngine
-from grimoire.llm.inference.sampler import GenerationConfig
-
-corpus = GrimoireCorpus()
-corpus.add_text("A grappled creature has its speed reduced to zero.", source="dnd_srd")
-
-engine = InferenceEngine(
-    checkpoint_path="checkpoints/step_0005000.pt",
-    tokenizer_path="data/tokenizer/bpe.json",
-    corpus=corpus,
-    gen_config=GenerationConfig(temperature=0.8, top_p=0.9, top_k=50),
-)
-print(engine.respond("What happens when a creature is grappled?"))
-```
-
-### Multi-turn chat (Python API)
+### Chat (Python API)
 
 ```python
 from grimoire.llm.inference.engine import InferenceEngine
@@ -243,20 +252,36 @@ engine = InferenceEngine(
 )
 state = ConversationState()
 
-response1 = engine.chat("What is grapple?", state)
-response2 = engine.chat("And how do I escape it?", state)  # model sees prior turn
+r1 = engine.chat("What happens when a creature is grappled?", state)
+r2 = engine.chat("How do I escape the grapple?", state)  # model sees prior turn
 ```
 
-The engine auto-detects CUDA and falls back to CPU when no GPU is available.
+### Load a named agent (Python API)
+
+```python
+from grimoire.agents.registry import AgentRegistry
+
+registry = AgentRegistry("agents.json")
+engine = registry.build_engine("saga")  # loads checkpoint + corpus from agents.json
+```
+
+### Training UI
+
+```bash
+pip install -e ".[ui]"
+python -m grimoire.ui
+# open http://localhost:7860
+```
+
+Four tabs: **Pre-train**, **Fine-tune**, **Ingest**, **Chat** (with agent selector dropdown).
 
 ## Development
 
 ```bash
 pip install -e ".[dev]"
-pytest
+pytest                            # 227 unit tests + 2 skipped (PDF container issue)
+pytest tests/test_integration.py  # 15 end-to-end integration tests
 ```
-
-All 144 tests pass across corpus, tokenizer, model, data pipeline, training, inference, conversation state, and fine-tuning modules.
 
 See [docs/setup-training.md](docs/setup-training.md) and [docs/setup-inference.md](docs/setup-inference.md) for detailed setup guides.
 
