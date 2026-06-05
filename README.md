@@ -75,6 +75,7 @@ flowchart TD
 | **Training UI** | Gradio web app: Pre-train tab, Fine-tune tab, and multi-turn Chat tab with live loss streaming and conversation history | ✓ done |
 | **Conversation State** | `ConversationState` maintains a rolling turn history; `build_prompt_ids()` packs history newest-first within the token budget, then fills remaining space with corpus context | ✓ done |
 | **Corpus Scraper** | Ingestion utility for web URLs, PDFs, DOCX, Markdown, and images (OCR) — converts sources to corpus `.txt` files | phase 2.5 |
+| **Integration Tests** | End-to-end test suite covering the full pipeline: pre-train → fine-tune → load → corpus attach → multi-turn `chat()`. Catches wiring bugs that unit tests miss. | phase 7.5 |
 | **Intent Router** | Routes calendar intents to Google Calendar API; all knowledge queries to the corpus engine | planned |
 | **Tool Integrations** | Google Calendar read/write | planned |
 
@@ -123,6 +124,7 @@ Default configuration: `vocab_size=16384`, `d_model=512`, `n_layers=6`, `n_heads
 | **6.5** | Training UI: Gradio app (Pre-train, Fine-tune, Chat tabs) with live loss streaming via `Trainer.on_log` callback | ✓ done |
 | **7** | Conversation state manager: `ConversationState`, `InferenceEngine.chat()`, terminal chat loop | ✓ done |
 | **2.5** | Corpus scraper: web URLs, PDF, DOCX, Markdown, Images (OCR) → corpus `.txt` files | next |
+| **7.5** | Integration test suite: full pipeline (train → checkpoint → load → corpus → multi-turn chat) in a single fast test run | planned |
 | **8** | Intent router + tool integrations (Google Calendar) | planned |
 | **9** | Saga agent: D&D / math / data science corpus + calendar assistant | planned |
 
