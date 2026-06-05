@@ -1,10 +1,14 @@
 """Grimoire training UI.
 
-A four-tab Gradio web app for managing Grimoire training runs, corpus
-ingestion, and interactive model testing — without touching the CLI.
+A five-tab Gradio web app for managing the full Grimoire workflow without
+touching the CLI.
 
 Tabs
 ----
+Preprocess
+    Train a BPE tokenizer on raw .txt files and write a binary corpus for
+    pre-training.  Run this once before the Pre-train tab.
+
 Pre-train
     Launch a pre-training run on a tokenised corpus binary.  Hyperparameters
     mirror the defaults in ``grimoire.llm.training.train``.  Loss is streamed
@@ -61,6 +65,45 @@ def _stream_training(train_fn) -> Generator[str, None, None]:
         train_fn(on_log)
 
     yield from _stream_task(_wrapped)
+
+
+# ---------------------------------------------------------------------------
+# Preprocess tab logic
+# ---------------------------------------------------------------------------
+
+def run_preprocess(
+    input_dir: str,
+    output_path: str,
+    vocab_path: str,
+    vocab_size: int,
+) -> Generator[str, None, None]:
+    """Train BPE tokenizer and write corpus binary; stream progress."""
+    from grimoire.llm.data.preprocessing import preprocess
+
+    def _task(on_progress):
+        import io
+        import sys
+
+        # Redirect stdout so the preprocess() print statements flow into the UI.
+        buf = io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = buf
+
+        try:
+            preprocess(
+                input_path=input_dir.strip(),
+                output_path=output_path.strip(),
+                vocab_path=vocab_path.strip(),
+                vocab_size=int(vocab_size),
+            )
+        finally:
+            sys.stdout = old_stdout
+            captured = buf.getvalue()
+
+        for line in captured.splitlines():
+            on_progress(line)
+
+    yield from _stream_task(_task)
 
 
 # ---------------------------------------------------------------------------
@@ -352,7 +395,47 @@ def clear_conversation(conv_state) -> tuple[object, str]:
 def build_app() -> gr.Blocks:
     """Assemble and return the Gradio Blocks app."""
     with gr.Blocks(title="Grimoire") as app:
-        gr.Markdown("# Grimoire Training UI")
+        gr.Markdown("# Grimoire")
+
+        # ----------------------------------------------------------------
+        with gr.Tab("Preprocess"):
+            gr.Markdown(
+                "Train the BPE tokenizer on raw `.txt` files and write a binary "
+                "corpus ready for pre-training.  Run this once before Pre-train."
+            )
+            with gr.Row():
+                pp_input = gr.Textbox(
+                    label="Input directory (.txt files)",
+                    value="data/corpus/saga/",
+                )
+                pp_output = gr.Textbox(
+                    label="Output corpus binary (.bin)",
+                    value="data/processed/corpus.bin",
+                )
+            with gr.Row():
+                pp_vocab = gr.Textbox(
+                    label="Vocabulary path (.json)",
+                    value="data/tokenizer/bpe.json",
+                    info="Trained and saved here if it does not exist; loaded otherwise.",
+                )
+                pp_vocab_size = gr.Number(
+                    label="Vocabulary size",
+                    value=16384,
+                    precision=0,
+                    info="Used only when training a new tokenizer.",
+                )
+            pp_run_btn = gr.Button("Start preprocessing", variant="primary")
+            pp_log_box = gr.Textbox(
+                label="Progress",
+                lines=16,
+                interactive=False,
+                autoscroll=True,
+            )
+            pp_run_btn.click(
+                fn=run_preprocess,
+                inputs=[pp_input, pp_output, pp_vocab, pp_vocab_size],
+                outputs=pp_log_box,
+            )
 
         # ----------------------------------------------------------------
         with gr.Tab("Pre-train"):
