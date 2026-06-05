@@ -136,3 +136,27 @@ class PromptBuilder:
             prompt = [BOS_ID, USR_ID] + query_ids + [AST_ID]
 
         return prompt
+
+    def _encode_context(self, results: list[QueryResult]) -> list[int]:
+        """Encode corpus results to token ids without applying any budget trim.
+
+        Used by ``InferenceEngine.chat()`` to obtain raw context ids that
+        ``ConversationState.build_prompt_ids()`` will trim according to the
+        remaining sequence-length budget after history is packed.
+
+        Args:
+            results: ``QueryResult`` objects from ``GrimoireCorpus.query``.
+
+        Returns:
+            A flat list of token ids representing the joined context text, or
+            an empty list if no results contain usable text.
+        """
+        context_parts: list[str] = []
+        for r in results:
+            if r.excerpt:
+                context_parts.append(r.excerpt)
+            elif r.next_token:
+                context_parts.append(r.next_token)
+        if not context_parts:
+            return []
+        return self._tokenizer.encode(" ".join(context_parts))

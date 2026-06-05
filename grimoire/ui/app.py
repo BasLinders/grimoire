@@ -196,36 +196,53 @@ def run_finetune(
 def load_engine(
     checkpoint_path: str,
     vocab_path: str,
-) -> tuple[object, str]:
-    """Load an ``InferenceEngine`` and return it with a status message."""
+) -> tuple[object, object, str]:
+    """Load an ``InferenceEngine`` and a fresh ``ConversationState``."""
     from grimoire.llm.inference.engine import InferenceEngine
+    from grimoire.state.conversation import ConversationState
 
     engine = InferenceEngine(
         checkpoint_path=checkpoint_path,
         tokenizer_path=vocab_path,
     )
-    return engine, f"Model loaded from {checkpoint_path}"
+    state = ConversationState()
+    return engine, state, f"Model loaded from {checkpoint_path}"
 
 
 def chat(
     query: str,
     engine_state,
+    conv_state,
     temperature: float,
     top_k: int,
     top_p: float,
     max_new_tokens: int,
-) -> str:
-    """Generate a response for ``query`` using the loaded engine."""
+) -> tuple[str, object]:
+    """Generate a response and update the conversation state."""
     if engine_state is None:
-        return "No model loaded. Use the Load button first."
+        return "No model loaded. Use the Load button first.", conv_state
     from grimoire.llm.inference.sampler import GenerationConfig
+    from grimoire.state.conversation import ConversationState
     gen_config = GenerationConfig(
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_k=top_k,
         top_p=top_p,
     )
-    return engine_state.respond(query, gen_config=gen_config)
+    if conv_state is None:
+        conv_state = ConversationState()
+    response = engine_state.chat(query, conv_state, gen_config=gen_config)
+    return response, conv_state
+
+
+def clear_conversation(conv_state) -> tuple[object, str]:
+    """Reset the conversation history."""
+    from grimoire.state.conversation import ConversationState
+    if conv_state is not None:
+        conv_state.clear()
+    else:
+        conv_state = ConversationState()
+    return conv_state, ""
 
 
 # ---------------------------------------------------------------------------
@@ -322,8 +339,12 @@ def build_app() -> gr.Blocks:
 
         # ----------------------------------------------------------------
         with gr.Tab("Chat"):
-            gr.Markdown("Load a checkpoint and query the model interactively.")
+            gr.Markdown(
+                "Load a checkpoint and have a multi-turn conversation. "
+                "Conversation history is maintained automatically."
+            )
             engine_state = gr.State(value=None)
+            conv_state   = gr.State(value=None)
 
             with gr.Row():
                 chat_ckpt   = gr.Textbox(label="Checkpoint path (.pt)")
@@ -342,17 +363,25 @@ def build_app() -> gr.Blocks:
 
             chat_query    = gr.Textbox(label="Your query", lines=3)
             chat_response = gr.Textbox(label="Response", lines=8, interactive=False)
-            chat_btn      = gr.Button("Send", variant="primary")
+            with gr.Row():
+                chat_btn  = gr.Button("Send", variant="primary")
+                clear_btn = gr.Button("Clear conversation")
 
             load_btn.click(
                 fn=load_engine,
                 inputs=[chat_ckpt, chat_vocab],
-                outputs=[engine_state, load_status],
+                outputs=[engine_state, conv_state, load_status],
             )
             chat_btn.click(
                 fn=chat,
-                inputs=[chat_query, engine_state, chat_temp, chat_top_k, chat_top_p, chat_tokens],
-                outputs=chat_response,
+                inputs=[chat_query, engine_state, conv_state,
+                        chat_temp, chat_top_k, chat_top_p, chat_tokens],
+                outputs=[chat_response, conv_state],
+            )
+            clear_btn.click(
+                fn=clear_conversation,
+                inputs=[conv_state],
+                outputs=[conv_state, chat_response],
             )
 
     return app
