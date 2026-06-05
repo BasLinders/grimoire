@@ -154,3 +154,63 @@ class InferenceEngine:
         )
 
         return self.tokenizer.decode(new_token_ids).strip()
+
+    def chat(
+        self,
+        query: str,
+        state: "ConversationState",  # noqa: F821 — imported below to avoid circularity
+        top_k_corpus: int = 5,
+        gen_config: Optional[GenerationConfig] = None,
+    ) -> str:
+        """Generate a response and record the turn in ``state``.
+
+        Unlike ``respond()``, this method maintains conversational continuity:
+        the full turn history stored in ``state`` is injected into every
+        prompt, so the model can reference prior exchanges.
+
+        Pipeline:
+        1. Query the corpus (if attached) for ``top_k_corpus`` results.
+        2. Encode the corpus results into context token ids.
+        3. Call ``state.build_prompt_ids()`` to assemble the multi-turn prompt,
+           fitting history and context within the model's sequence length.
+        4. Run autoregressive generation.
+        5. Decode the response and add the turn to ``state``.
+
+        Args:
+            query: Plain-text user query.
+            state: ``ConversationState`` for the current session.  Modified
+                in-place — the new turn is appended after generation.
+            top_k_corpus: Number of corpus results to retrieve.  Ignored when
+                no corpus is attached.
+            gen_config: Per-call generation config override.
+
+        Returns:
+            The generated response as a plain-text string.
+        """
+        from grimoire.state.conversation import ConversationState  # local import avoids circular dep
+
+        cfg = gen_config if gen_config is not None else self.gen_config
+
+        # Retrieve corpus context and encode it to token ids.
+        context_ids: list[int] = []
+        if self.corpus is not None:
+            results = self.corpus.query(query, top_k=top_k_corpus)
+            context_ids = self.prompt_builder._encode_context(results)
+
+        prompt_ids = state.build_prompt_ids(
+            query=query,
+            tokenizer=self.tokenizer,
+            context_ids=context_ids or None,
+            max_seq_len=self.model.config.max_seq_len,
+        )
+
+        new_token_ids = generate(
+            model=self.model,
+            prompt_ids=prompt_ids,
+            config=cfg,
+            device=self.device,
+        )
+
+        response = self.tokenizer.decode(new_token_ids).strip()
+        state.add_turn(query, response)
+        return response
