@@ -24,9 +24,10 @@ grimoire/
 │   ├── llm/                # Scratch-built transformer LLM                     ✓ (phases 1–4)
 │   │   ├── tokenizer/      # Byte-level BPE tokenizer
 │   │   ├── model/          # Decoder-only transformer (GQA, RoPE, SwiGLU, RMSNorm)
-│   │   ├── data/           # TokenizedDataset, PaddingCollator, preprocessing
-│   │   ├── training/       # Trainer, checkpointing, train entry point
+│   │   ├── data/           # TokenizedDataset, PaddingCollator, ConversationDataset
+│   │   ├── training/       # Trainer, checkpointing, pretrain + finetune entry points
 │   │   └── inference/      # PromptBuilder, sampler, InferenceEngine           ✓
+│   ├── ui/                 # Gradio training/fine-tuning/chat UI               phase 6.5
 │   ├── rbf/                # Granville RBF retrieval engine                    planned
 │   ├── state/              # Conversation state and rolling history            planned
 │   ├── router/             # Intent detection and tool routing                 planned
@@ -69,8 +70,9 @@ flowchart TD
 | **GrimoireTransformer** | Scratch-built decoder-only transformer (~25 M params); GQA, RoPE, SwiGLU, RMSNorm, weight-tied output head | ✓ done |
 | **Training Pipeline** | AdamW + cosine-warmup LR, fp16 AMP, gradient accumulation, checkpointing | ✓ done |
 | **Inference Engine** | PromptBuilder (corpus → prompt), autoregressive sampler (temperature / top-k / top-p / repetition penalty), end-to-end `respond()` API | ✓ done |
-| **KV-Cache** | Cache K/V projections across generation steps so each new token costs O(1) instead of O(n); richer unstemmed corpus excerpts in prompt context | phase 5 |
-| **Instruction Fine-tuning** | Second training pass on structured `<USR>…<AST>…<EOS>` conversation examples so the model learns to follow the prompt format and respond coherently. Pre-training teaches language; fine-tuning teaches conversation. | phase 6 |
+| **KV-Cache** | Cache K/V projections across generation steps so each new token costs O(1) instead of O(n²); richer unstemmed corpus excerpts in prompt context | ✓ done |
+| **Instruction Fine-tuning** | Second training pass on structured `<USR>…<AST>…<EOS>` conversation examples so the model learns to follow the prompt format and respond coherently. Pre-training teaches language; fine-tuning teaches conversation. | ✓ done |
+| **Training UI** | Gradio web app for launching pre-training and fine-tuning runs with live loss streaming, checkpoint management, and an interactive chat tab | phase 6.5 |
 | **Conversation State** | Rolling multi-turn history injected into every prompt | planned |
 | **Intent Router** | Routes calendar intents to Google Calendar API; all knowledge queries to the corpus engine | planned |
 
@@ -105,8 +107,9 @@ The engine is built in two broad stages: **pre-training** (teaches the model lan
 | **2** | Corpus retrieval engine (stemmer, n-gram index, Jaccard scoring) | ✓ done |
 | **3** | Transformer architecture (GQA, RoPE, SwiGLU, RMSNorm) + training pipeline | ✓ done |
 | **4** | Inference pipeline: PromptBuilder, sampler (temperature/top-k/top-p), InferenceEngine | ✓ done |
-| **5** | KV-cache (O(n²) → O(n) generation) + richer corpus context (unstemmed excerpts) | in progress |
-| **6** | Instruction fine-tuning: second training pass on structured conversation examples so the model follows `<USR>…<AST>…<EOS>` format | next |
+| **5** | KV-cache (O(n²) → O(1) per generation step) + richer corpus context (unstemmed excerpts) | ✓ done |
+| **6** | Instruction fine-tuning: `ConversationDataset`, response-only loss masking, `finetune.py` entry point | ✓ done |
+| **6.5** | Training UI: Gradio app with live loss streaming, checkpoint browser, and chat tab | next |
 | **7** | Conversation state manager (rolling multi-turn history) | planned |
 | **8** | Intent router + tool integrations (Google Calendar) | planned |
 | **9** | Saga agent: D&D / math / data science corpus + calendar assistant | planned |
@@ -212,7 +215,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-All 106 tests pass across the corpus and LLM modules (tokenizer, model, data, training, and inference).
+All 127 tests pass across the corpus and LLM modules (tokenizer, model, data pipeline, training, inference, and fine-tuning).
 
 ## References
 
