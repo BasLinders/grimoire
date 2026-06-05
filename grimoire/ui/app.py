@@ -104,7 +104,7 @@ def run_preprocess(
         for line in captured.splitlines():
             on_progress(line)
 
-    yield from _stream_task(_task)
+    yield from _wrap_with_buttons(_stream_task(_task))
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +149,7 @@ def run_pretrain(
             on_log=on_log,
         ).train()
 
-    yield from _stream_training(_train)
+    yield from _wrap_with_buttons(_stream_training(_train))
 
 
 # ---------------------------------------------------------------------------
@@ -206,12 +206,26 @@ def run_finetune(
             on_log=on_log,
         ).train(resume_from=None)
 
-    yield from _stream_training(_train)
+    yield from _wrap_with_buttons(_stream_training(_train))
 
 
 # ---------------------------------------------------------------------------
 # Ingest tab logic
 # ---------------------------------------------------------------------------
+
+def _wrap_with_buttons(gen: Generator) -> Generator[tuple, None, None]:
+    """Wrap a log-text generator to also yield start/stop button state.
+
+    Yields ``(log_text, start_update, stop_update)`` triples so callers can
+    wire the generator outputs to ``[log_box, start_btn, stop_btn]``.
+    Disables the start button and enables the stop button while running,
+    then reverses both when the generator is exhausted.
+    """
+    log_text = ""
+    for log_text in gen:
+        yield log_text, gr.update(interactive=False), gr.update(interactive=True)
+    yield log_text, gr.update(interactive=True), gr.update(interactive=False)
+
 
 def _stream_task(task_fn) -> Generator[str, None, None]:
     """Run ``task_fn(on_progress)`` in a background thread and stream messages.
@@ -285,7 +299,7 @@ def run_ingest(
             on_progress=on_progress,
         )
 
-    yield from _stream_task(_task)
+    yield from _wrap_with_buttons(_stream_task(_task))
 
 
 def _toggle_ingest_inputs(mode: str):
@@ -489,6 +503,20 @@ textarea {
 input[type=range]::-webkit-slider-thumb {
     background: #b8860b;
 }
+/* Stop buttons */
+.stop-btn {
+    background: transparent !important;
+    border: 1px solid #3a2222 !important;
+    color: #885555 !important;
+}
+.stop-btn:hover:not(:disabled) {
+    border-color: #cc4444 !important;
+    color: #ee6666 !important;
+}
+.stop-btn:disabled {
+    opacity: 0.35 !important;
+    cursor: not-allowed !important;
+}
 /* Shutdown button */
 #shutdown-btn {
     background: transparent !important;
@@ -540,18 +568,23 @@ def build_app() -> gr.Blocks:
                     precision=0,
                     info="Used only when training a new tokenizer.",
                 )
-            pp_run_btn = gr.Button("Start preprocessing", variant="primary")
+            with gr.Row():
+                pp_run_btn  = gr.Button("Start preprocessing", variant="primary")
+                pp_stop_btn = gr.Button(
+                    "Stop", interactive=False, elem_classes="stop-btn", scale=0, min_width=80
+                )
             pp_log_box = gr.Textbox(
                 label="Progress",
                 lines=16,
                 interactive=False,
                 autoscroll=True,
             )
-            pp_run_btn.click(
+            pp_event = pp_run_btn.click(
                 fn=run_preprocess,
                 inputs=[pp_input, pp_output, pp_vocab, pp_vocab_size],
-                outputs=pp_log_box,
+                outputs=[pp_log_box, pp_run_btn, pp_stop_btn],
             )
+            pp_stop_btn.click(fn=None, cancels=[pp_event])
 
         # ----------------------------------------------------------------
         with gr.Tab("Pre-train"):
@@ -574,22 +607,27 @@ def build_app() -> gr.Blocks:
                 pt_accum      = gr.Number(label="Gradient accum.",  value=8,  precision=0)
                 pt_log        = gr.Number(label="Log every N steps",value=50, precision=0)
                 pt_save       = gr.Number(label="Save every N steps",value=1000,precision=0)
-            pt_run_btn  = gr.Button("Start pre-training", variant="primary")
+            with gr.Row():
+                pt_run_btn  = gr.Button("Start pre-training", variant="primary")
+                pt_stop_btn = gr.Button(
+                    "Stop", interactive=False, elem_classes="stop-btn", scale=0, min_width=80
+                )
             pt_log_box  = gr.Textbox(
                 label="Training log",
                 lines=20,
                 interactive=False,
                 autoscroll=True,
             )
-            pt_run_btn.click(
+            pt_event = pt_run_btn.click(
                 fn=run_pretrain,
                 inputs=[
                     pt_corpus, pt_ckpt_dir,
                     pt_steps, pt_warmup, pt_lr,
                     pt_batch, pt_accum, pt_log, pt_save,
                 ],
-                outputs=pt_log_box,
+                outputs=[pt_log_box, pt_run_btn, pt_stop_btn],
             )
+            pt_stop_btn.click(fn=None, cancels=[pt_event])
 
         # ----------------------------------------------------------------
         with gr.Tab("Fine-tune"):
@@ -618,14 +656,18 @@ def build_app() -> gr.Blocks:
                 ft_accum    = gr.Number(label="Gradient accum.",  value=4, precision=0)
                 ft_log      = gr.Number(label="Log every N steps",value=25,precision=0)
                 ft_save     = gr.Number(label="Save every N steps",value=100,precision=0)
-            ft_run_btn  = gr.Button("Start fine-tuning", variant="primary")
+            with gr.Row():
+                ft_run_btn  = gr.Button("Start fine-tuning", variant="primary")
+                ft_stop_btn = gr.Button(
+                    "Stop", interactive=False, elem_classes="stop-btn", scale=0, min_width=80
+                )
             ft_log_box  = gr.Textbox(
                 label="Training log",
                 lines=20,
                 interactive=False,
                 autoscroll=True,
             )
-            ft_run_btn.click(
+            ft_event = ft_run_btn.click(
                 fn=run_finetune,
                 inputs=[
                     ft_resume, ft_data, ft_vocab, ft_ckpt_dir,
@@ -633,8 +675,9 @@ def build_app() -> gr.Blocks:
                     ft_batch, ft_accum, ft_log, ft_save,
                     ft_max_seq,
                 ],
-                outputs=ft_log_box,
+                outputs=[ft_log_box, ft_run_btn, ft_stop_btn],
             )
+            ft_stop_btn.click(fn=None, cancels=[ft_event])
 
         # ----------------------------------------------------------------
         with gr.Tab("Ingest"):
@@ -687,7 +730,11 @@ def build_app() -> gr.Blocks:
                     visible=True,
                 )
 
-            ing_btn = gr.Button("Start ingestion", variant="primary")
+            with gr.Row():
+                ing_btn      = gr.Button("Start ingestion", variant="primary")
+                ing_stop_btn = gr.Button(
+                    "Stop", interactive=False, elem_classes="stop-btn", scale=0, min_width=80
+                )
             ing_log = gr.Textbox(
                 label="Progress",
                 lines=12,
@@ -702,14 +749,15 @@ def build_app() -> gr.Blocks:
                 outputs=[ing_url_or_dir, ing_file, ing_recursive, ing_timeout],
             )
 
-            ing_btn.click(
+            ing_event = ing_btn.click(
                 fn=run_ingest,
                 inputs=[
                     ing_mode, ing_url_or_dir, ing_file,
                     ing_output, ing_cleaning, ing_recursive, ing_timeout,
                 ],
-                outputs=ing_log,
+                outputs=[ing_log, ing_btn, ing_stop_btn],
             )
+            ing_stop_btn.click(fn=None, cancels=[ing_event])
 
         # ----------------------------------------------------------------
         with gr.Tab("Chat"):
