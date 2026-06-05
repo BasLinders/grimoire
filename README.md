@@ -9,11 +9,11 @@ The first agent built on Grimoire is **Saga**: a domain-specialised chatbot cove
 ## Goals
 
 - Run on consumer hardware (CPU or CUDA GPU — no cloud required)
-- Zero training cost for domain knowledge (corpus retrieval handles facts; the LLM handles language)
+- Zero *domain* training cost: corpus retrieval handles facts; the LLM handles language and conversation flow
 - Full conversational coherence with multi-turn context tracking
 - Modular engine: swap corpora, agents, and tool integrations independently
 - Deterministic, explainable retrieval grounded in a defined corpus — no hallucination on domain facts
-- Built from scratch as a learning project: tokenizer, transformer architecture, and training loop are all hand-written
+- Built from scratch as a learning project: tokenizer, transformer architecture, training loop, and fine-tuning pipeline are all hand-written
 
 ## Repository Structure
 
@@ -68,7 +68,9 @@ flowchart TD
 | **BPE Tokenizer** | Byte-level Byte-Pair Encoding; vocab size 16 384; lossless round-trip for any Unicode input | ✓ done |
 | **GrimoireTransformer** | Scratch-built decoder-only transformer (~25 M params); GQA, RoPE, SwiGLU, RMSNorm, weight-tied output head | ✓ done |
 | **Training Pipeline** | AdamW + cosine-warmup LR, fp16 AMP, gradient accumulation, checkpointing | ✓ done |
-| **Inference Engine** | PromptBuilder (corpus → prompt), autoregressive sampler (temperature / top-k / top-p / repetition penalty), end-to-end `respond()` API. KV-cache deferred to a later phase | ✓ done |
+| **Inference Engine** | PromptBuilder (corpus → prompt), autoregressive sampler (temperature / top-k / top-p / repetition penalty), end-to-end `respond()` API | ✓ done |
+| **KV-Cache** | Cache K/V projections across generation steps so each new token costs O(1) instead of O(n); richer unstemmed corpus excerpts in prompt context | phase 5 |
+| **Instruction Fine-tuning** | Second training pass on structured `<USR>…<AST>…<EOS>` conversation examples so the model learns to follow the prompt format and respond coherently. Pre-training teaches language; fine-tuning teaches conversation. | phase 6 |
 | **Conversation State** | Rolling multi-turn history injected into every prompt | planned |
 | **Intent Router** | Routes calendar intents to Google Calendar API; all knowledge queries to the corpus engine | planned |
 
@@ -78,7 +80,7 @@ The corpus engine and the LLM cover each other's weaknesses:
 
 - **LLM alone** — fluent and coherent, but hallucinates domain facts and requires expensive fine-tuning to specialise
 - **Corpus alone** — accurate and deterministic, but cannot track conversational context or generate natural sentences
-- **Together** — the corpus retrieves grounded passages; the LLM reads them and produces a coherent, context-aware response. No fine-tuning required for domain knowledge.
+- **Together** — the corpus retrieves grounded passages; the LLM reads them and produces a coherent, context-aware response. No domain-specific fine-tuning required — new knowledge comes from adding to the corpus, not retraining.
 
 ### LLM Architecture
 
@@ -92,6 +94,28 @@ The transformer uses four improvements over the GPT-2 baseline, all from openly 
 | **Grouped Query Attention** | Standard multi-head attention | `n_kv_heads=2` vs `n_heads=8`; 4× smaller KV cache at inference (Ainslie et al., 2023) |
 
 Default configuration: `vocab_size=16384`, `d_model=512`, `n_layers=6`, `n_heads=8`, `n_kv_heads=2`, `d_ff=1408`, `max_seq_len=1024` → ~25 M parameters, ~100 MB fp32.
+
+## Development Roadmap
+
+The engine is built in two broad stages: **pre-training** (teaches the model language from raw text) followed by **instruction fine-tuning** (teaches the model to follow a conversation format). These are standard practice for any chat model — base LLMs like Llama-base, GPT-3 etc. require a separate instruction-tuning or RLHF pass before they reliably answer questions rather than just continue text.
+
+| Phase | Scope | Status |
+|---|---|---|
+| **1** | BPE tokenizer (byte-level, 16 384 vocab, special tokens) | ✓ done |
+| **2** | Corpus retrieval engine (stemmer, n-gram index, Jaccard scoring) | ✓ done |
+| **3** | Transformer architecture (GQA, RoPE, SwiGLU, RMSNorm) + training pipeline | ✓ done |
+| **4** | Inference pipeline: PromptBuilder, sampler (temperature/top-k/top-p), InferenceEngine | ✓ done |
+| **5** | KV-cache (O(n²) → O(n) generation) + richer corpus context (unstemmed excerpts) | in progress |
+| **6** | Instruction fine-tuning: second training pass on structured conversation examples so the model follows `<USR>…<AST>…<EOS>` format | next |
+| **7** | Conversation state manager (rolling multi-turn history) | planned |
+| **8** | Intent router + tool integrations (Google Calendar) | planned |
+| **9** | Saga agent: D&D / math / data science corpus + calendar assistant | planned |
+
+### Why two training phases?
+
+Pre-training on raw text teaches the model statistics of language — grammar, facts, style. But it gives the model no reason to *respond* to a question rather than continue the question. Instruction fine-tuning is a lightweight second pass on a small dataset of `(query, response)` pairs formatted in the prompt template the model will see at inference. After fine-tuning the model reliably produces a response after `<AST>` instead of continuing the user's sentence.
+
+This is also why adding domain knowledge to Grimoire does **not** require retraining: the corpus handles domain facts at inference time by injecting retrieved passages as prompt context. Fine-tuning only needs to happen once to teach conversation behaviour; it is not repeated when corpora are updated.
 
 ## Agents
 
