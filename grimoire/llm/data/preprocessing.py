@@ -38,6 +38,7 @@ Arguments
 import argparse
 import sys
 from pathlib import Path
+from typing import Callable, Optional
 
 import numpy as np
 
@@ -75,11 +76,10 @@ def _read_texts(files: list[Path], encoding: str) -> list[str]:
     Returns:
         A list of raw text strings, one per file.
     """
-    texts = []
-    for path in files:
-        print(f"  Reading {path} ({path.stat().st_size / 1024:.1f} KB)")
-        texts.append(path.read_text(encoding=encoding, errors="replace"))
-    return texts
+    return [
+        path.read_text(encoding=encoding, errors="replace")
+        for path in files
+    ]
 
 
 def preprocess(
@@ -88,6 +88,7 @@ def preprocess(
     vocab_path: str,
     vocab_size: int = 16384,
     encoding: str = "utf-8",
+    on_progress: Optional[Callable[[str], None]] = None,
 ) -> int:
     """Tokenize text files and write a flat binary array of token ids.
 
@@ -108,6 +109,10 @@ def preprocess(
         vocab_size: Target vocabulary size when training a new encoder.
             Ignored if ``vocab_path`` already exists.
         encoding: Text encoding of the source files.
+        on_progress: Optional callable invoked with a progress message string
+            at each major step and during BPE merge iterations.  When
+            ``None`` messages are printed to stdout — existing CLI behaviour
+            is unchanged.
 
     Returns:
         Total number of tokens written to the output file.
@@ -116,6 +121,12 @@ def preprocess(
         FileNotFoundError: If ``input_path`` does not exist.
         ValueError: If no ``.txt`` files are found under ``input_path``.
     """
+    def _emit(msg: str) -> None:
+        if on_progress is not None:
+            on_progress(msg)
+        else:
+            print(msg)
+
     input_p  = Path(input_path)
     output_p = Path(output_path)
     vocab_p  = Path(vocab_path)
@@ -124,37 +135,49 @@ def preprocess(
         raise FileNotFoundError(f"Input path not found: {input_path}")
 
     # --- Collect source files -------------------------------------------
-    print(f"\n[1/4] Collecting text files from {input_p} ...")
+    _emit(f"[1/4] Collecting text files from {input_p} ...")
     files = _collect_text_files(input_p)
-    print(f"      Found {len(files)} file(s).")
+    _emit(f"      Found {len(files)} file(s).")
+    for path in files:
+        _emit(f"      Reading {path.name} ({path.stat().st_size / 1024:.1f} KB)")
     texts = _read_texts(files, encoding)
 
     # --- Train or load BPE encoder -------------------------------------
     encoder = BytePairEncoder()
     if vocab_p.exists():
-        print(f"\n[2/4] Loading existing vocabulary from {vocab_p} ...")
+        _emit(f"[2/4] Loading existing vocabulary from {vocab_p} ...")
         encoder = BytePairEncoder.load(str(vocab_p))
-        print(f"      Vocabulary size: {len(encoder):,}")
+        _emit(f"      Vocabulary size: {len(encoder):,}")
     else:
-        print(f"\n[2/4] Training BPE encoder (vocab_size={vocab_size:,}) ...")
-        encoder.train(texts, vocab_size=vocab_size)
+        _emit(f"[2/4] Training BPE encoder (vocab_size={vocab_size:,}) ...")
+        _emit(f"      This may take 10–30 minutes on CPU.")
+
+        def _bpe_progress(step: int, total: int) -> None:
+            pct = 100 * step // total
+            _emit(f"      BPE merges: {step:,} / {total:,}  ({pct}%)")
+
+        encoder.train(
+            texts,
+            vocab_size=vocab_size,
+            on_progress=_bpe_progress if on_progress is not None else None,
+        )
         vocab_p.parent.mkdir(parents=True, exist_ok=True)
         encoder.save(str(vocab_p))
-        print(f"      Vocabulary size: {len(encoder):,}")
-        print(f"      Saved to {vocab_p}")
+        _emit(f"      Vocabulary size: {len(encoder):,}")
+        _emit(f"      Saved to {vocab_p}")
 
     # --- Encode all documents -----------------------------------------
-    print(f"\n[3/4] Encoding documents ...")
+    _emit(f"[3/4] Encoding documents ...")
     all_ids: list[int] = []
     for i, (path, text) in enumerate(zip(files, texts)):
         ids = encoder.encode(text)
         ids.append(EOS_ID)          # document boundary marker
         all_ids.extend(ids)
-        print(f"      [{i+1}/{len(files)}] {path.name}: {len(ids):,} tokens")
-    print(f"      Total tokens: {len(all_ids):,}")
+        _emit(f"      [{i+1}/{len(files)}] {path.name}: {len(ids):,} tokens")
+    _emit(f"      Total tokens: {len(all_ids):,}")
 
     # --- Write binary file --------------------------------------------
-    print(f"\n[4/4] Writing {output_p} ...")
+    _emit(f"[4/4] Writing {output_p} ...")
     output_p.parent.mkdir(parents=True, exist_ok=True)
     arr = np.array(all_ids, dtype=np.int32)
     fp = np.memmap(str(output_p), dtype=np.int32, mode="w+", shape=(len(arr),))
@@ -162,7 +185,7 @@ def preprocess(
     fp.flush()
     del fp
     size_mb = output_p.stat().st_size / (1024 ** 2)
-    print(f"      Written {len(arr):,} tokens ({size_mb:.1f} MB) to {output_p}")
+    _emit(f"      Written {len(arr):,} tokens ({size_mb:.1f} MB) to {output_p}")
     return len(arr)
 
 

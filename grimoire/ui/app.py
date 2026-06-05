@@ -96,31 +96,17 @@ def run_preprocess(
     vocab_path: str,
     vocab_size: int,
 ) -> Generator[str, None, None]:
-    """Train BPE tokenizer and write corpus binary; stream progress."""
+    """Train BPE tokenizer and write corpus binary; stream progress live."""
     from grimoire.llm.data.preprocessing import preprocess
 
     def _task(on_progress):
-        import io
-        import sys
-
-        # Redirect stdout so the preprocess() print statements flow into the UI.
-        buf = io.StringIO()
-        old_stdout = sys.stdout
-        sys.stdout = buf
-
-        try:
-            preprocess(
-                input_path=input_dir.strip(),
-                output_path=output_path.strip(),
-                vocab_path=vocab_path.strip(),
-                vocab_size=int(vocab_size),
-            )
-        finally:
-            sys.stdout = old_stdout
-            captured = buf.getvalue()
-
-        for line in captured.splitlines():
-            on_progress(line)
+        preprocess(
+            input_path=input_dir.strip(),
+            output_path=output_path.strip(),
+            vocab_path=vocab_path.strip(),
+            vocab_size=int(vocab_size),
+            on_progress=on_progress,
+        )
 
     yield from _wrap_with_buttons(_stream_task(_task))
 
