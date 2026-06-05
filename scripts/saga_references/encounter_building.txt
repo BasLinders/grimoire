@@ -1,0 +1,130 @@
+ENCOUNTER BUILDING AND DIFFICULTY REFERENCE FOR D&D 5E
+=======================================================
+
+XP THRESHOLDS PER CHARACTER PER DAY
+-------------------------------------
+These are the XP values per character per day for each difficulty tier.
+To find the encounter threshold, multiply by the number of characters.
+
+Level | Easy | Medium | Hard | Deadly
+------+------+--------+------+-------
+  1   |   25 |     50 |   75 |   100
+  2   |   50 |    100 |  150 |   200
+  3   |   75 |    150 |  225 |   400
+  4   |  125 |    250 |  375 |   500
+  5   |  250 |    500 |  750 | 1,100
+  6   |  300 |    600 |  900 | 1,400
+  7   |  350 |    750 | 1,100| 1,700
+  8   |  450 |    900 | 1,400| 2,100
+  9   |  550 |  1,100 | 1,600| 2,400
+ 10   |  600 |  1,200 | 1,900| 2,800
+ 11   |  800 |  1,600 | 2,400| 3,600
+ 12   | 1,000|  2,000 | 3,000| 4,500
+ 13   | 1,100|  2,200 | 3,400| 5,100
+ 14   | 1,250|  2,500 | 3,800| 5,700
+ 15   | 1,400|  2,800 | 4,300| 6,400
+ 16   | 1,600|  3,200 | 4,800| 7,200
+ 17   | 2,000|  3,900 | 5,900| 8,800
+ 18   | 2,100|  4,200 | 6,300| 9,500
+ 19   | 2,400|  4,900 | 7,300|10,900
+ 20   | 2,800|  5,700 | 8,500|12,700
+
+MONSTER XP BY CHALLENGE RATING
+--------------------------------
+CR  | XP       CR  | XP       CR  | XP
+----+------    ----+------    ----+-------
+0   |  10      5   | 1,800    15  | 13,000
+1/8 |  25      6   | 2,300    16  | 15,000
+1/4 |  50      7   | 2,900    17  | 18,000
+1/2 | 100      8   | 3,900    18  | 20,000
+1   | 200      9   | 5,000    19  | 22,000
+2   | 450     10   | 5,900    20  | 25,000
+3   | 700     11   | 7,200    21  | 33,000
+4   | 1,100   12   | 8,400    22  | 41,000
+                13  | 10,000   23  | 50,000
+                14  | 11,500   24  | 62,000
+                              25  | 75,000
+                              30  |155,000
+
+MULTIPLE MONSTER MULTIPLIER
+-----------------------------
+The adjusted XP accounts for the action economy advantage of multiple monsters.
+Multiply total monster XP by the multiplier below based on monster count.
+
+Monsters  | Multiplier
+----------+-----------
+1         | x1
+2         | x1.5
+3-6       | x2
+7-10      | x2.5
+11-14     | x3
+15+       | x4
+
+Small party (1-2 PCs): use the next higher multiplier.
+Large party (6+ PCs):  use the next lower multiplier.
+
+ENCOUNTER DIFFICULTY CALCULATION
+----------------------------------
+1. Sum the XP values of all monsters.
+2. Apply the multiple monster multiplier to get Adjusted XP.
+3. Compare Adjusted XP to the party's threshold (sum over all characters):
+   - Below Easy threshold: Trivial (no resource drain).
+   - Easy to Medium:       Low (minor resource drain).
+   - Medium to Hard:       Moderate.
+   - Hard to Deadly:       Severe (significant resource drain).
+   - Above Deadly:         Potentially lethal.
+
+DAILY ADVENTURE BUDGET
+-----------------------
+A typical adventuring day should consume roughly:
+  6-8 medium/hard encounters, OR an equivalent combination of fewer,
+  harder fights with short rests in between.
+Adventurers typically get 2 short rests per long rest.
+
+CHALLENGE RATING INTERPRETATION
+---------------------------------
+A monster's CR is designed so that 4 characters of equal level to the CR
+should win a Medium encounter when fighting that single monster.
+  CR = character level for a roughly Medium encounter (4-person party).
+
+Rough equivalence:
+  CR 0 - 1/2: suitable as fodder for any level
+  CR 1/4 - 1: good for levels 1-2 in groups
+  CR 2 - 5:   core threat range for levels 3-7
+  CR 6 - 10:  threat range for levels 8-13
+  CR 11 - 16: threat range for levels 14-17
+  CR 17 - 24: threat range for levels 18-20
+  CR 25+:     legendary / mythic encounters
+
+ACTION ECONOMY NOTES
+---------------------
+Multiple monsters gain an inherent advantage because they can take many
+actions before the party can respond (especially on first round).
+This is why the XP multiplier exists: 4 wolves (CR 1/4 each = 200 XP)
+hit as hard as roughly 400 XP adjusted, not 200 XP.
+
+Key action economy concepts:
+- Legendary Actions: some powerful creatures take actions on other turns.
+- Lair Actions: on initiative count 20, lair can act.
+- Legendary Resistance: creatures can choose to succeed on failed saves
+  (limited uses per day); plan for this when designing save-heavy encounters.
+- Multiattack: creatures with multiattack scale disproportionately with
+  number of targets — don't clump the party.
+
+ENCOUNTER TEMPLATES (4-PERSON PARTY)
+--------------------------------------
+Level 1-4 (low tier):
+  Standard: 1-2 monsters near party CR, 2-4 weaker mooks
+  Boss fight: 1 CR = level, 2-4 mooks at CR level-2
+
+Level 5-10 (mid tier):
+  Standard: 1-3 monsters at CR = level-1, pack support at CR level-4
+  Boss fight: 1 CR = level+1 or +2, legendary actions recommended
+
+Level 11-16 (high tier):
+  Boss fights should use legendary actions and resistances.
+  Environmental hazards and lair actions add tension without just adding HP.
+
+Level 17-20 (epic tier):
+  Solo boss encounters with full legendary/lair action suites.
+  Consider mythic transformations for multi-phase fights.

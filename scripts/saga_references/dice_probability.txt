@@ -1,0 +1,82 @@
+DICE PROBABILITY REFERENCE FOR D&D 5E
+======================================
+
+SINGLE DIE EXPECTED VALUES
+---------------------------
+d4:  average 2.5  (range 1-4)
+d6:  average 3.5  (range 1-6)
+d8:  average 4.5  (range 1-8)
+d10: average 5.5  (range 1-10)
+d12: average 6.5  (range 1-12)
+d20: average 10.5 (range 1-20)
+
+ADVANTAGE AND DISADVANTAGE (d20)
+---------------------------------
+With advantage (roll 2d20, take highest):
+  Expected value: 13.825
+  Effective +bonus: roughly equivalent to +3.3 to +5.5 depending on target DC.
+
+With disadvantage (roll 2d20, take lowest):
+  Expected value: 7.175
+  Effective penalty: roughly -3.3 to -5.5 depending on target DC.
+
+Probability of rolling at least N on a d20:
+  N=1:  100%   N=6:  75%   N=11: 50%   N=16: 25%
+  N=2:   95%   N=7:  70%   N=12: 45%   N=17: 20%
+  N=3:   90%   N=8:  65%   N=13: 40%   N=18: 15%
+  N=4:   85%   N=9:  60%   N=14: 35%   N=19: 10%
+  N=5:   80%   N=10: 55%   N=15: 30%   N=20:  5%
+
+Probability of hitting AC X with attack bonus B (= P(d20 >= X - B)):
+  Hit chance = max(5%, min(95%, (21 - AC + bonus) / 20))
+  Note: a natural 1 always misses, natural 20 always hits.
+
+Advantage hit probability for attack bonus B against AC X:
+  p = base hit chance
+  p_adv = 1 - (1 - p)^2
+
+Disadvantage hit probability:
+  p_dis = p^2
+
+COMMON DAMAGE EXPRESSIONS
+--------------------------
+Weapon         Dice     Average   Min   Max
+Short sword    1d6       3.5       1     6
+Long sword     1d8       4.5       1     8
+Greatsword     2d6       7.0       2    12
+Greataxe       1d12      6.5       1    12
+Dagger         1d4       2.5       1     4
+Handaxe        1d6       3.5       1     6
+Rapier         1d8       4.5       1     8
+War pick       1d8       4.5       1     8
+Maul           2d6       7.0       2    12
+
+Sneak attack damage by rogue level:
+  Level 1:  1d6 (3.5)    Level 9:  5d6 (17.5)
+  Level 3:  2d6 (7.0)    Level 11: 6d6 (21.0)
+  Level 5:  3d6 (10.5)   Level 13: 7d6 (24.5)
+  Level 7:  4d6 (14.0)   Level 17: 9d6 (31.5)
+                          Level 20: 10d6 (35.0)
+
+CRITICAL HIT RULES
+------------------
+On a natural 20 (or with certain abilities that expand the crit range):
+  Roll all damage dice twice and add modifiers once.
+  Example: 1d8+4 longsword crit = 2d8+4, average 13 (vs 8.5 normal).
+
+SAVING THROWS
+-------------
+Saving throw DC = 8 + proficiency bonus + relevant ability modifier.
+  Level 1-4:  proficiency +2
+  Level 5-8:  proficiency +3
+  Level 9-12: proficiency +4
+  Level 13-16:proficiency +5
+  Level 17-20:proficiency +6
+
+Probability of succeeding a saving throw with modifier M against DC D:
+  P(success) = max(5%, min(95%, (21 - D + M) / 20))
+
+ABILITY CHECK DCs (PLAYER'S HANDBOOK GUIDANCE)
+-----------------------------------------------
+Very Easy:  5   Medium:  15   Nearly Impossible: 30
+Easy:      10   Hard:    20
