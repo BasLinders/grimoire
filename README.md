@@ -127,6 +127,7 @@ Default configuration: `vocab_size=16384`, `d_model=512`, `n_layers=6`, `n_heads
 | **7.5** | Integration test suite: full pipeline (train → checkpoint → load → corpus → multi-turn chat) in a single fast test run | ✓ done |
 | **8** | Agent registry (`agents.json`) + UI agent selector dropdown in Chat tab | ✓ done |
 | **9** | Saga corpus: D&D SRD, probability tables, encounter-scaling references | ✓ done |
+| **10** | Saga instruction fine-tuning: 30-example JSONL dataset (D&D rules, encounter math, probability) + fine-tune script + validation utility | ✓ done |
 
 ### Why two training phases?
 
