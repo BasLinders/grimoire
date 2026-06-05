@@ -393,12 +393,124 @@ def clear_conversation(conv_state) -> tuple[object, str]:
 # Layout
 # ---------------------------------------------------------------------------
 
+_THEME = gr.themes.Base(
+    primary_hue=gr.themes.colors.amber,
+    secondary_hue=gr.themes.colors.violet,
+    neutral_hue=gr.themes.colors.slate,
+    font=[gr.themes.GoogleFont("Cinzel"), gr.themes.GoogleFont("Raleway"), "sans-serif"],
+    font_mono=[gr.themes.GoogleFont("Fira Code"), "monospace"],
+).set(
+    # Backgrounds
+    body_background_fill="#0d0d14",
+    body_background_fill_dark="#0d0d14",
+    block_background_fill="#16161f",
+    block_background_fill_dark="#16161f",
+    input_background_fill="#1e1e2e",
+    input_background_fill_dark="#1e1e2e",
+    # Borders
+    block_border_color="#2e2e45",
+    block_border_color_dark="#2e2e45",
+    input_border_color="#2e2e45",
+    input_border_color_dark="#2e2e45",
+    block_border_width="1px",
+    # Text
+    body_text_color="#c8c8d8",
+    body_text_color_dark="#c8c8d8",
+    block_title_text_color="#e8c97a",
+    block_title_text_color_dark="#e8c97a",
+    block_label_text_color="#9999bb",
+    block_label_text_color_dark="#9999bb",
+    input_placeholder_color="#555570",
+    # Buttons
+    button_primary_background_fill="#b8860b",
+    button_primary_background_fill_dark="#b8860b",
+    button_primary_background_fill_hover="#d4a017",
+    button_primary_background_fill_hover_dark="#d4a017",
+    button_primary_text_color="#0d0d14",
+    button_primary_text_color_dark="#0d0d14",
+    button_secondary_background_fill="#1e1e2e",
+    button_secondary_background_fill_dark="#1e1e2e",
+    button_secondary_background_fill_hover="#2e2e45",
+    button_secondary_background_fill_hover_dark="#2e2e45",
+    button_secondary_text_color="#c8c8d8",
+    button_secondary_text_color_dark="#c8c8d8",
+    button_secondary_border_color="#2e2e45",
+    button_secondary_border_color_dark="#2e2e45",
+    # Shadows and radius
+    block_shadow="0 0 18px 2px rgba(184,134,11,0.08)",
+    block_radius="8px",
+    input_radius="6px",
+    button_large_radius="6px",
+    button_small_radius="4px",
+)
+
+_CSS = """
+/* Header row */
+.grimoire-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 0 4px 0;
+    border-bottom: 1px solid #2e2e45;
+    margin-bottom: 12px;
+}
+.grimoire-header h1 {
+    font-family: 'Cinzel', serif;
+    font-size: 2rem;
+    font-weight: 700;
+    background: linear-gradient(90deg, #e8c97a 0%, #fffbe6 60%, #b8860b 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin: 0;
+    letter-spacing: 0.08em;
+}
+/* Tabs */
+.tab-nav button {
+    font-family: 'Cinzel', serif !important;
+    font-size: 0.85rem !important;
+    letter-spacing: 0.05em !important;
+    color: #9999bb !important;
+    border-bottom: 2px solid transparent !important;
+    transition: color 0.2s, border-color 0.2s;
+}
+.tab-nav button.selected {
+    color: #e8c97a !important;
+    border-bottom: 2px solid #b8860b !important;
+}
+/* Scrollable log boxes */
+textarea {
+    font-family: 'Fira Code', monospace !important;
+    font-size: 0.82rem !important;
+    line-height: 1.5 !important;
+    color: #a8e8a8 !important;
+}
+/* Sliders */
+input[type=range]::-webkit-slider-thumb {
+    background: #b8860b;
+}
+/* Shutdown button */
+#shutdown-btn {
+    background: transparent !important;
+    border: 1px solid #3a2a2a !important;
+    color: #664444 !important;
+    font-size: 0.78rem !important;
+}
+#shutdown-btn:hover {
+    border-color: #aa4444 !important;
+    color: #cc6666 !important;
+}
+"""
+
+
 def build_app() -> gr.Blocks:
     """Assemble and return the Gradio Blocks app."""
     with gr.Blocks(title="Grimoire") as app:
-        with gr.Row():
-            gr.Markdown("# Grimoire")
-            shutdown_btn = gr.Button("⏻ Shut down", scale=0, min_width=110)
+        with gr.Row(elem_classes="grimoire-header"):
+            gr.Markdown("# ✦ Grimoire")
+            shutdown_btn = gr.Button(
+                "⏻ Shut down", scale=0, min_width=110, elem_id="shutdown-btn"
+            )
         shutdown_btn.click(fn=lambda: os._exit(0), inputs=[], outputs=[])
 
         # ----------------------------------------------------------------
@@ -683,7 +795,9 @@ def launch(share: bool = False, port: int = 7860) -> None:
         share: If ``True``, create a public Gradio tunnel (requires internet).
         port: Local port to serve the app on.
     """
-    build_app().queue().launch(server_port=port, share=share)
+    build_app().queue().launch(
+        server_port=port, share=share, theme=_THEME, css=_CSS
+    )
 
 
 if __name__ == "__main__":
