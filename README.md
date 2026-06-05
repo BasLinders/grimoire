@@ -123,8 +123,8 @@ Default configuration: `vocab_size=16384`, `d_model=512`, `n_layers=6`, `n_heads
 | **6** | Instruction fine-tuning: `ConversationDataset`, response-only loss masking, `finetune.py` entry point | ✓ done |
 | **6.5** | Training UI: Gradio app (Pre-train, Fine-tune, Chat tabs) with live loss streaming via `Trainer.on_log` callback | ✓ done |
 | **7** | Conversation state manager: `ConversationState`, `InferenceEngine.chat()`, terminal chat loop | ✓ done |
-| **2.5** | Corpus scraper: web URLs, PDF, DOCX, Markdown, Images (OCR) → corpus `.txt` files | next |
-| **7.5** | Integration test suite: full pipeline (train → checkpoint → load → corpus → multi-turn chat) in a single fast test run | planned |
+| **2.5** | Corpus scraper: web URLs, PDF, DOCX, Markdown, Images (OCR) → corpus `.txt` files | ✓ done |
+| **7.5** | Integration test suite: full pipeline (train → checkpoint → load → corpus → multi-turn chat) in a single fast test run | ✓ done |
 | **8** | Intent router + tool integrations (Google Calendar) | planned |
 | **9** | Saga agent: D&D / math / data science corpus + calendar assistant | planned |
 
