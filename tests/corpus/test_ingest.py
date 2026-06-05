@@ -27,6 +27,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from grimoire.corpus.ingest import (
+    CleaningLevel,
     _clean,
     _url_to_filename,
     from_directory,
@@ -38,19 +39,55 @@ from grimoire.corpus.ingest import (
 
 
 # ---------------------------------------------------------------------------
-# _clean
+# _clean / CleaningLevel
 # ---------------------------------------------------------------------------
 
-def test_clean_collapses_blank_lines() -> None:
+def test_clean_standard_collapses_blank_lines() -> None:
     assert _clean("a\n\n\n\nb") == "a\n\nb"
 
 
-def test_clean_collapses_spaces() -> None:
+def test_clean_standard_collapses_spaces() -> None:
     assert _clean("hello   world") == "hello world"
 
 
 def test_clean_strips_edges() -> None:
     assert _clean("  hello  ") == "hello"
+
+
+def test_clean_minimal_preserves_blank_lines() -> None:
+    text = "a\n\n\n\nb"
+    result = _clean(text, level=CleaningLevel.MINIMAL)
+    assert "\n\n\n" in result  # blank lines not collapsed
+
+
+def test_clean_minimal_preserves_spaces() -> None:
+    result = _clean("hello   world", level=CleaningLevel.MINIMAL)
+    assert "   " in result
+
+
+def test_clean_thorough_drops_short_lines() -> None:
+    text = "Page 1\n\nA grappled creature has its speed reduced to zero.\n\n42"
+    result = _clean(text, level=CleaningLevel.THOROUGH)
+    assert "Page 1" not in result
+    assert "42" not in result
+    assert "grappled" in result
+
+
+def test_clean_thorough_deduplicates_paragraphs() -> None:
+    para = "A grappled creature has its speed reduced to zero."
+    text = f"{para}\n\n{para}\n\n{para}"
+    result = _clean(text, level=CleaningLevel.THOROUGH)
+    assert result.count(para) == 1
+
+
+def test_clean_thorough_keeps_unique_paragraphs() -> None:
+    text = (
+        "A grappled creature has its speed reduced to zero.\n\n"
+        "The condition ends if the grappler is incapacitated."
+    )
+    result = _clean(text, level=CleaningLevel.THOROUGH)
+    assert "grappled" in result
+    assert "incapacitated" in result
 
 
 # ---------------------------------------------------------------------------
@@ -348,3 +385,30 @@ def test_ingest_returns_text_without_output_dir() -> None:
         src.write_text("Some text.", encoding="utf-8")
         result = ingest(str(src))
         assert result == "Some text."
+
+
+def test_ingest_on_progress_callback_fires() -> None:
+    """on_progress must be called at least once when writing a file."""
+    messages: list[str] = []
+
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "note.txt"
+        src.write_text("Some text.", encoding="utf-8")
+        out = Path(tmp) / "output"
+        ingest(str(src), output_dir=str(out), on_progress=messages.append)
+
+    assert len(messages) >= 1
+
+
+def test_ingest_cleaning_level_thorough() -> None:
+    """Thorough cleaning drops very short lines from the output."""
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "noisy.txt"
+        src.write_text(
+            "Page 1\n\nA grappled creature has its speed reduced to zero.\n\nEnd",
+            encoding="utf-8",
+        )
+        result = ingest(str(src), cleaning=CleaningLevel.THOROUGH)
+
+    assert "Page 1" not in result
+    assert "grappled" in result

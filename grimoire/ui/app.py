@@ -1,7 +1,7 @@
 """Grimoire training UI.
 
-A three-tab Gradio web app for managing Grimoire training runs and testing
-the model interactively — without touching the CLI.
+A four-tab Gradio web app for managing Grimoire training runs, corpus
+ingestion, and interactive model testing — without touching the CLI.
 
 Tabs
 ----
@@ -14,10 +14,14 @@ Fine-tune
     Continue from a pre-trained checkpoint on a JSONL conversation dataset.
     Hyperparameters mirror ``grimoire.llm.training.finetune``.
 
+Ingest
+    Scrape and convert content into corpus ``.txt`` files.  Supports web
+    URLs, PDF, DOCX, Markdown, plain text, and images (OCR).  Three cleaning
+    presets control how aggressively boilerplate is stripped.
+
 Chat
     Load any checkpoint and query the model interactively via
-    ``InferenceEngine``.  Optionally point at a corpus directory to enable
-    retrieval-augmented responses.
+    ``InferenceEngine``.  Conversation history is maintained automatically.
 
 Usage
 -----
@@ -46,45 +50,17 @@ def _list_checkpoints(checkpoint_dir: str) -> list[str]:
 
 
 def _stream_training(train_fn) -> Generator[str, None, None]:
-    """Run ``train_fn`` in a background thread and stream log lines.
+    """Run a training function in a background thread and stream loss lines.
 
-    ``train_fn`` receives a single argument: an ``on_log`` callback with
-    signature ``(step: int, loss: float, lr: float) -> None``.  It must put
-    a ``None`` sentinel into the shared queue when it finishes (or errors).
-
-    Yields the full accumulated log text so the Gradio ``Textbox`` always
-    shows the complete history, not just the latest line.
+    ``train_fn`` receives an ``on_log(step, loss, lr)`` callback.
+    Wraps ``_stream_task`` with a training-specific message formatter.
     """
-    log_q: queue.Queue = queue.Queue()
+    def _wrapped(on_progress):
+        def on_log(step: int, loss: float, lr: float) -> None:
+            on_progress(f"step {step:>6} | loss {loss:.4f} | lr {lr:.2e}")
+        train_fn(on_log)
 
-    def on_log(step: int, loss: float, lr: float) -> None:
-        log_q.put(f"step {step:>6} | loss {loss:.4f} | lr {lr:.2e}\n")
-
-    def _run() -> None:
-        try:
-            train_fn(on_log)
-        except Exception as exc:  # noqa: BLE001
-            log_q.put(f"\nError: {exc}\n")
-        finally:
-            log_q.put(None)
-
-    threading.Thread(target=_run, daemon=True).start()
-
-    log_text = ""
-    while True:
-        try:
-            msg = log_q.get(timeout=0.5)
-        except queue.Empty:
-            yield log_text  # keep the UI responsive between log intervals
-            continue
-
-        if msg is None:
-            log_text += "\nDone.\n"
-            yield log_text
-            break
-
-        log_text += msg
-        yield log_text
+    yield from _stream_task(_wrapped)
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +163,95 @@ def run_finetune(
         ).train(resume_from=None)
 
     yield from _stream_training(_train)
+
+
+# ---------------------------------------------------------------------------
+# Ingest tab logic
+# ---------------------------------------------------------------------------
+
+def _stream_task(task_fn) -> Generator[str, None, None]:
+    """Run ``task_fn(on_progress)`` in a background thread and stream messages.
+
+    ``task_fn`` receives a single ``on_progress(msg: str)`` callback.
+    Yields the full accumulated log so the Gradio Textbox always shows
+    the complete history.
+    """
+    log_q: queue.Queue = queue.Queue()
+
+    def on_progress(msg: str) -> None:
+        log_q.put(msg)
+
+    def _run() -> None:
+        try:
+            task_fn(on_progress)
+        except Exception as exc:  # noqa: BLE001
+            log_q.put(f"\nError: {exc}\n")
+        finally:
+            log_q.put(None)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+    log_text = ""
+    while True:
+        try:
+            msg = log_q.get(timeout=0.5)
+        except queue.Empty:
+            yield log_text
+            continue
+
+        if msg is None:
+            log_text += "\nDone.\n"
+            yield log_text
+            break
+
+        log_text += msg + "\n"
+        yield log_text
+
+
+def run_ingest(
+    mode: str,
+    url_or_dir: str,
+    file_obj,
+    output_dir: str,
+    cleaning: str,
+    recursive: bool,
+    timeout: int,
+) -> Generator[str, None, None]:
+    """Run corpus ingestion and stream progress messages."""
+    from grimoire.corpus.ingest import CleaningLevel, ingest
+
+    cleaning_level = CleaningLevel(cleaning)
+
+    def _task(on_progress):
+        if mode == "File":
+            if file_obj is None:
+                raise ValueError("No file uploaded.")
+            source = file_obj.name
+        else:
+            source = url_or_dir.strip()
+            if not source:
+                raise ValueError("Source path or URL is required.")
+
+        ingest(
+            source=source,
+            output_dir=output_dir.strip() or None,
+            recursive=recursive,
+            timeout=int(timeout),
+            cleaning=cleaning_level,
+            on_progress=on_progress,
+        )
+
+    yield from _stream_task(_task)
+
+
+def _toggle_ingest_inputs(mode: str):
+    """Show/hide source inputs depending on the selected mode."""
+    return (
+        gr.update(visible=mode in ("URL", "Directory")),  # url_or_dir textbox
+        gr.update(visible=mode == "File"),                 # file upload
+        gr.update(visible=mode == "Directory"),            # recursive checkbox
+        gr.update(visible=mode == "URL"),                  # timeout input
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -335,6 +400,81 @@ def build_app() -> gr.Blocks:
                     ft_max_seq,
                 ],
                 outputs=ft_log_box,
+            )
+
+        # ----------------------------------------------------------------
+        with gr.Tab("Ingest"):
+            gr.Markdown(
+                "Convert web pages, documents, and images into corpus `.txt` files."
+            )
+
+            ing_mode = gr.Radio(
+                choices=["URL", "File", "Directory"],
+                value="URL",
+                label="Source type",
+            )
+
+            # URL / Directory: text box
+            ing_url_or_dir = gr.Textbox(
+                label="URL or directory path",
+                placeholder="https://example.com/rules  or  data/documents/",
+                visible=True,
+            )
+            # File: upload widget
+            ing_file = gr.File(label="Upload file", visible=False)
+
+            with gr.Row():
+                ing_output = gr.Textbox(
+                    label="Output directory",
+                    value="data/raw/",
+                    placeholder="data/raw/",
+                )
+                ing_cleaning = gr.Radio(
+                    choices=["minimal", "standard", "thorough"],
+                    value="standard",
+                    label="Cleaning level",
+                    info=(
+                        "minimal — whitespace only | "
+                        "standard — collapse blank lines & spaces | "
+                        "thorough — also drop short lines & deduplicate paragraphs"
+                    ),
+                )
+
+            with gr.Row():
+                ing_recursive = gr.Checkbox(
+                    label="Recursive (subdirectories)",
+                    value=False,
+                    visible=False,
+                )
+                ing_timeout = gr.Number(
+                    label="HTTP timeout (seconds)",
+                    value=15,
+                    precision=0,
+                    visible=True,
+                )
+
+            ing_btn = gr.Button("Start ingestion", variant="primary")
+            ing_log = gr.Textbox(
+                label="Progress",
+                lines=12,
+                interactive=False,
+                autoscroll=True,
+            )
+
+            # Toggle input visibility when mode changes.
+            ing_mode.change(
+                fn=_toggle_ingest_inputs,
+                inputs=[ing_mode],
+                outputs=[ing_url_or_dir, ing_file, ing_recursive, ing_timeout],
+            )
+
+            ing_btn.click(
+                fn=run_ingest,
+                inputs=[
+                    ing_mode, ing_url_or_dir, ing_file,
+                    ing_output, ing_cleaning, ing_recursive, ing_timeout,
+                ],
+                outputs=ing_log,
             )
 
         # ----------------------------------------------------------------

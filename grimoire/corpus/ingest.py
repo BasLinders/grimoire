@@ -39,9 +39,33 @@ import argparse
 import re
 import sys
 import unicodedata
+from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 from urllib.parse import urlparse
+
+# ---------------------------------------------------------------------------
+# Cleaning levels
+# ---------------------------------------------------------------------------
+
+class CleaningLevel(str, Enum):
+    """Controls how aggressively extracted text is post-processed.
+
+    Attributes:
+        MINIMAL:  Unicode normalisation and edge whitespace only.  Use when
+            you want to preserve structure — poetry, stat blocks, tables.
+        STANDARD: MINIMAL plus collapsing of multiple blank lines and
+            runs of spaces/tabs.  Good default for most prose sources.
+        THOROUGH: STANDARD plus removal of very short lines (likely
+            navigation remnants, page numbers, or headers) and deduplication
+            of consecutive identical paragraphs.  Best for web-scraped HTML
+            where boilerplate stripping leaves residual fragments.
+    """
+
+    MINIMAL  = "minimal"
+    STANDARD = "standard"
+    THOROUGH = "thorough"
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -50,14 +74,54 @@ from urllib.parse import urlparse
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".gif"}
 _DOC_EXTS   = {".pdf", ".docx", ".md", ".markdown", ".txt"} | _IMAGE_EXTS
 
+# Thorough cleaning: lines with fewer than this many words are dropped.
+_MIN_WORDS_THOROUGH = 4
 
-def _clean(text: str) -> str:
-    """Normalise Unicode, collapse whitespace, strip leading/trailing blanks."""
+
+def _clean(text: str, level: CleaningLevel = CleaningLevel.STANDARD) -> str:
+    """Post-process extracted text according to ``level``.
+
+    Args:
+        text: Raw extracted text string.
+        level: One of ``CleaningLevel.MINIMAL``, ``STANDARD``, ``THOROUGH``.
+
+    Returns:
+        Cleaned text string.
+    """
+    # Always normalise Unicode and strip edges — applies at every level.
     text = unicodedata.normalize("NFKC", text)
-    # Collapse runs of blank lines to a single blank line.
+    text = text.strip()
+
+    if level == CleaningLevel.MINIMAL:
+        return text
+
+    # Standard and above: collapse whitespace.
     text = re.sub(r"\n{3,}", "\n\n", text)
-    # Collapse runs of spaces/tabs within a line.
     text = re.sub(r"[ \t]+", " ", text)
+
+    if level == CleaningLevel.THOROUGH:
+        # Drop lines that are too short to be meaningful prose.
+        lines = text.splitlines()
+        lines = [
+            line for line in lines
+            if len(line.split()) >= _MIN_WORDS_THOROUGH or not line.strip()
+        ]
+        text = "\n".join(lines)
+
+        # Deduplicate consecutive identical paragraphs.
+        paragraphs = text.split("\n\n")
+        deduped: list[str] = []
+        prev = None
+        for para in paragraphs:
+            stripped = para.strip()
+            if stripped != prev:
+                deduped.append(para)
+                prev = stripped
+        text = "\n\n".join(deduped)
+
+        # Re-collapse any blank lines introduced by the line filter.
+        text = re.sub(r"\n{3,}", "\n\n", text)
+
     return text.strip()
 
 
@@ -75,7 +139,11 @@ def _url_to_filename(url: str) -> str:
 # Per-format extractors
 # ---------------------------------------------------------------------------
 
-def from_url(url: str, timeout: int = 15) -> str:
+def from_url(
+    url: str,
+    timeout: int = 15,
+    cleaning: CleaningLevel = CleaningLevel.STANDARD,
+) -> str:
     """Fetch a web page and return its main text content.
 
     Strips ``<script>``, ``<style>``, ``<nav>``, ``<footer>``, ``<header>``,
@@ -117,10 +185,10 @@ def from_url(url: str, timeout: int = 15) -> str:
 
     # Prefer <main> or <article> for the main content block.
     body = soup.find("main") or soup.find("article") or soup.find("body") or soup
-    return _clean(body.get_text(separator="\n"))
+    return _clean(body.get_text(separator="\n"), level=cleaning)
 
 
-def from_pdf(path: str) -> str:
+def from_pdf(path: str, cleaning: CleaningLevel = CleaningLevel.STANDARD) -> str:
     """Extract text from a PDF file.
 
     Args:
@@ -147,10 +215,10 @@ def from_pdf(path: str) -> str:
 
     reader = PdfReader(str(p))
     pages = [page.extract_text() or "" for page in reader.pages]
-    return _clean("\n\n".join(pages))
+    return _clean("\n\n".join(pages), level=cleaning)
 
 
-def from_docx(path: str) -> str:
+def from_docx(path: str, cleaning: CleaningLevel = CleaningLevel.STANDARD) -> str:
     """Extract text from a Word document (.docx).
 
     Args:
@@ -177,10 +245,10 @@ def from_docx(path: str) -> str:
 
     doc = Document(str(p))
     paragraphs = [para.text for para in doc.paragraphs if para.text.strip()]
-    return _clean("\n\n".join(paragraphs))
+    return _clean("\n\n".join(paragraphs), level=cleaning)
 
 
-def from_markdown(path: str) -> str:
+def from_markdown(path: str, cleaning: CleaningLevel = CleaningLevel.STANDARD) -> str:
     """Extract plain text from a Markdown file by stripping syntax markers.
 
     Removes: headings (``#``), bold/italic (``*``, ``_``), inline code
@@ -216,10 +284,10 @@ def from_markdown(path: str) -> str:
     text = re.sub(r"^[-*_]{3,}\s*$", "", text, flags=re.MULTILINE)
     # Blockquote markers.
     text = re.sub(r"^>\s?", "", text, flags=re.MULTILINE)
-    return _clean(text)
+    return _clean(text, level=cleaning)
 
 
-def from_image(path: str) -> str:
+def from_image(path: str, cleaning: CleaningLevel = CleaningLevel.THOROUGH) -> str:
     """Extract text from an image file via OCR (Tesseract).
 
     Requires ``pytesseract``, ``Pillow``, **and** a system Tesseract install.
@@ -261,10 +329,12 @@ def from_image(path: str) -> str:
             "  Windows: https://github.com/UB-Mannheim/tesseract/wiki"
         ) from exc
 
-    return _clean(text)
+    # OCR output is always cleaned at THOROUGH level regardless of the
+    # caller's preference — raw OCR tends to have many short noise lines.
+    return _clean(text, level=CleaningLevel.THOROUGH)
 
 
-def from_txt(path: str) -> str:
+def from_txt(path: str, cleaning: CleaningLevel = CleaningLevel.STANDARD) -> str:
     """Read a plain-text file.
 
     Args:
@@ -279,20 +349,25 @@ def from_txt(path: str) -> str:
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"Text file not found: {path}")
-    return _clean(p.read_text(encoding="utf-8"))
+    return _clean(p.read_text(encoding="utf-8"), level=cleaning)
 
 
 # ---------------------------------------------------------------------------
 # Unified dispatcher
 # ---------------------------------------------------------------------------
 
-def from_file(path: str) -> str:
+def from_file(
+    path: str,
+    cleaning: CleaningLevel = CleaningLevel.STANDARD,
+) -> str:
     """Extract text from a local file, auto-detecting format by extension.
 
     Args:
         path: Path to a file with a supported extension
             (``.txt``, ``.pdf``, ``.docx``, ``.md``, ``.markdown``,
             ``.png``, ``.jpg``, ``.jpeg``, ``.tiff``, ``.bmp``, ``.gif``).
+        cleaning: Cleaning level applied to the extracted text.  Images
+            always use ``THOROUGH`` regardless of this setting.
 
     Returns:
         Extracted plain-text string.
@@ -303,15 +378,15 @@ def from_file(path: str) -> str:
     """
     ext = Path(path).suffix.lower()
     if ext == ".pdf":
-        return from_pdf(path)
+        return from_pdf(path, cleaning=cleaning)
     if ext == ".docx":
-        return from_docx(path)
+        return from_docx(path, cleaning=cleaning)
     if ext in {".md", ".markdown"}:
-        return from_markdown(path)
+        return from_markdown(path, cleaning=cleaning)
     if ext == ".txt":
-        return from_txt(path)
+        return from_txt(path, cleaning=cleaning)
     if ext in _IMAGE_EXTS:
-        return from_image(path)
+        return from_image(path)  # always THOROUGH
     raise ValueError(
         f"Unsupported file extension {ext!r}. "
         f"Supported: {', '.join(sorted(_DOC_EXTS))}"
@@ -321,18 +396,22 @@ def from_file(path: str) -> str:
 def from_directory(
     path: str,
     recursive: bool = False,
+    cleaning: CleaningLevel = CleaningLevel.STANDARD,
+    on_progress: Optional[Callable[[str], None]] = None,
 ) -> dict[str, str]:
     """Extract text from all supported files in a directory.
 
     Args:
         path: Path to the directory.
         recursive: If ``True``, descend into subdirectories.
+        cleaning: Cleaning level applied to each extracted file.
+        on_progress: Optional callback called with a status string after
+            each file is processed.  Falls back to ``print`` when ``None``.
 
     Returns:
         A ``{file_path: text}`` dict for every file that was successfully
         extracted.  Files with unsupported extensions are silently skipped.
-        Files that raise extraction errors are skipped with a warning printed
-        to stderr.
+        Files that raise extraction errors are skipped with a warning.
 
     Raises:
         FileNotFoundError: If ``path`` does not exist or is not a directory.
@@ -340,6 +419,8 @@ def from_directory(
     d = Path(path)
     if not d.exists() or not d.is_dir():
         raise FileNotFoundError(f"Directory not found: {path}")
+
+    _emit = on_progress if on_progress is not None else print
 
     glob = "**/*" if recursive else "*"
     results: dict[str, str] = {}
@@ -349,9 +430,10 @@ def from_directory(
         if entry.suffix.lower() not in _DOC_EXTS:
             continue
         try:
-            results[str(entry)] = from_file(str(entry))
+            results[str(entry)] = from_file(str(entry), cleaning=cleaning)
+            _emit(f"  ✓ {entry}")
         except Exception as exc:  # noqa: BLE001
-            print(f"Warning: skipping {entry}: {exc}", file=sys.stderr)
+            _emit(f"  ✗ skipping {entry}: {exc}")
 
     return results
 
@@ -365,6 +447,8 @@ def ingest(
     output_dir: Optional[str] = None,
     recursive: bool = False,
     timeout: int = 15,
+    cleaning: CleaningLevel = CleaningLevel.STANDARD,
+    on_progress: Optional[Callable[[str], None]] = None,
 ) -> Optional[str]:
     """Ingest a source and optionally write the result to ``output_dir``.
 
@@ -401,34 +485,40 @@ def ingest(
     if is_dir and output_dir is None:
         raise ValueError("output_dir is required when source is a directory.")
 
+    _emit = on_progress if on_progress is not None else print
+
     out = Path(output_dir) if output_dir else None
     if out is not None:
         out.mkdir(parents=True, exist_ok=True)
 
     if is_url:
-        text = from_url(source, timeout=timeout)
+        text = from_url(source, timeout=timeout, cleaning=cleaning)
         if out is not None:
             dest = out / (_url_to_filename(source) + ".txt")
             dest.write_text(text, encoding="utf-8")
-            print(f"  → {dest}")
+            _emit(f"  → {dest}")
             return None
         return text
 
     if is_dir:
-        results = from_directory(source, recursive=recursive)
+        results = from_directory(
+            source,
+            recursive=recursive,
+            cleaning=cleaning,
+            on_progress=on_progress,
+        )
         for file_path, text in results.items():
             stem = Path(file_path).stem
             dest = out / (stem + ".txt")
             dest.write_text(text, encoding="utf-8")
-            print(f"  → {dest}")
         return None
 
     # Single file.
-    text = from_file(source)
+    text = from_file(source, cleaning=cleaning)
     if out is not None:
         dest = out / (source_path.stem + ".txt")
         dest.write_text(text, encoding="utf-8")
-        print(f"  → {dest}")
+        _emit(f"  → {dest}")
         return None
     return text
 
@@ -450,6 +540,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Recurse into subdirectories (only applies when --source is a directory).")
     p.add_argument("--timeout", type=int, default=15,
                    help="HTTP request timeout in seconds.")
+    p.add_argument(
+        "--cleaning",
+        choices=[l.value for l in CleaningLevel],
+        default=CleaningLevel.STANDARD.value,
+        help=(
+            "Text cleaning level. "
+            "minimal=whitespace only; "
+            "standard=collapse blank lines + spaces (default); "
+            "thorough=standard + drop short lines + dedup paragraphs."
+        ),
+    )
     return p.parse_args(argv)
 
 
@@ -461,6 +562,7 @@ def main(argv: list[str] | None = None) -> None:
         output_dir=args.output,
         recursive=args.recursive,
         timeout=args.timeout,
+        cleaning=CleaningLevel(args.cleaning),
     )
     if result is not None:
         print(result)
