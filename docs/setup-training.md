@@ -285,7 +285,51 @@ python -m grimoire.llm.training.train \
 
 ---
 
-## 6 — Verify training worked
+## 6 — Adding corpus files after training
+
+Training is **step-count based**, not corpus-size based. The trainer samples random windows from `corpus.bin` until `total_steps` is reached, so a larger corpus means more variety per step — not more training time.
+
+### Workflow
+
+```
+1. Add new .txt files to  data/corpus/saga/   (or wherever your corpus lives)
+2. Re-run preprocessing   →  corpus.bin is rebuilt with the new files included
+3. Resume pre-training    →  point --resume at your latest checkpoint
+```
+
+Step 2 reuses the existing `bpe.json` — tokenizer training is skipped automatically if the file already exists, so preprocessing is fast.
+
+Step 3 is the important one: **resume, don't restart**. The model continues from its current weights and now draws from the richer corpus. A few thousand additional steps is usually enough to absorb new material; you do not need to redo the full original run.
+
+```bash
+# Re-preprocess (fast — tokenizer already trained)
+python -m grimoire.llm.data.preprocessing \
+    --input  data/corpus/saga/ \
+    --output data/processed/corpus.bin \
+    --vocab  data/tokenizer/bpe.json
+
+# Resume pre-training for extra steps
+python -m grimoire.llm.training.train \
+    --corpus data/processed/corpus.bin \
+    --resume checkpoints/pretrain/step_0010000.pt
+```
+
+The same applies to fine-tuning: if you add new JSONL examples, resume from the existing fine-tuned checkpoint rather than the pre-trained one.
+
+### When to retrain the tokenizer
+
+Delete `bpe.json` before preprocessing only if the new content is from a very different domain whose vocabulary the current BPE cannot represent well (e.g., a non-Latin-script language). For additional D&D, mathematics, or plain-English content, the existing 16 384-token vocabulary is sufficient and retraining the tokenizer would require a full pre-training run from scratch.
+
+| Change | Action |
+|---|---|
+| Add more same-domain `.txt` files | Reprocess → resume pre-training (a few k steps) |
+| Add a completely new domain | Reprocess → resume (or full retrain if the domain shift is large) |
+| Add fine-tune examples only | Skip preprocessing; re-run fine-tuning from the fine-tuned checkpoint |
+| Force tokenizer retrain | Delete `bpe.json`, reprocess, full pre-train from scratch |
+
+---
+
+## 7 — Verify training worked
 
 Quick sanity check after fine-tuning:
 
