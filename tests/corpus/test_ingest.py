@@ -277,6 +277,43 @@ def test_from_url_raises_on_http_error() -> None:
             from_url("https://example.com/not-found")
 
 
+def test_from_url_treats_md_url_as_markdown() -> None:
+    """A URL ending in .md should be processed as Markdown, not HTML."""
+    pytest.importorskip("bs4")
+    from grimoire.corpus.ingest import from_url
+
+    md_text = "# Combat\n\nA **grappled** creature has its speed reduced to zero.\n"
+    mock_resp = MagicMock()
+    mock_resp.text = md_text
+    mock_resp.headers = {"Content-Type": "text/plain; charset=utf-8"}
+    mock_resp.raise_for_status = MagicMock()
+
+    with patch("requests.get", return_value=mock_resp):
+        result = from_url("https://raw.githubusercontent.com/user/repo/main/rules.md")
+
+    assert "grappled" in result
+    assert "#" not in result       # heading marker stripped
+    assert "**" not in result      # bold markers stripped
+
+
+def test_from_url_treats_text_plain_as_markdown() -> None:
+    """A text/plain response (no .md extension) should also skip BeautifulSoup."""
+    pytest.importorskip("bs4")
+    from grimoire.corpus.ingest import from_url
+
+    md_text = "## Spellcasting\n\nYou can cast spells of your choice.\n"
+    mock_resp = MagicMock()
+    mock_resp.text = md_text
+    mock_resp.headers = {"Content-Type": "text/plain"}
+    mock_resp.raise_for_status = MagicMock()
+
+    with patch("requests.get", return_value=mock_resp):
+        result = from_url("https://example.com/srd")
+
+    assert "Spellcasting" in result
+    assert "##" not in result
+
+
 # ---------------------------------------------------------------------------
 # from_file dispatch
 # ---------------------------------------------------------------------------
