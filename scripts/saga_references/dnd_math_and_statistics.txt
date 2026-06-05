@@ -1,0 +1,130 @@
+D&D 5E MATHEMATICS AND STATISTICAL ANALYSIS
+============================================
+
+ABILITY SCORE GENERATION METHODS
+----------------------------------
+Standard Array: 15, 14, 13, 12, 10, 8 (total 72, average 12.0)
+Point Buy: 27 points, scores 8-15 (before racial bonuses)
+  Cost: 8=0, 9=1, 10=2, 11=3, 12=4, 13=5, 14=7, 15=9
+
+4d6 Drop Lowest (per score):
+  Expected value per score: 12.24
+  Expected total for 6 scores: ~73.5
+  Probability of at least one score of 18: ~16%
+  Probability of all scores >= 8: ~79%
+
+3d6 straight (per score):
+  Expected value: 10.5
+  Standard deviation: 2.96
+
+ABILITY MODIFIER TABLE
+-----------------------
+Score: 1    2-3  4-5  6-7  8-9  10-11 12-13 14-15 16-17 18-19 20-21
+Mod:   -5   -4   -3   -2   -1   +0    +1    +2    +3    +4    +5
+
+Score: 22-23 24-25 26-27 28-29 30
+Mod:   +6    +7    +8    +9    +10
+
+PROFICIENCY BONUS BY LEVEL
+---------------------------
+Levels 1-4:  +2
+Levels 5-8:  +3
+Levels 9-12: +4
+Levels 13-16:+5
+Levels 17-20:+6
+
+ATTACK ROLL MATHEMATICS
+------------------------
+To-hit roll: d20 + attack bonus vs target AC
+  Attack bonus = ability modifier + proficiency bonus (+ magic bonus)
+
+Damage per Round (DPR) formula:
+  DPR = hit_probability * average_damage_on_hit
+      + crit_probability * extra_crit_damage
+
+Where:
+  hit_probability = (21 - AC + attack_bonus) / 20, clamped [0.05, 0.95]
+  crit_probability = 0.05 (1/20) for standard 20 crit range
+  extra_crit_damage = average of one set of damage dice (not modifiers)
+
+Example: Fighter (level 5, +5 attack, longsword 1d8+3) vs AC 15:
+  hit_probability = (21 - 15 + 5) / 20 = 11/20 = 55%
+  average_on_hit = 4.5 + 3 = 7.5
+  crit_extra = 4.5 / 2 = 2.25   (one extra d8 averaged)
+  DPR = 0.55 * 7.5 + 0.05 * 2.25 = 4.125 + 0.1125 ≈ 4.24
+
+With Extra Attack (two attacks per action):
+  DPR = 2 * 4.24 ≈ 8.47
+
+SPELL ATTACK DPR EXAMPLE
+--------------------------
+Fireball (8d6, DC 15 Dex save for half):
+  Average damage = 28 (8 * 3.5)
+  Against DC 15 with Dex +2: P(fail) = (15 - 2) / 20 = 65%
+  DPR per target = 0.65 * 28 + 0.35 * 14 = 18.2 + 4.9 = 23.1
+
+Upcast: each additional slot level = +1d6 (+3.5 damage) per target.
+
+CONCENTRATION PROBABILITY
+--------------------------
+When concentrating and taking damage, Constitution saving throw DC = max(10, half damage).
+With Constitution modifier +2:
+  Against DC 10: P(success) = min(95%, (11 + modifier) / 20)
+  At +2 Con: P(success vs DC 10) = 13/20 = 65%
+  At +4 Con (War Caster or Resilient): P(success vs DC 10) = 15/20 = 75%
+
+War Caster or Resilient (Con) advantage on concentration saves:
+  P(success with advantage) = 1 - (1 - p)^2
+
+BOUNDED ACCURACY
+-----------------
+5e uses "bounded accuracy": bonuses stay small (+2 to +11 range for attack).
+The d20 variance is intentionally dominant to keep all levels relevant.
+Key implication: higher-level characters don't outscale lower-level content
+as aggressively as in earlier editions.
+
+At level 20 with maxed stat and proficiency (+6 + +6 = +12 attack bonus):
+  Hit chance vs AC 20: (21 - 20 + 12) / 20 = 65%
+  Hit chance vs AC 25: (21 - 25 + 12) / 20 = 40%
+
+HEALING EFFICIENCY
+-------------------
+Healing is generally less efficient than preventing damage in 5e.
+Healing in combat: most effective at low HP (prevents death saves).
+Cure Wounds (1st level): 1d8 + spellcasting modifier, avg ~6-10 HP.
+  Healing is best saved for bringing downed characters up (1 HP minimum).
+Mass Cure Wounds (5th level): 3d8 + modifier to up to 6 creatures.
+
+LONG REST DEPENDENCY
+---------------------
+At full 6-8 encounter adventuring day:
+  1/3 of resources typically spent per 2-encounter block.
+Avoiding long rests stretches resource pressure — key for tension.
+
+SHORT REST RESOURCES
+---------------------
+Classes that benefit most from short rests:
+  Warlock: regains all spell slots on short rest (very short slot list)
+  Fighter: Second Wind (1d10 + level HP) and Action Surge
+  Monk: Ki points fully restored on short rest
+
+POPULATION STATISTICS FOR ENCOUNTER BALANCE
+---------------------------------------------
+Expected party HP at level 5 (4 characters, d8 hit die class avg):
+  HP per character: 8 + (4 * 5) + (5 * Con modifier)
+  With +2 Con: 8 + 20 + 10 = 38 HP each; party total ~152 HP
+  With +3 Con: 8 + 20 + 15 = 43 HP each; party total ~172 HP
+
+Deadly encounter: adjusted XP >= deadly threshold per character.
+Rule of thumb: an encounter can deal up to ~50% of party total HP
+as a "hard" encounter without being party-wipe threatening on average dice.
+
+STANDARD DEVIATION OF MULTI-DICE ROLLS
+----------------------------------------
+For N dice of S sides: σ = sqrt(N * (S^2 - 1) / 12)
+
+Examples:
+  1d6:  σ = 1.71    4d6:  σ = 3.42
+  1d8:  σ = 2.02    8d6:  σ = 4.83
+  2d6:  σ = 2.42    8d8:  σ = 5.72
+  1d20: σ = 5.77

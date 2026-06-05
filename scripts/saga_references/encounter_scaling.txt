@@ -1,0 +1,108 @@
+ENCOUNTER SCALING AND BALANCING TECHNIQUES FOR D&D 5E
+=======================================================
+
+SCALING MONSTER STATS ON THE FLY
+----------------------------------
+When you need a monster at a different CR than listed, use these guidelines.
+
+Adjusting HP:
+  Each +/-1 to effective CR: +/-15 HP for most monsters.
+  Alternatively scale proportionally (CR 5 monster at 157 HP → CR 7 at ~187 HP).
+
+Adjusting AC:
+  CR 1-4:   AC 13-15 typical
+  CR 5-10:  AC 15-17 typical
+  CR 11-16: AC 17-19 typical
+  CR 17+:   AC 18-22 typical
+
+Adjusting Attack Bonus and Damage:
+  CR 1-4:   +3 to +5 attack, 2d6-3d6 damage per hit
+  CR 5-10:  +5 to +8 attack, 3d6-5d6 damage per hit
+  CR 11-16: +8 to +10 attack, 5d8-7d8 damage per hit
+  CR 17+:   +10 to +14 attack, 7d10+ damage per hit
+
+Adjusting Save DCs:
+  CR 1-4:   DC 12-14
+  CR 5-10:  DC 14-17
+  CR 11-16: DC 17-19
+  CR 17+:   DC 19-23
+
+QUICK SCALING FORMULA
+----------------------
+Effective CR of a modified monster:
+  Defensive CR: based on HP and AC.
+  Offensive CR: based on damage per round and attack bonus.
+  Final CR: average of Defensive CR and Offensive CR.
+
+HP to Defensive CR mapping (approximate):
+  1-6 HP:    CR 0    71-85 HP:   CR 4    171-195 HP: CR 10
+  7-35 HP:   CR 1/4  86-100 HP:  CR 5    196-225 HP: CR 11
+  36-49 HP:  CR 1/2  101-115 HP: CR 6    226-250 HP: CR 12
+  50-70 HP:  CR 1-2  116-130 HP: CR 7    251-275 HP: CR 13
+             CR 3    131-145 HP: CR 8    276-300 HP: CR 14
+                     146-160 HP: CR 9    301-325 HP: CR 15
+
+Damage per Round to Offensive CR mapping (3 rounds averaged):
+  0-1:    CR 0      22-26:  CR 4      62-72:   CR 11
+  2-3:    CR 1/8    27-32:  CR 5      73-84:   CR 12
+  4-5:    CR 1/4    33-38:  CR 6      85-97:   CR 13
+  6-8:    CR 1/2    39-44:  CR 7      98-110:  CR 14
+  9-14:   CR 1      45-50:  CR 8      111-130: CR 15
+  15-20:  CR 2      51-56:  CR 9      131-150: CR 16
+  21-26:  CR 3      57-62:  CR 10     151-170: CR 17
+
+MINION RULES (OPTIONAL)
+------------------------
+Minions are low-HP monsters designed to die in one hit.
+Rule of thumb: take a standard monster and give it 1 HP.
+Multiply XP by 0.5 for single-attack minions (they die before acting).
+Typical use: 1 standard monster + 4-6 minions as a CR-equivalent encounter.
+
+SWARM SCALING
+--------------
+Swarms are single stat blocks representing many creatures.
+Swarms have resistance to bludgeoning, piercing, slashing.
+Swarms can occupy another creature's space.
+Split swarms by halving HP to represent dispersal at half health.
+For CR scaling: each swarm counts as a single monster for multiplier purposes.
+
+TERRAIN AND ENVIRONMENTAL MODIFIERS
+-------------------------------------
+Terrain advantages/disadvantages can effectively shift encounter difficulty by 1 tier.
+Examples of dangerous terrain:
+  - Difficult terrain: halves movement, especially punishing in small rooms.
+  - Elevation: ranged attackers on high ground gain advantage.
+  - Darkness: heavily obscured = effectively blinded.
+  - Hazardous surfaces: acid pools, lava, magical darkness.
+
+ENCOUNTER VARIETY FOR PACING
+------------------------------
+Not every encounter needs to be combat.
+  Social encounters: use Persuasion/Deception/Intimidation DCs 10-25.
+  Exploration: skill challenges, trap navigation, resource management.
+  Combat: use the XP budget system above.
+
+Recommended mix per session:
+  1-2 combat encounters (medium to hard)
+  1 social or exploration challenge
+  1 potential boss or climactic encounter
+
+SHORT REST RECOVERY
+--------------------
+Characters with hit dice recover HP on short rest.
+Short rest (1 hour): spend hit dice, regain HP.
+  Fighter: Second Wind (bonus action, 1d10 + fighter level HP).
+  Warlock: Regains spell slots on short rest.
+  Monk: Regains ki points on short rest.
+Long rest (8 hours): regain all HP, half hit dice, all spell slots.
+
+DEATH AND DYING RULES SUMMARY
+-------------------------------
+At 0 HP: unconscious, start making death saving throws.
+  Roll d20 each turn: 10+ = success, 1-9 = failure.
+  3 successes: stabilize (still unconscious).
+  3 failures: dead.
+  Natural 1: counts as 2 failures.
+  Natural 20: regain 1 HP, regain consciousness.
+  Taking damage at 0 HP: 1 failure (melee) or 2 failures (critical hit).
+  Stabilized: no longer making saves, but still unconscious until 1d4 hours.

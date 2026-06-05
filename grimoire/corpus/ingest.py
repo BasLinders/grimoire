@@ -139,6 +139,19 @@ def _url_to_filename(url: str) -> str:
 # Per-format extractors
 # ---------------------------------------------------------------------------
 
+def _clean_markdown_text(text: str, cleaning: CleaningLevel) -> str:
+    """Apply markdown syntax stripping to a raw string (no file I/O)."""
+    text = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"[*_]{1,3}([^*_]+)[*_]{1,3}", r"\1", text)
+    text = re.sub(r"`([^`]*)`", r"\1", text)
+    text = re.sub(r"^```[^\n]*\n(.*?)^```", r"\1", text, flags=re.MULTILINE | re.DOTALL)
+    text = re.sub(r"^[-*_]{3,}\s*$", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^>\s?", "", text, flags=re.MULTILINE)
+    return _clean(text, level=cleaning)
+
+
 def from_url(
     url: str,
     timeout: int = 15,
@@ -176,6 +189,16 @@ def from_url(
         resp.raise_for_status()
     except requests.RequestException as exc:
         raise RuntimeError(f"Failed to fetch {url!r}: {exc}") from exc
+
+    # If the URL path ends in .md/.markdown, or the server says text/plain,
+    # treat the body as raw Markdown rather than HTML.
+    content_type = resp.headers.get("Content-Type", "")
+    url_path = urlparse(url).path.lower()
+    is_markdown = url_path.endswith((".md", ".markdown")) or (
+        "text/plain" in content_type and not "html" in content_type
+    )
+    if is_markdown:
+        return _clean_markdown_text(resp.text, cleaning)
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
@@ -269,22 +292,7 @@ def from_markdown(path: str, cleaning: CleaningLevel = CleaningLevel.STANDARD) -
         raise FileNotFoundError(f"Markdown file not found: {path}")
 
     text = p.read_text(encoding="utf-8")
-    # Images before links (same pattern, different prefix).
-    text = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", text)
-    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
-    # Headings.
-    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
-    # Bold / italic.
-    text = re.sub(r"[*_]{1,3}([^*_]+)[*_]{1,3}", r"\1", text)
-    # Inline code.
-    text = re.sub(r"`([^`]*)`", r"\1", text)
-    # Fenced code blocks — keep the content, remove the fences.
-    text = re.sub(r"^```[^\n]*\n(.*?)^```", r"\1", text, flags=re.MULTILINE | re.DOTALL)
-    # Horizontal rules.
-    text = re.sub(r"^[-*_]{3,}\s*$", "", text, flags=re.MULTILINE)
-    # Blockquote markers.
-    text = re.sub(r"^>\s?", "", text, flags=re.MULTILINE)
-    return _clean(text, level=cleaning)
+    return _clean_markdown_text(text, cleaning)
 
 
 def from_image(path: str, cleaning: CleaningLevel = CleaningLevel.THOROUGH) -> str:
