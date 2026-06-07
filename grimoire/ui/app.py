@@ -36,6 +36,7 @@ Usage
 import os
 import queue
 import threading
+import time
 from pathlib import Path
 from typing import Generator, Optional
 
@@ -712,9 +713,10 @@ def build_app() -> gr.Blocks:
             shutdown_btn = gr.Button(
                 "⏻ Shut down", scale=0, min_width=110, elem_id="shutdown-btn"
             )
-        # Navigate the browser to a static shutdown page before killing the
-        # server.  This prevents Gradio's client-side reconnect loop from
-        # firing — the page is gone before the WebSocket drops.
+        # Shutdown: Python fn schedules os._exit on a background thread so
+        # Gradio can return a clean response before the process dies.
+        # JS navigates the tab away after 300 ms — before the 1 s kill fires —
+        # so neither the WebSocket error nor the reconnect banner ever shows.
         _SHUTDOWN_PAGE = (
             "data:text/html,"
             "%3Chtml%20style%3D%22background%3A%230d0d14%3Bcolor%3A%23e8c97a%3B"
@@ -726,11 +728,18 @@ def build_app() -> gr.Blocks:
             "%20You%20may%20close%20this%20tab.%3C%2Fp%3E"
             "%3C%2Fdiv%3E%3C%2Fhtml%3E"
         )
+
+        def _request_shutdown():
+            def _kill():
+                time.sleep(1.0)
+                os._exit(0)
+            threading.Thread(target=_kill, daemon=True).start()
+
         shutdown_btn.click(
-            fn=lambda: os._exit(0),
+            fn=_request_shutdown,
             inputs=[],
             outputs=[],
-            js=f"() => {{ window.location.replace('{_SHUTDOWN_PAGE}'); }}",
+            js=f"() => {{ setTimeout(() => window.location.replace('{_SHUTDOWN_PAGE}'), 300); }}",
         )
         _JS_TOGGLE = f"""() => {{
             const root = document.documentElement;
