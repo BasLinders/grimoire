@@ -450,7 +450,10 @@ _THEME = gr.themes.Base(
     block_title_text_color_dark="#e8c97a",
     block_label_text_color="#9999bb",
     block_label_text_color_dark="#9999bb",
-    input_placeholder_color="#8888aa",  # 4.8:1 on input bg #1e1e2e (WCAG AA ✓)
+    input_placeholder_color="#8888aa",      # 4.8:1 on input bg #1e1e2e (WCAG AA ✓)
+    input_placeholder_color_dark="#8888aa", # prevents Gradio dark block from overriding
+    code_background_fill="#252535",         # fits dark palette; text contrast 9.1:1 ✓
+    code_background_fill_dark="#252535",
     # Buttons
     button_primary_background_fill="#b8860b",
     button_primary_background_fill_dark="#b8860b",
@@ -531,6 +534,20 @@ textarea {
     line-height: 1.5 !important;
     color: #a8e8a8 !important;
 }
+/* Placeholder text — belt-and-suspenders over CSS variable resolution */
+input::placeholder,
+textarea::placeholder {
+    color: #8888aa !important;  /* 4.8:1 on #1e1e2e (WCAG AA ✓) */
+    opacity: 1 !important;      /* Firefox reduces opacity by default */
+}
+/* Primary CTA button text — explicit override so Gradio dark block can't revert to white */
+button.primary {
+    color: #0d0d14 !important;  /* 5.9:1 on amber #b8860b (WCAG AA ✓) */
+}
+/* Code highlight background */
+code, .code {
+    background: #252535 !important;  /* text #c8c8d8 on this = 9.1:1 ✓ */
+}
 /* Sliders */
 input[type=range]::-webkit-slider-thumb {
     background: #b8860b;
@@ -576,6 +593,12 @@ _LIGHT_CSS = (
     ".tab-nav button.selected{color:#6a4e00!important;border-bottom:2px solid #b8860b!important}"
     ".tab-nav button:hover{color:#7a5800!important}"  # 5.9:1 on #f5f3ee (WCAG AA ✓)
     "textarea{color:#1a4a1a!important}"
+    # Placeholder — #5c5c70 on #eeeae0 = 5.4:1 (WCAG AA ✓)
+    "input::placeholder,textarea::placeholder{color:#5c5c70!important;opacity:1!important}"
+    # Primary CTA button text — #0d0d14 on #b8860b = 5.9:1 ✓
+    "button.primary{color:#0d0d14!important}"
+    # Code highlight — #1a1a2e on #e0ddd4 = 12.6:1 ✓
+    "code,.code{background:#e0ddd4!important}"
     # #884444 on #fffef9 = 7.6:1 (WCAG AA ✓)
     ".stop-btn{border:1px solid #d4a0a0!important;color:#884444!important}"
     ".stop-btn:hover:not(:disabled){border-color:#cc4444!important;color:#cc2222!important}"
@@ -595,6 +618,7 @@ _DARK_VARS = {
     "--block-title-text-color": "#e8c97a",
     "--block-label-text-color": "#9999bb",
     "--input-placeholder-color": "#8888aa",
+    "--code-background-fill": "#252535",
     "--button-primary-background-fill": "#b8860b",
     "--button-primary-background-fill-hover": "#d4a017",
     "--button-primary-text-color": "#0d0d14",
@@ -613,6 +637,7 @@ _LIGHT_VARS = {
     "--block-title-text-color": "#6a4e00",
     "--block-label-text-color": "#4a4a6a",
     "--input-placeholder-color": "#5c5c70",  # 5.4:1 on #eeeae0 (WCAG AA ✓)
+    "--code-background-fill": "#e0ddd4",     # 12.6:1 with #1a1a2e text (WCAG AA ✓)
     "--button-primary-background-fill": "#b8860b",
     "--button-primary-background-fill-hover": "#d4a017",
     "--button-primary-text-color": "#0d0d14",  # dark text on amber = 5.9:1 (WCAG AA ✓)
