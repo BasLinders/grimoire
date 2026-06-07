@@ -450,7 +450,7 @@ _THEME = gr.themes.Base(
     block_title_text_color_dark="#e8c97a",
     block_label_text_color="#9999bb",
     block_label_text_color_dark="#9999bb",
-    input_placeholder_color="#555570",
+    input_placeholder_color="#8888aa",  # 4.8:1 on input bg #1e1e2e (WCAG AA ✓)
     # Buttons
     button_primary_background_fill="#b8860b",
     button_primary_background_fill_dark="#b8860b",
@@ -574,7 +574,7 @@ _LIGHT_CSS = (
     "#theme-btn:hover{border-color:#b8860b!important;color:#6a4e00!important}"
     ".tab-nav button{color:#4a4a6a!important}"
     ".tab-nav button.selected{color:#6a4e00!important;border-bottom:2px solid #b8860b!important}"
-    ".tab-nav button:hover{color:#b8860b!important}"
+    ".tab-nav button:hover{color:#7a5800!important}"  # 5.9:1 on #f5f3ee (WCAG AA ✓)
     "textarea{color:#1a4a1a!important}"
     # #884444 on #fffef9 = 7.6:1 (WCAG AA ✓)
     ".stop-btn{border:1px solid #d4a0a0!important;color:#884444!important}"
@@ -594,7 +594,7 @@ _DARK_VARS = {
     "--body-text-color": "#c8c8d8",
     "--block-title-text-color": "#e8c97a",
     "--block-label-text-color": "#9999bb",
-    "--input-placeholder-color": "#555570",
+    "--input-placeholder-color": "#8888aa",
     "--button-primary-background-fill": "#b8860b",
     "--button-primary-background-fill-hover": "#d4a017",
     "--button-primary-text-color": "#0d0d14",
@@ -612,10 +612,10 @@ _LIGHT_VARS = {
     "--body-text-color": "#1a1a2e",
     "--block-title-text-color": "#6a4e00",
     "--block-label-text-color": "#4a4a6a",
-    "--input-placeholder-color": "#9a96a0",
+    "--input-placeholder-color": "#5c5c70",  # 5.4:1 on #eeeae0 (WCAG AA ✓)
     "--button-primary-background-fill": "#b8860b",
     "--button-primary-background-fill-hover": "#d4a017",
-    "--button-primary-text-color": "#fff8e6",
+    "--button-primary-text-color": "#0d0d14",  # dark text on amber = 5.9:1 (WCAG AA ✓)
     "--button-secondary-background-fill": "#e8e4d8",
     "--button-secondary-background-fill-hover": "#d8d4c8",
     "--button-secondary-text-color": "#1a1a2e",
