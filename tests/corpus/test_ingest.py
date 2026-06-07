@@ -514,6 +514,77 @@ def test_ingest_on_progress_callback_fires() -> None:
     assert len(messages) >= 1
 
 
+# ---------------------------------------------------------------------------
+# from_xlsx
+# ---------------------------------------------------------------------------
+
+def test_from_xlsx_renders_sheet_as_markdown() -> None:
+    openpyxl = pytest.importorskip("openpyxl")
+    from grimoire.corpus.ingest import from_xlsx
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Monsters"
+    ws.append(["Name", "CR", "HP"])
+    ws.append(["Goblin", "1/4", "7"])
+    ws.append(["Orc", "1/2", "15"])
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = str(Path(tmp) / "monsters.xlsx")
+        wb.save(path)
+        result = from_xlsx(path)
+
+    assert "Monsters" in result
+    assert "Goblin" in result
+    assert "CR" in result
+    assert "|" in result
+
+
+def test_from_xlsx_multiple_sheets() -> None:
+    openpyxl = pytest.importorskip("openpyxl")
+    from grimoire.corpus.ingest import from_xlsx
+
+    wb = openpyxl.Workbook()
+    ws1 = wb.active
+    ws1.title = "Sheet1"
+    ws1.append(["A", "B"])
+    ws1.append(["1", "2"])
+    ws2 = wb.create_sheet("Sheet2")
+    ws2.append(["X", "Y"])
+    ws2.append(["3", "4"])
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = str(Path(tmp) / "multi.xlsx")
+        wb.save(path)
+        result = from_xlsx(path)
+
+    assert "Sheet1" in result
+    assert "Sheet2" in result
+
+
+def test_from_xlsx_missing_file_raises() -> None:
+    pytest.importorskip("openpyxl")
+    from grimoire.corpus.ingest import from_xlsx
+    with pytest.raises(FileNotFoundError):
+        from_xlsx("/tmp/grimoire_no_such.xlsx")
+
+
+def test_from_file_dispatches_xlsx() -> None:
+    openpyxl = pytest.importorskip("openpyxl")
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Col1", "Col2"])
+    ws.append(["val1", "val2"])
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = str(Path(tmp) / "data.xlsx")
+        wb.save(path)
+        result = from_file(path)
+
+    assert "Col1" in result
+
+
 def test_ingest_cleaning_level_thorough() -> None:
     """Thorough cleaning drops very short lines from the output."""
     with tempfile.TemporaryDirectory() as tmp:

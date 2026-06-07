@@ -9,6 +9,8 @@ Supported sources
   blocks and ability-score grids survive extraction intact.
 - **Word document** (.docx) — extracts paragraph text via ``python-docx``.
 - **Markdown** (.md, .markdown) — strips syntax markers, returns plain text.
+- **Excel workbook** (.xlsx) — each sheet is rendered as a Markdown pipe
+  table.  Requires ``openpyxl``.
 - **Plain text** (.txt) — returned as-is.
 - **Image** (.png, .jpg, .jpeg, .tiff, .bmp, .gif) — OCR via
   ``pytesseract`` + ``Pillow``.  Requires both libraries **and** a system
@@ -74,7 +76,7 @@ class CleaningLevel(str, Enum):
 # ---------------------------------------------------------------------------
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".gif"}
-_DOC_EXTS   = {".pdf", ".docx", ".md", ".markdown", ".txt"} | _IMAGE_EXTS
+_DOC_EXTS   = {".pdf", ".docx", ".xlsx", ".md", ".markdown", ".txt"} | _IMAGE_EXTS
 
 # Thorough cleaning: lines with fewer than this many words are dropped.
 _MIN_WORDS_THOROUGH = 4
@@ -331,6 +333,53 @@ def from_docx(path: str, cleaning: CleaningLevel = CleaningLevel.STANDARD) -> st
     return _clean("\n\n".join(paragraphs), level=cleaning)
 
 
+def from_xlsx(path: str, cleaning: CleaningLevel = CleaningLevel.STANDARD) -> str:
+    """Extract text from an Excel workbook (.xlsx).
+
+    Each worksheet is rendered as a Markdown pipe table using the same
+    ``_table_to_markdown`` helper as the PDF extractor.  Sheets are separated
+    by a heading line so the model can tell them apart.
+
+    Args:
+        path: Path to the ``.xlsx`` file.
+        cleaning: Cleaning level applied to the combined output.
+
+    Returns:
+        All sheets rendered as Markdown tables, joined by newlines.
+
+    Raises:
+        ImportError: If ``openpyxl`` is not installed.
+        FileNotFoundError: If ``path`` does not exist.
+    """
+    try:
+        import openpyxl
+    except ImportError as exc:
+        raise ImportError(
+            "openpyxl is required for XLSX ingestion. "
+            "Install it with: pip install openpyxl"
+        ) from exc
+
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"XLSX file not found: {path}")
+
+    wb = openpyxl.load_workbook(str(p), read_only=True, data_only=True)
+    sections: list[str] = []
+    for sheet in wb.worksheets:
+        rows = [[str(cell.value) if cell.value is not None else "" for cell in row]
+                for row in sheet.iter_rows()]
+        rows = [row for row in rows if any(c.strip() for c in row)]
+        if not rows:
+            continue
+        md = _table_to_markdown(rows)
+        if md:
+            sections.append(f"## {sheet.title}\n\n{md}")
+    wb.close()
+
+    raw = "\n\n".join(sections)
+    return _clean(raw, level=cleaning)
+
+
 def from_markdown(path: str, cleaning: CleaningLevel = CleaningLevel.STANDARD) -> str:
     """Extract plain text from a Markdown file by stripping syntax markers.
 
@@ -432,8 +481,9 @@ def from_file(
 
     Args:
         path: Path to a file with a supported extension
-            (``.txt``, ``.pdf``, ``.docx``, ``.md``, ``.markdown``,
-            ``.png``, ``.jpg``, ``.jpeg``, ``.tiff``, ``.bmp``, ``.gif``).
+            (``.txt``, ``.pdf``, ``.docx``, ``.xlsx``, ``.md``,
+            ``.markdown``, ``.png``, ``.jpg``, ``.jpeg``, ``.tiff``,
+            ``.bmp``, ``.gif``).
         cleaning: Cleaning level applied to the extracted text.  Images
             always use ``THOROUGH`` regardless of this setting.
 
@@ -449,6 +499,8 @@ def from_file(
         return from_pdf(path, cleaning=cleaning)
     if ext == ".docx":
         return from_docx(path, cleaning=cleaning)
+    if ext == ".xlsx":
+        return from_xlsx(path, cleaning=cleaning)
     if ext in {".md", ".markdown"}:
         return from_markdown(path, cleaning=cleaning)
     if ext == ".txt":

@@ -310,6 +310,13 @@ def run_ingest(
     yield from _wrap_with_buttons(_stream_task(_task))
 
 
+def _toggle_theme(current: str) -> tuple[str, str]:
+    """Flip dark/light theme state and return the new button label."""
+    new = "light" if current == "dark" else "dark"
+    label = "🌙 Dark mode" if new == "dark" else "☀ Light mode"
+    return label, new
+
+
 def _toggle_ingest_inputs(mode: str):
     """Show/hide source inputs depending on the selected mode."""
     return (
@@ -467,6 +474,8 @@ _THEME = gr.themes.Base(
 )
 
 _CSS = """
+/* ── Dark mode defaults ───────────────────────────────────────────────── */
+
 /* Header row */
 .grimoire-header {
     display: flex;
@@ -487,12 +496,23 @@ _CSS = """
     margin: 0;
     letter-spacing: 0.08em;
 }
+/* Theme toggle button */
+#theme-btn {
+    background: transparent !important;
+    border: 1px solid #2e2e45 !important;
+    color: #9999bb !important;
+    font-size: 0.78rem !important;
+}
+#theme-btn:hover {
+    border-color: #b8860b !important;
+    color: #e8c97a !important;
+}
 /* Tabs */
 .tab-nav button {
     font-family: 'Cinzel', serif !important;
     font-size: 0.85rem !important;
     letter-spacing: 0.05em !important;
-    color: #9999bb !important;
+    color: #aaaacc !important;
     border-bottom: 2px solid transparent !important;
     transition: color 0.2s, border-color 0.2s;
 }
@@ -502,6 +522,9 @@ _CSS = """
 .tab-nav button.selected {
     color: #e8c97a !important;
     border-bottom: 2px solid #b8860b !important;
+}
+.tab-nav button:hover {
+    color: #c8a84b !important;
 }
 /* Scrollable log boxes */
 textarea {
@@ -539,14 +562,86 @@ input[type=range]::-webkit-slider-thumb {
     border-color: #aa4444 !important;
     color: #cc6666 !important;
 }
+
+/* ── Light mode overrides ─────────────────────────────────────────────── */
+
+html[data-theme="light"] {
+    --body-background-fill: #f5f3ee !important;
+    --block-background-fill: #fffef9 !important;
+    --input-background-fill: #eeeae0 !important;
+    --block-border-color: #c8bfa8 !important;
+    --input-border-color: #c8bfa8 !important;
+    --body-text-color: #1a1a2e !important;
+    --block-title-text-color: #6a4e00 !important;
+    --block-label-text-color: #4a4a6a !important;
+    --input-placeholder-color: #9a96a0 !important;
+    --button-primary-background-fill: #b8860b !important;
+    --button-primary-background-fill-hover: #d4a017 !important;
+    --button-primary-text-color: #fff8e6 !important;
+    --button-secondary-background-fill: #e8e4d8 !important;
+    --button-secondary-background-fill-hover: #d8d4c8 !important;
+    --button-secondary-text-color: #1a1a2e !important;
+    --button-secondary-border-color: #c8bfa8 !important;
+    --block-shadow: 0 0 12px 2px rgba(180,140,10,0.07) !important;
+}
+html[data-theme="light"] .grimoire-header {
+    border-bottom-color: #c8bfa8;
+}
+html[data-theme="light"] .grimoire-header h1 {
+    background: linear-gradient(90deg, #6a4e00 0%, #b8860b 60%, #4a3000 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+html[data-theme="light"] #theme-btn {
+    border-color: #c8bfa8 !important;
+    color: #4a4a6a !important;
+}
+html[data-theme="light"] #theme-btn:hover {
+    border-color: #b8860b !important;
+    color: #6a4e00 !important;
+}
+html[data-theme="light"] .tab-nav button {
+    color: #4a4a6a !important;
+}
+html[data-theme="light"] .tab-nav button.selected {
+    color: #6a4e00 !important;
+    border-bottom: 2px solid #b8860b !important;
+}
+html[data-theme="light"] .tab-nav button:hover {
+    color: #b8860b !important;
+}
+html[data-theme="light"] textarea {
+    color: #1a4a1a !important;
+}
+html[data-theme="light"] .stop-btn {
+    border: 1px solid #d4a0a0 !important;
+    color: #884444 !important;
+}
+html[data-theme="light"] .stop-btn:hover:not(:disabled) {
+    border-color: #cc4444 !important;
+    color: #cc2222 !important;
+}
+html[data-theme="light"] #shutdown-btn {
+    border-color: #d4a0a0 !important;
+    color: #884444 !important;
+}
+html[data-theme="light"] #shutdown-btn:hover {
+    border-color: #cc4444 !important;
+    color: #cc2222 !important;
+}
 """
 
 
 def build_app() -> gr.Blocks:
     """Assemble and return the Gradio Blocks app."""
     with gr.Blocks(title="Grimoire") as app:
+        theme_state = gr.State("dark")
         with gr.Row(elem_classes="grimoire-header"):
             gr.Markdown("# ✦ Grimoire")
+            theme_btn = gr.Button(
+                "☀ Light mode", scale=0, min_width=120, elem_id="theme-btn"
+            )
             shutdown_btn = gr.Button(
                 "⏻ Shut down", scale=0, min_width=110, elem_id="shutdown-btn"
             )
@@ -569,6 +664,16 @@ def build_app() -> gr.Blocks:
             inputs=[],
             outputs=[],
             js=f"() => {{ window.location.replace('{_SHUTDOWN_PAGE}'); }}",
+        )
+        theme_btn.click(
+            fn=_toggle_theme,
+            inputs=[theme_state],
+            outputs=[theme_btn, theme_state],
+            js="""(current) => {
+                const next = current === 'dark' ? 'light' : 'dark';
+                document.documentElement.setAttribute('data-theme', next);
+                return current;
+            }""",
         )
 
         # ----------------------------------------------------------------
