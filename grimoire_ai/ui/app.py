@@ -581,11 +581,18 @@ textarea {
     line-height: 1.5 !important;
     color: #a8e8a8 !important;
 }
-/* Placeholder text — belt-and-suspenders over CSS variable resolution */
+/* Placeholder text — dark mode */
 input::placeholder,
 textarea::placeholder {
     color: #8888aa !important;  /* 4.8:1 on #1e1e2e (WCAG AA ✓) */
     opacity: 1 !important;      /* Firefox reduces opacity by default */
+}
+/* Placeholder text — light mode. Uses attribute selector (higher specificity
+   than the rule above) so it wins without depending on JS injection order. */
+[data-theme="light"] input::placeholder,
+[data-theme="light"] textarea::placeholder {
+    color: #5c5c70 !important;  /* 5.4:1 on #eeeae0 (WCAG AA ✓) */
+    opacity: 1 !important;
 }
 /* Primary CTA button text — explicit override so Gradio dark block can't revert to white */
 button.primary {
@@ -642,8 +649,6 @@ _LIGHT_CSS = (
     ".tab-nav button.selected{color:#6a4e00!important;border-bottom:2px solid #b8860b!important}"
     ".tab-nav button:hover{color:#7a5800!important}"  # 5.9:1 on #f5f3ee (WCAG AA ✓)
     "textarea{color:#1a1a2e!important}"      # dark navy, no green in light mode; 15.4:1 ✓
-    # Placeholder — #5c5c70 on #eeeae0 = 5.4:1 (WCAG AA ✓)
-    "input::placeholder,textarea::placeholder{color:#5c5c70!important;opacity:1!important}"
     # Primary CTA button text — #0d0d14 on #b8860b = 5.9:1 ✓
     "button.primary{color:#0d0d14!important}"
     # Code highlight — #1a1a2e on #dcd8cc = 12.0:1 ✓; var() also updated via JS vars
