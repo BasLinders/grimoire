@@ -701,6 +701,15 @@ input[type=range]::-webkit-slider-thumb {
     border-color: #cc4444 !important;
     color: #ee6666 !important;
 }
+/* Button press feedback — scale + brightness dip gives a clear 'clicked' feel.
+   Disabled buttons are excluded so they don't react at all. */
+button:not(:disabled) {
+    transition: transform 0.08s ease, filter 0.08s ease !important;
+}
+button:not(:disabled):active {
+    transform: scale(0.95) !important;
+    filter: brightness(0.80) !important;
+}
 """
 
 
