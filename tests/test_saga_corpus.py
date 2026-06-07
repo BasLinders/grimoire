@@ -101,7 +101,7 @@ def test_build_script_output_matches_source(tmp_path):
 
 def test_corpus_loads_reference_files_without_error(tmp_path):
     """GrimoireCorpus should index the reference files without raising."""
-    from grimoire.corpus.corpus import GrimoireCorpus
+    from grimoire_ai.corpus.corpus import GrimoireCorpus
 
     corpus = GrimoireCorpus()
     for ref in _REF_FILES:
@@ -112,7 +112,7 @@ def test_corpus_loads_reference_files_without_error(tmp_path):
 
 def test_corpus_query_returns_results(tmp_path):
     """Querying the corpus for 'encounter difficulty' should return results."""
-    from grimoire.corpus.corpus import GrimoireCorpus
+    from grimoire_ai.corpus.corpus import GrimoireCorpus
 
     corpus = GrimoireCorpus()
     for ref in _REF_FILES:
@@ -125,7 +125,7 @@ def test_corpus_query_returns_results(tmp_path):
 
 def test_corpus_query_dice_returns_results():
     """Querying for dice probability should return relevant results."""
-    from grimoire.corpus.corpus import GrimoireCorpus
+    from grimoire_ai.corpus.corpus import GrimoireCorpus
 
     corpus = GrimoireCorpus()
     text = (_REFERENCES / "dice_probability.txt").read_text(encoding="utf-8")

@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from grimoire.llm.tokenizer.bpe import BytePairEncoder
-from grimoire.llm.tokenizer.special_tokens import (
+from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
+from grimoire_ai.llm.tokenizer.special_tokens import (
     ALL_SPECIAL_TOKENS,
     AST_ID,
     BOS_ID,

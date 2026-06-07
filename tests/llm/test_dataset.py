@@ -17,9 +17,9 @@ import numpy as np
 import pytest
 import torch
 
-from grimoire.llm.data.collator import PaddingCollator
-from grimoire.llm.data.dataset import TokenizedDataset
-from grimoire.llm.tokenizer.special_tokens import PAD_ID
+from grimoire_ai.llm.data.collator import PaddingCollator
+from grimoire_ai.llm.data.dataset import TokenizedDataset
+from grimoire_ai.llm.tokenizer.special_tokens import PAD_ID
 
 
 # ---------------------------------------------------------------------------

@@ -15,11 +15,11 @@ import numpy as np
 import pytest
 import torch
 
-from grimoire.llm.data.dataset import TokenizedDataset
-from grimoire.llm.model.config import TransformerConfig
-from grimoire.llm.model.transformer import GrimoireTransformer
-from grimoire.llm.training.checkpoint import load_checkpoint, save_checkpoint
-from grimoire.llm.training.trainer import Trainer
+from grimoire_ai.llm.data.dataset import TokenizedDataset
+from grimoire_ai.llm.model.config import TransformerConfig
+from grimoire_ai.llm.model.transformer import GrimoireTransformer
+from grimoire_ai.llm.training.checkpoint import load_checkpoint, save_checkpoint
+from grimoire_ai.llm.training.trainer import Trainer
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +125,7 @@ def test_loss_decreases_on_overfit_corpus() -> None:
         class _CapturingTrainer(Trainer):
             def train(self, resume_from=None):
                 import torch.nn.functional as F
-                from grimoire.llm.tokenizer.special_tokens import PAD_ID
+                from grimoire_ai.llm.tokenizer.special_tokens import PAD_ID
                 self.model.train()
                 self._optimizer.zero_grad()
                 data_iter = iter(self._loader)

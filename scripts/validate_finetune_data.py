@@ -25,8 +25,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--max-seq-len", type=int, default=512, help="Sequence length cap.")
     args = parser.parse_args(argv)
 
-    from grimoire.llm.tokenizer.bpe import BytePairEncoder
-    from grimoire.llm.tokenizer.special_tokens import AST_ID, BOS_ID, EOS_ID, SEP_ID, USR_ID
+    from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
+    from grimoire_ai.llm.tokenizer.special_tokens import AST_ID, BOS_ID, EOS_ID, SEP_ID, USR_ID
 
     tokenizer = BytePairEncoder.load(args.vocab)
 

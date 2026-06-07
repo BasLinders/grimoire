@@ -26,7 +26,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from grimoire.corpus.ingest import (
+from grimoire_ai.corpus.ingest import (
     CleaningLevel,
     _clean,
     _url_to_filename,
@@ -229,7 +229,7 @@ def _minimal_pdf_bytes() -> bytes:
 def test_from_pdf_extracts_text() -> None:
     try:
         import pdfplumber  # noqa: F401
-        from grimoire.corpus.ingest import from_pdf
+        from grimoire_ai.corpus.ingest import from_pdf
     except BaseException:
         pytest.skip("pdfplumber not importable in this environment")
 
@@ -245,14 +245,14 @@ def test_from_pdf_missing_file_raises() -> None:
         import pdfplumber  # noqa: F401
     except BaseException:
         pytest.skip("pdfplumber not importable in this environment")
-    from grimoire.corpus.ingest import from_pdf
+    from grimoire_ai.corpus.ingest import from_pdf
     with pytest.raises(FileNotFoundError):
         from_pdf("/tmp/grimoire_no_such.pdf")
 
 
 def test_table_to_markdown_basic() -> None:
     """_table_to_markdown should produce a pipe table with a separator row."""
-    from grimoire.corpus.ingest import _table_to_markdown
+    from grimoire_ai.corpus.ingest import _table_to_markdown
 
     table = [
         ["STR", "DEX", "CON"],
@@ -267,7 +267,7 @@ def test_table_to_markdown_basic() -> None:
 
 def test_table_to_markdown_empty_cells() -> None:
     """Empty/None cells should be replaced with a space, not break the table."""
-    from grimoire.corpus.ingest import _table_to_markdown
+    from grimoire_ai.corpus.ingest import _table_to_markdown
 
     table = [["A", None, "C"], [None, "B", None]]
     md = _table_to_markdown(table)
@@ -277,7 +277,7 @@ def test_table_to_markdown_empty_cells() -> None:
 
 def test_table_to_markdown_empty_table() -> None:
     """An all-empty table should return an empty string."""
-    from grimoire.corpus.ingest import _table_to_markdown
+    from grimoire_ai.corpus.ingest import _table_to_markdown
 
     assert _table_to_markdown([]) == ""
     assert _table_to_markdown([[None, None]]) == ""
@@ -290,7 +290,7 @@ def test_table_to_markdown_empty_table() -> None:
 def test_from_docx_extracts_paragraphs() -> None:
     docx_mod = pytest.importorskip("docx")
     from docx import Document
-    from grimoire.corpus.ingest import from_docx
+    from grimoire_ai.corpus.ingest import from_docx
 
     doc = Document()
     doc.add_paragraph("A grappled creature has its speed reduced to zero.")
@@ -307,7 +307,7 @@ def test_from_docx_extracts_paragraphs() -> None:
 
 def test_from_docx_missing_file_raises() -> None:
     pytest.importorskip("docx")
-    from grimoire.corpus.ingest import from_docx
+    from grimoire_ai.corpus.ingest import from_docx
     with pytest.raises(FileNotFoundError):
         from_docx("/tmp/grimoire_no_such.docx")
 
@@ -318,7 +318,7 @@ def test_from_docx_missing_file_raises() -> None:
 
 def test_from_url_returns_text() -> None:
     pytest.importorskip("bs4")
-    from grimoire.corpus.ingest import from_url
+    from grimoire_ai.corpus.ingest import from_url
 
     html = """
     <html><body>
@@ -344,7 +344,7 @@ def test_from_url_returns_text() -> None:
 def test_from_url_raises_on_http_error() -> None:
     pytest.importorskip("bs4")
     import requests
-    from grimoire.corpus.ingest import from_url
+    from grimoire_ai.corpus.ingest import from_url
 
     mock_resp = MagicMock()
     mock_resp.raise_for_status.side_effect = requests.HTTPError("404")
@@ -357,7 +357,7 @@ def test_from_url_raises_on_http_error() -> None:
 def test_from_url_treats_md_url_as_markdown() -> None:
     """A URL ending in .md should be processed as Markdown, not HTML."""
     pytest.importorskip("bs4")
-    from grimoire.corpus.ingest import from_url
+    from grimoire_ai.corpus.ingest import from_url
 
     md_text = "# Combat\n\nA **grappled** creature has its speed reduced to zero.\n"
     mock_resp = MagicMock()
@@ -376,7 +376,7 @@ def test_from_url_treats_md_url_as_markdown() -> None:
 def test_from_url_treats_text_plain_as_markdown() -> None:
     """A text/plain response (no .md extension) should also skip BeautifulSoup."""
     pytest.importorskip("bs4")
-    from grimoire.corpus.ingest import from_url
+    from grimoire_ai.corpus.ingest import from_url
 
     md_text = "## Spellcasting\n\nYou can cast spells of your choice.\n"
     mock_resp = MagicMock()
@@ -470,7 +470,7 @@ def test_ingest_file_writes_txt() -> None:
 
 def test_ingest_url_writes_txt() -> None:
     pytest.importorskip("bs4")
-    from grimoire.corpus.ingest import ingest
+    from grimoire_ai.corpus.ingest import ingest
 
     html = "<html><body><main><p>Dragon lore.</p></main></body></html>"
     mock_resp = MagicMock()
@@ -520,7 +520,7 @@ def test_ingest_on_progress_callback_fires() -> None:
 
 def test_from_xlsx_renders_sheet_as_markdown() -> None:
     openpyxl = pytest.importorskip("openpyxl")
-    from grimoire.corpus.ingest import from_xlsx
+    from grimoire_ai.corpus.ingest import from_xlsx
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -542,7 +542,7 @@ def test_from_xlsx_renders_sheet_as_markdown() -> None:
 
 def test_from_xlsx_multiple_sheets() -> None:
     openpyxl = pytest.importorskip("openpyxl")
-    from grimoire.corpus.ingest import from_xlsx
+    from grimoire_ai.corpus.ingest import from_xlsx
 
     wb = openpyxl.Workbook()
     ws1 = wb.active
@@ -564,7 +564,7 @@ def test_from_xlsx_multiple_sheets() -> None:
 
 def test_from_xlsx_missing_file_raises() -> None:
     pytest.importorskip("openpyxl")
-    from grimoire.corpus.ingest import from_xlsx
+    from grimoire_ai.corpus.ingest import from_xlsx
     with pytest.raises(FileNotFoundError):
         from_xlsx("/tmp/grimoire_no_such.xlsx")
 

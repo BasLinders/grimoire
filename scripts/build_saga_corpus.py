@@ -114,7 +114,7 @@ def _split_by_heading(markdown: str) -> list[tuple[str, str]]:
 def _convert(markdown_text: str) -> str:
     """Convert a markdown string to plain text."""
     import tempfile
-    from grimoire.corpus.ingest import CleaningLevel, from_markdown
+    from grimoire_ai.corpus.ingest import CleaningLevel, from_markdown
 
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".md", delete=False, encoding="utf-8"

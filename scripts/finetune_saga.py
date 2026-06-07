@@ -24,12 +24,12 @@ import argparse
 
 import torch
 
-from grimoire.llm.data.conversation import ConversationDataset
-from grimoire.llm.model.config import TransformerConfig
-from grimoire.llm.model.transformer import GrimoireTransformer
-from grimoire.llm.tokenizer.bpe import BytePairEncoder
-from grimoire.llm.training.checkpoint import load_checkpoint
-from grimoire.llm.training.trainer import Trainer
+from grimoire_ai.llm.data.conversation import ConversationDataset
+from grimoire_ai.llm.model.config import TransformerConfig
+from grimoire_ai.llm.model.transformer import GrimoireTransformer
+from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
+from grimoire_ai.llm.training.checkpoint import load_checkpoint
+from grimoire_ai.llm.training.trainer import Trainer
 
 
 def main(argv: list[str] | None = None) -> None:

@@ -1,8 +1,8 @@
 import pytest
-from grimoire.corpus.corpus import GrimoireCorpus
-from grimoire.corpus.index import CorpusIndex
-from grimoire.corpus.stemmer import GrimoireStemmer
-from grimoire.corpus.tokenizer import GrimoireTokenizer
+from grimoire_ai.corpus.corpus import GrimoireCorpus
+from grimoire_ai.corpus.index import CorpusIndex
+from grimoire_ai.corpus.stemmer import GrimoireStemmer
+from grimoire_ai.corpus.tokenizer import GrimoireTokenizer
 
 FIXTURE_TEXT = (
     "A grappled creature has its speed reduced to zero. "
@@ -143,7 +143,7 @@ class TestExcerpts:
         )
 
     def test_excerpt_within_window(self):
-        from grimoire.corpus.corpus import _EXCERPT_WINDOW
+        from grimoire_ai.corpus.corpus import _EXCERPT_WINDOW
         results = self.corpus.query("grapple speed", top_k=3)
         for r in results:
             assert len(r.excerpt) <= _EXCERPT_WINDOW + 50, (
@@ -151,7 +151,7 @@ class TestExcerpts:
             )
 
     def test_index_add_without_excerpt_gives_none(self):
-        from grimoire.corpus.index import CorpusIndex
+        from grimoire_ai.corpus.index import CorpusIndex
         idx = CorpusIndex()
         idx.add(("a", "b", "c", "d"), next_token="next")
         assert idx.get(("a", "b", "c", "d")).excerpt is None

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import pytest
 
-from grimoire.agents.registry import AgentConfig, AgentRegistry
+from grimoire_ai.agents.registry import AgentConfig, AgentRegistry
 
 
 # ---------------------------------------------------------------------------

@@ -13,10 +13,10 @@ import pytest
 import torch
 import torch.nn as nn
 
-from grimoire.llm.inference.sampler import GenerationConfig, generate
-from grimoire.llm.model.config import TransformerConfig
-from grimoire.llm.model.transformer import GrimoireTransformer
-from grimoire.llm.tokenizer.special_tokens import EOS_ID
+from grimoire_ai.llm.inference.sampler import GenerationConfig, generate
+from grimoire_ai.llm.model.config import TransformerConfig
+from grimoire_ai.llm.model.transformer import GrimoireTransformer
+from grimoire_ai.llm.tokenizer.special_tokens import EOS_ID
 
 
 # ---------------------------------------------------------------------------

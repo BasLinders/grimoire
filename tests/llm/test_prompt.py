@@ -12,10 +12,10 @@ Gate criteria:
 
 import pytest
 
-from grimoire.corpus.corpus import QueryResult
-from grimoire.llm.inference.prompt import PromptBuilder
-from grimoire.llm.tokenizer.bpe import BytePairEncoder
-from grimoire.llm.tokenizer.special_tokens import (
+from grimoire_ai.corpus.corpus import QueryResult
+from grimoire_ai.llm.inference.prompt import PromptBuilder
+from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
+from grimoire_ai.llm.tokenizer.special_tokens import (
     AST_ID,
     BOS_ID,
     SEP_ID,
@@ -122,7 +122,7 @@ def test_query_only_structure(tokenizer: BytePairEncoder) -> None:
 
 def test_excerpt_preferred_over_next_token(tokenizer: BytePairEncoder) -> None:
     """PromptBuilder should use excerpt when available, ignoring next_token."""
-    from grimoire.corpus.corpus import QueryResult
+    from grimoire_ai.corpus.corpus import QueryResult
 
     excerpt_result = QueryResult(
         multi_token=("a", "b", "c", "d"),
@@ -141,7 +141,7 @@ def test_excerpt_preferred_over_next_token(tokenizer: BytePairEncoder) -> None:
 
 def test_next_token_fallback_when_no_excerpt(tokenizer: BytePairEncoder) -> None:
     """When excerpt is None, next_token is used as context."""
-    from grimoire.corpus.corpus import QueryResult
+    from grimoire_ai.corpus.corpus import QueryResult
 
     no_excerpt = QueryResult(
         multi_token=("a", "b", "c", "d"),

@@ -17,14 +17,14 @@ import numpy as np
 import pytest
 import torch
 
-from grimoire.corpus.corpus import GrimoireCorpus, QueryResult
-from grimoire.llm.inference.engine import InferenceEngine
-from grimoire.llm.inference.sampler import GenerationConfig
-from grimoire.llm.model.config import TransformerConfig
-from grimoire.llm.model.transformer import GrimoireTransformer
-from grimoire.llm.tokenizer.bpe import BytePairEncoder
-from grimoire.llm.tokenizer.special_tokens import SEP_ID, USR_ID
-from grimoire.llm.training.checkpoint import save_checkpoint
+from grimoire_ai.corpus.corpus import GrimoireCorpus, QueryResult
+from grimoire_ai.llm.inference.engine import InferenceEngine
+from grimoire_ai.llm.inference.sampler import GenerationConfig
+from grimoire_ai.llm.model.config import TransformerConfig
+from grimoire_ai.llm.model.transformer import GrimoireTransformer
+from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
+from grimoire_ai.llm.tokenizer.special_tokens import SEP_ID, USR_ID
+from grimoire_ai.llm.training.checkpoint import save_checkpoint
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +177,7 @@ def test_corpus_context_reaches_prompt() -> None:
             captured["prompt_ids"] = prompt_ids
             return []
 
-        with patch("grimoire.llm.inference.engine.generate", _fake_generate):
+        with patch("grimoire_ai.llm.inference.engine.generate", _fake_generate):
             engine.respond("grapple speed", top_k_corpus=3)
 
     assert "prompt_ids" in captured, "generate() was never called."
@@ -204,7 +204,7 @@ def test_no_corpus_means_no_context_block() -> None:
             captured["prompt_ids"] = prompt_ids
             return []
 
-        with patch("grimoire.llm.inference.engine.generate", _fake_generate):
+        with patch("grimoire_ai.llm.inference.engine.generate", _fake_generate):
             engine.respond("fire bolt")
 
     assert SEP_ID not in captured["prompt_ids"], "No corpus should mean no SEP block."
