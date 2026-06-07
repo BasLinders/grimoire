@@ -33,6 +33,7 @@ Usage
     # then open http://localhost:7860
 """
 
+import json
 import os
 import queue
 import threading
@@ -461,6 +462,71 @@ def clear_conversation(conv_state) -> tuple[object, str]:
     else:
         conv_state = ConversationState()
     return conv_state, ""
+
+
+# ---------------------------------------------------------------------------
+# Dataset builder helpers
+# ---------------------------------------------------------------------------
+
+def _dataset_preview(pairs: list[dict]) -> str:
+    """Render the last three saved pairs as readable text."""
+    if not pairs:
+        return ""
+    lines = []
+    for p in pairs[-3:]:
+        lines.append(f"prompt:   {p['prompt']}")
+        lines.append(f"response: {p['response']}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def stage_exchange(query: str, response: str) -> tuple[str, str]:
+    """Copy the current chat exchange into the editable staging fields."""
+    return query.strip(), response.strip()
+
+
+def add_to_dataset(
+    prompt: str,
+    response: str,
+    pairs: list[dict],
+) -> tuple[list[dict], str, str, str, str]:
+    """Append the staged pair to the dataset and clear the staging fields."""
+    prompt = prompt.strip()
+    response = response.strip()
+    if not prompt or not response:
+        status = "Both prompt and response must be non-empty."
+        return pairs, _dataset_label(pairs), _dataset_preview(pairs), prompt, response
+    pairs = pairs + [{"prompt": prompt, "response": response}]
+    return pairs, _dataset_label(pairs), _dataset_preview(pairs), "", ""
+
+
+def remove_last_pair(pairs: list[dict]) -> tuple[list[dict], str, str]:
+    """Remove the most recently added pair."""
+    pairs = pairs[:-1] if pairs else pairs
+    return pairs, _dataset_label(pairs), _dataset_preview(pairs)
+
+
+def export_dataset(pairs: list[dict], path: str) -> str:
+    """Write all saved pairs to a JSONL file."""
+    if not pairs:
+        return "Nothing to export — add some pairs first."
+    path = path.strip() or "data/finetune/conversations.jsonl"
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", encoding="utf-8") as f:
+        for pair in pairs:
+            f.write(json.dumps(pair, ensure_ascii=False) + "\n")
+    return f"Exported {len(pairs)} pair(s) to {out}"
+
+
+def clear_dataset() -> tuple[list, str, str]:
+    """Wipe all saved pairs."""
+    return [], _dataset_label([]), ""
+
+
+def _dataset_label(pairs: list[dict]) -> str:
+    n = len(pairs)
+    return f"{n} pair{'s' if n != 1 else ''} saved"
 
 
 # ---------------------------------------------------------------------------
@@ -1153,8 +1219,43 @@ def build_app() -> gr.Blocks:
             chat_query    = gr.Textbox(label="Your query", lines=3)
             chat_response = gr.Textbox(label="Response", lines=8, interactive=False)
             with gr.Row():
-                chat_btn  = gr.Button("Send", variant="primary")
-                clear_btn = gr.Button("Clear conversation")
+                chat_btn      = gr.Button("Send", variant="primary")
+                stage_btn     = gr.Button("✦ Save this exchange", scale=0, min_width=160)
+                clear_btn     = gr.Button("Clear conversation", scale=0)
+
+            # ---- Dataset builder ----------------------------------------
+            with gr.Accordion("Dataset builder — collect fine-tune pairs", open=False):
+                gr.Markdown(
+                    "After a good exchange, click **✦ Save this exchange** above. "
+                    "Edit the prompt or response below if needed, then click **Add pair**. "
+                    "Export to JSONL when you have enough pairs."
+                )
+                with gr.Row():
+                    ds_prompt   = gr.Textbox(label="Prompt", lines=3, interactive=True)
+                    ds_response = gr.Textbox(label="Response", lines=3, interactive=True)
+                with gr.Row():
+                    ds_add_btn    = gr.Button("Add pair", variant="primary")
+                    ds_undo_btn   = gr.Button("Undo last", scale=0, min_width=100)
+                    ds_clear_btn  = gr.Button("Clear all", scale=0, min_width=100)
+                ds_count   = gr.Textbox(
+                    label="Dataset", value="0 pairs saved", interactive=False, scale=0
+                )
+                ds_preview = gr.Textbox(
+                    label="Preview (last 3 pairs)", lines=8, interactive=False
+                )
+                gr.Markdown("---")
+                with gr.Row():
+                    ds_path       = gr.Textbox(
+                        label="Export path",
+                        value="data/finetune/conversations.jsonl",
+                        info="File is created automatically if it doesn't exist. Existing content is overwritten.",
+                        scale=3,
+                    )
+                    ds_export_btn = gr.Button("Export JSONL", variant="primary", scale=0, min_width=130)
+                ds_status = gr.Textbox(label="Export status", interactive=False)
+
+            # ---- Dataset state ------------------------------------------
+            dataset_state = gr.State(value=[])
 
             # ---- Event wiring -------------------------------------------
             agent_load_btn.click(
@@ -1177,6 +1278,31 @@ def build_app() -> gr.Blocks:
                 fn=clear_conversation,
                 inputs=[conv_state],
                 outputs=[conv_state, chat_response],
+            )
+            stage_btn.click(
+                fn=stage_exchange,
+                inputs=[chat_query, chat_response],
+                outputs=[ds_prompt, ds_response],
+            )
+            ds_add_btn.click(
+                fn=add_to_dataset,
+                inputs=[ds_prompt, ds_response, dataset_state],
+                outputs=[dataset_state, ds_count, ds_preview, ds_prompt, ds_response],
+            )
+            ds_undo_btn.click(
+                fn=remove_last_pair,
+                inputs=[dataset_state],
+                outputs=[dataset_state, ds_count, ds_preview],
+            )
+            ds_clear_btn.click(
+                fn=clear_dataset,
+                inputs=[],
+                outputs=[dataset_state, ds_count, ds_preview],
+            )
+            ds_export_btn.click(
+                fn=export_dataset,
+                inputs=[dataset_state, ds_path],
+                outputs=[ds_status],
             )
 
     return app
