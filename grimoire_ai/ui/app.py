@@ -506,17 +506,46 @@ def remove_last_pair(pairs: list[dict]) -> tuple[list[dict], str, str]:
     return pairs, _dataset_label(pairs), _dataset_preview(pairs)
 
 
-def export_dataset(pairs: list[dict], path: str) -> str:
-    """Write all saved pairs to a JSONL file."""
+def load_dataset(path: str) -> tuple[list[dict], str, str, str]:
+    """Load an existing JSONL file into session state."""
+    path = path.strip() or "data/finetune/conversations.jsonl"
+    p = Path(path)
+    if not p.exists():
+        return [], _dataset_label([]), "", f"File not found: {path}"
+    pairs = []
+    skipped = 0
+    with p.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                if "prompt" in obj and "response" in obj:
+                    pairs.append({"prompt": obj["prompt"], "response": obj["response"]})
+                else:
+                    skipped += 1
+            except json.JSONDecodeError:
+                skipped += 1
+    msg = f"Loaded {len(pairs)} pair(s) from {p}"
+    if skipped:
+        msg += f" ({skipped} invalid line(s) skipped)"
+    return pairs, _dataset_label(pairs), _dataset_preview(pairs), msg
+
+
+def export_dataset(pairs: list[dict], path: str, overwrite: bool) -> str:
+    """Append (or overwrite) pairs to a JSONL file."""
     if not pairs:
         return "Nothing to export — add some pairs first."
     path = path.strip() or "data/finetune/conversations.jsonl"
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    with out.open("w", encoding="utf-8") as f:
+    mode = "w" if overwrite else "a"
+    with out.open(mode, encoding="utf-8") as f:
         for pair in pairs:
             f.write(json.dumps(pair, ensure_ascii=False) + "\n")
-    return f"Exported {len(pairs)} pair(s) to {out}"
+    action = "Overwrote" if overwrite else "Appended"
+    return f"{action} {len(pairs)} pair(s) to {out}"
 
 
 def clear_dataset() -> tuple[list, str, str]:
@@ -1229,14 +1258,21 @@ def build_app() -> gr.Blocks:
                 )
                 gr.Markdown("---")
                 with gr.Row():
-                    ds_path       = gr.Textbox(
-                        label="Export path",
+                    ds_path = gr.Textbox(
+                        label="Dataset file path",
                         value="data/finetune/conversations.jsonl",
-                        info="File is created automatically if it doesn't exist. Existing content is overwritten.",
+                        info="Shared by Load and Export. File is created automatically if it doesn't exist.",
                         scale=3,
                     )
+                    ds_load_btn   = gr.Button("Load existing", scale=0, min_width=130)
                     ds_export_btn = gr.Button("Export JSONL", variant="primary", scale=0, min_width=130)
-                ds_status = gr.Textbox(label="Export status", interactive=False)
+                with gr.Row():
+                    ds_overwrite = gr.Checkbox(
+                        label="Overwrite file on export",
+                        value=False,
+                        info="Unchecked (default): new pairs are appended to the existing file. Check this only when you want to replace the file completely.",
+                    )
+                ds_status = gr.Textbox(label="Status", interactive=False)
 
             # ---- Dataset state ------------------------------------------
             dataset_state = gr.State(value=[])
@@ -1283,9 +1319,14 @@ def build_app() -> gr.Blocks:
                 inputs=[],
                 outputs=[dataset_state, ds_count, ds_preview],
             )
+            ds_load_btn.click(
+                fn=load_dataset,
+                inputs=[ds_path],
+                outputs=[dataset_state, ds_count, ds_preview, ds_status],
+            )
             ds_export_btn.click(
                 fn=export_dataset,
-                inputs=[dataset_state, ds_path],
+                inputs=[dataset_state, ds_path, ds_overwrite],
                 outputs=[ds_status],
             )
 
