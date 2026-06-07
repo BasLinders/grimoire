@@ -547,7 +547,26 @@ def build_app() -> gr.Blocks:
             shutdown_btn = gr.Button(
                 "⏻ Shut down", scale=0, min_width=110, elem_id="shutdown-btn"
             )
-        shutdown_btn.click(fn=lambda: os._exit(0), inputs=[], outputs=[])
+        # Navigate the browser to a static shutdown page before killing the
+        # server.  This prevents Gradio's client-side reconnect loop from
+        # firing — the page is gone before the WebSocket drops.
+        _SHUTDOWN_PAGE = (
+            "data:text/html,"
+            "%3Chtml%20style%3D%22background%3A%230d0d14%3Bcolor%3A%23e8c97a%3B"
+            "font-family%3A%27Cinzel%27%2Cserif%3Bdisplay%3Aflex%3Balign-items%3A"
+            "center%3Bjustify-content%3Acenter%3Bheight%3A100vh%3Bmargin%3A0%22%3E"
+            "%3Cdiv%20style%3D%22text-align%3Acenter%22%3E"
+            "%3Ch1%3E%E2%9C%A6%20Grimoire%3C%2Fh1%3E"
+            "%3Cp%20style%3D%22color%3A%23c8c8d8%22%3EThe%20server%20has%20shut%20down."
+            "%20You%20may%20close%20this%20tab.%3C%2Fp%3E"
+            "%3C%2Fdiv%3E%3C%2Fhtml%3E"
+        )
+        shutdown_btn.click(
+            fn=lambda: os._exit(0),
+            inputs=[],
+            outputs=[],
+            js=f"() => {{ window.location.replace('{_SHUTDOWN_PAGE}'); }}",
+        )
 
         # ----------------------------------------------------------------
         with gr.Tab("Preprocess"):
