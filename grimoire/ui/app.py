@@ -844,15 +844,17 @@ def build_app() -> gr.Blocks:
 # Entry point
 # ---------------------------------------------------------------------------
 
-def launch(share: bool = False, port: int = 7860) -> None:
+def launch(share: bool = False, port: int = 7860, inbrowser: bool = True) -> None:
     """Build and launch the Gradio app.
 
     Args:
         share: If ``True``, create a public Gradio tunnel (requires internet).
         port: Local port to serve the app on.
+        inbrowser: If ``True`` (default), open the default browser automatically
+            when the server is ready.
     """
     build_app().queue().launch(
-        server_port=port, share=share, theme=_THEME, css=_CSS
+        server_port=port, share=share, inbrowser=inbrowser, theme=_THEME, css=_CSS
     )
 
 
