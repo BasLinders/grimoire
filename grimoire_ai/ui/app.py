@@ -798,22 +798,24 @@ def build_app() -> gr.Blocks:
                 pp_input = gr.Textbox(
                     label="Input directory (.txt files)",
                     value="data/corpus/saga/",
+                    info="Folder containing your raw text files. All .txt files in this folder are read and combined into the training corpus.",
                 )
                 pp_output = gr.Textbox(
                     label="Output corpus binary (.bin)",
                     value="data/processed/corpus.bin",
+                    info="Where the processed corpus is saved. This compact binary file is what the Pre-train tab reads. You can reuse it across multiple training runs.",
                 )
             with gr.Row():
                 pp_vocab = gr.Textbox(
                     label="Vocabulary path (.json)",
                     value="data/tokenizer/bpe.json",
-                    info="Trained and saved here if it does not exist; loaded otherwise.",
+                    info="Where the tokenizer vocabulary is saved or loaded from. The tokenizer breaks text into small pieces (tokens) the model can learn from. Trained and saved here on first run; reloaded on subsequent runs.",
                 )
                 pp_vocab_size = gr.Number(
                     label="Vocabulary size",
                     value=16384,
                     precision=0,
-                    info="Used only when training a new tokenizer.",
+                    info="How many unique tokens the tokenizer learns. Larger = more nuanced text handling but slower training. 16 384 is a good default for a focused corpus. Only used when training a new tokenizer.",
                 )
             with gr.Row():
                 pp_run_btn  = gr.Button("Start preprocessing", variant="primary")
@@ -840,29 +842,53 @@ def build_app() -> gr.Blocks:
                 pt_corpus = gr.Textbox(
                     label="Corpus path (.bin)",
                     value="data/processed/corpus.bin",
+                    info="The binary corpus file produced by the Preprocess tab. This is the dataset the model learns from.",
                 )
                 pt_ckpt_dir = gr.Textbox(
                     label="Checkpoint directory",
                     value="checkpoints/pretrain/",
+                    info="Folder where model snapshots are saved during training. Each snapshot lets you resume later or roll back to an earlier state.",
                 )
             pt_resume = gr.Textbox(
                 label="Resume from checkpoint (.pt)",
                 placeholder="Leave blank to start from scratch",
                 info=(
-                    "Optional. Load weights, optimizer state, and step counter from a "
-                    "previous checkpoint. Total steps is the final target — if the checkpoint "
-                    "is at step 5 000 and you set Total steps to 10 000, training runs 5 000 more steps."
+                    "Optional. Continue a previous run instead of starting over. "
+                    "Point this to a .pt file in your checkpoint directory. "
+                    "Total steps is the final target — if the checkpoint is at step 5 000 "
+                    "and you set Total steps to 10 000, only 5 000 more steps are run."
                 ),
             )
             with gr.Row():
-                pt_steps      = gr.Number(label="Total steps",      value=10_000, precision=0)
-                pt_warmup     = gr.Number(label="Warmup steps",     value=500,    precision=0)
-                pt_lr         = gr.Number(label="Peak LR",          value=3e-4)
+                pt_steps  = gr.Number(
+                    label="Total steps", value=10_000, precision=0,
+                    info="How many training iterations to run in total. More steps generally means a better-trained model, but takes longer. 10 000 is a reasonable starting point for a small corpus.",
+                )
+                pt_warmup = gr.Number(
+                    label="Warmup steps", value=500, precision=0,
+                    info="The model starts with a very low learning rate and gradually increases it over this many steps. This prevents unstable early training. Roughly 5% of Total steps is a safe default.",
+                )
+                pt_lr = gr.Number(
+                    label="Peak LR", value=3e-4,
+                    info="Peak learning rate — how big each weight update is at its largest. 3e-4 (0.0003) is a well-tested default for this model size. Lower values train more slowly but more stably.",
+                )
             with gr.Row():
-                pt_batch      = gr.Number(label="Batch size",       value=4,  precision=0)
-                pt_accum      = gr.Number(label="Gradient accum.",  value=8,  precision=0)
-                pt_log        = gr.Number(label="Log every N steps",value=50, precision=0)
-                pt_save       = gr.Number(label="Save every N steps",value=1000,precision=0)
+                pt_batch = gr.Number(
+                    label="Batch size", value=4, precision=0,
+                    info="How many text sequences are processed in parallel per step. Higher = faster training but more memory. Reduce to 1 or 2 if you run out of RAM or VRAM.",
+                )
+                pt_accum = gr.Number(
+                    label="Gradient accum.", value=8, precision=0,
+                    info="Gradient accumulation — simulates a larger batch by averaging gradients over this many mini-batches before updating weights. Effective batch = Batch size × this value. Increase this if you need a larger effective batch but can't fit it in memory.",
+                )
+                pt_log = gr.Number(
+                    label="Log every N steps", value=50, precision=0,
+                    info="How often a loss line is written to the training log. Lower = more frequent updates in the log.",
+                )
+                pt_save = gr.Number(
+                    label="Save every N steps", value=1000, precision=0,
+                    info="How often a checkpoint snapshot is saved to disk. Lower = more recovery points, but more disk space used.",
+                )
             with gr.Row():
                 pt_run_btn  = gr.Button("Start pre-training", variant="primary")
                 pt_stop_btn = gr.Button(
@@ -888,38 +914,72 @@ def build_app() -> gr.Blocks:
         # ----------------------------------------------------------------
         with gr.Tab("Fine-tune"):
             gr.Markdown(
-                "Continue from a pre-trained checkpoint on a JSONL conversation dataset."
+                "Specialise a pre-trained model on a conversation dataset. "
+                "Fine-tuning teaches the model to respond in a specific style or domain "
+                "without retraining from scratch."
             )
             with gr.Row():
-                ft_pretrain_ckpt = gr.Textbox(label="Pre-trained checkpoint (.pt)")
-                ft_data          = gr.Textbox(label="JSONL dataset path")
-                ft_vocab         = gr.Textbox(
+                ft_pretrain_ckpt = gr.Textbox(
+                    label="Pre-trained checkpoint (.pt)",
+                    info="The model snapshot from Pre-train to start fine-tuning from. This is the base knowledge the model already has.",
+                )
+                ft_data = gr.Textbox(
+                    label="JSONL dataset path",
+                    info="Path to your conversation dataset. Each line must be a JSON object with 'prompt' and 'response' keys — the question/answer pairs the model learns to imitate.",
+                )
+                ft_vocab = gr.Textbox(
                     label="Vocabulary path (.json)",
                     value="data/tokenizer/bpe.json",
+                    info="The tokenizer vocabulary used during pre-training. Must be the same file — using a different vocabulary will produce garbage output.",
                 )
             with gr.Row():
                 ft_ckpt_dir = gr.Textbox(
                     label="Output checkpoint directory",
                     value="checkpoints/finetune/",
+                    info="Folder where fine-tuned model snapshots are saved. Keep this separate from your pre-train checkpoints.",
                 )
-                ft_max_seq  = gr.Number(label="Max sequence length", value=512, precision=0)
+                ft_max_seq = gr.Number(
+                    label="Max sequence length", value=512, precision=0,
+                    info="Maximum number of tokens in a single prompt+response pair. Longer sequences use more memory. Pairs longer than this are truncated.",
+                )
             ft_resume = gr.Textbox(
                 label="Resume fine-tune from checkpoint (.pt)",
                 placeholder="Leave blank to start fine-tuning from scratch",
                 info=(
-                    "Optional. Resume a previous fine-tuning run. Restores optimizer state "
-                    "and step counter. Total steps is the final target."
+                    "Optional. Continue a previous fine-tuning run instead of starting over. "
+                    "Restores optimizer state and step counter. Total steps is the final target."
                 ),
             )
             with gr.Row():
-                ft_steps    = gr.Number(label="Total steps",      value=500,  precision=0)
-                ft_warmup   = gr.Number(label="Warmup steps",     value=10,   precision=0)
-                ft_lr       = gr.Number(label="Peak LR",          value=5e-5)
+                ft_steps  = gr.Number(
+                    label="Total steps", value=500, precision=0,
+                    info="How many fine-tuning iterations to run. Fine-tuning needs far fewer steps than pre-training — too many steps can cause the model to 'forget' its general knowledge.",
+                )
+                ft_warmup = gr.Number(
+                    label="Warmup steps", value=10, precision=0,
+                    info="Gradually ramps up the learning rate over this many steps to avoid large disruptive updates at the start.",
+                )
+                ft_lr = gr.Number(
+                    label="Peak LR", value=5e-5,
+                    info="Peak learning rate for fine-tuning. Should be much lower than pre-training (5e-5 = 0.00005) to make small, careful adjustments without overwriting what the model already learned.",
+                )
             with gr.Row():
-                ft_batch    = gr.Number(label="Batch size",       value=4, precision=0)
-                ft_accum    = gr.Number(label="Gradient accum.",  value=4, precision=0)
-                ft_log      = gr.Number(label="Log every N steps",value=25,precision=0)
-                ft_save     = gr.Number(label="Save every N steps",value=100,precision=0)
+                ft_batch = gr.Number(
+                    label="Batch size", value=4, precision=0,
+                    info="Number of conversation pairs processed in parallel per step. Reduce if you run out of memory.",
+                )
+                ft_accum = gr.Number(
+                    label="Gradient accum.", value=4, precision=0,
+                    info="Simulates a larger batch by accumulating gradients over this many mini-batches. Effective batch = Batch size × this value.",
+                )
+                ft_log = gr.Number(
+                    label="Log every N steps", value=25, precision=0,
+                    info="How often a loss line is written to the training log.",
+                )
+                ft_save = gr.Number(
+                    label="Save every N steps", value=100, precision=0,
+                    info="How often a checkpoint snapshot is saved to disk.",
+                )
             with gr.Row():
                 ft_run_btn  = gr.Button("Start fine-tuning", variant="primary")
                 ft_stop_btn = gr.Button(
@@ -953,6 +1013,7 @@ def build_app() -> gr.Blocks:
                 choices=["URL", "File", "Directory"],
                 value="URL",
                 label="Source type",
+                info="URL: scrape a web page. File: upload a document (PDF, Word, Excel, Markdown, image). Directory: process all supported files in a local folder.",
             )
 
             # URL / Directory: text box
@@ -960,24 +1021,31 @@ def build_app() -> gr.Blocks:
                 label="URL or directory path",
                 placeholder="https://example.com/rules  or  data/documents/",
                 visible=True,
+                info="Full web address (starting with https://) or a local folder path containing documents to ingest.",
             )
             # File: upload widget
-            ing_file = gr.File(label="Upload file", visible=False)
+            ing_file = gr.File(
+                label="Upload file",
+                visible=False,
+                file_types=[".pdf", ".docx", ".xlsx", ".md", ".txt", ".png", ".jpg", ".jpeg", ".tiff"],
+            )
 
             with gr.Row():
                 ing_output = gr.Textbox(
                     label="Output directory",
                     value="data/raw/",
                     placeholder="data/raw/",
+                    info="Folder where the extracted .txt files are saved. These files become your training corpus for the Preprocess tab.",
                 )
                 ing_cleaning = gr.Radio(
                     choices=["minimal", "standard", "thorough"],
                     value="standard",
                     label="Cleaning level",
                     info=(
-                        "minimal — whitespace only | "
-                        "standard — collapse blank lines & spaces | "
-                        "thorough — also drop short lines & deduplicate paragraphs"
+                        "How aggressively boilerplate and noise is stripped from the extracted text. "
+                        "minimal — only fix whitespace. "
+                        "standard — also collapse blank lines and extra spaces. "
+                        "thorough — also remove very short lines and deduplicate repeated paragraphs."
                     ),
                 )
 
@@ -986,12 +1054,14 @@ def build_app() -> gr.Blocks:
                     label="Recursive (subdirectories)",
                     value=False,
                     visible=False,
+                    info="Also process files in subfolders inside the selected directory.",
                 )
                 ing_timeout = gr.Number(
                     label="HTTP timeout (seconds)",
                     value=15,
                     precision=0,
                     visible=True,
+                    info="How long to wait for a web page to respond before giving up. Increase for slow sites.",
                 )
 
             with gr.Row():
@@ -1049,20 +1119,36 @@ def build_app() -> gr.Blocks:
             # ---- Manual load --------------------------------------------
             with gr.Accordion("Load checkpoint manually", open=not bool(_agent_names)):
                 with gr.Row():
-                    chat_ckpt  = gr.Textbox(label="Checkpoint path (.pt)")
+                    chat_ckpt = gr.Textbox(
+                        label="Checkpoint path (.pt)",
+                        info="Path to a trained model snapshot (.pt file) from your Pre-train or Fine-tune output folder.",
+                    )
                     chat_vocab = gr.Textbox(
                         label="Vocabulary path (.json)",
                         value="data/tokenizer/bpe.json",
+                        info="The tokenizer vocabulary used when the model was trained. Must match — using a different vocabulary produces garbled output.",
                     )
                     load_btn = gr.Button("Load model")
                 load_status = gr.Textbox(label="Status", interactive=False)
 
             # ---- Generation controls ------------------------------------
             with gr.Row():
-                chat_temp   = gr.Slider(0.1, 2.0, value=0.8,  step=0.05, label="Temperature")
-                chat_top_k  = gr.Slider(1,   200, value=50,   step=1,    label="Top-k")
-                chat_top_p  = gr.Slider(0.1, 1.0, value=0.9,  step=0.05, label="Top-p")
-                chat_tokens = gr.Slider(16,  512, value=128,  step=8,    label="Max new tokens")
+                chat_temp = gr.Slider(
+                    0.1, 2.0, value=0.8, step=0.05, label="Temperature",
+                    info="Controls randomness. Lower (e.g. 0.3) = more focused and predictable answers. Higher (e.g. 1.2) = more creative and varied, but can become incoherent.",
+                )
+                chat_top_k = gr.Slider(
+                    1, 200, value=50, step=1, label="Top-k",
+                    info="At each step the model only considers the K most likely next words. Lower = safer, more repetitive. Higher = more variety. 50 is a balanced default.",
+                )
+                chat_top_p = gr.Slider(
+                    0.1, 1.0, value=0.9, step=0.05, label="Top-p",
+                    info="Nucleus sampling — the model picks from the smallest set of words whose combined probability exceeds this value. 0.9 means 'use whichever words together make up 90% of the likely options'. Works alongside Top-k.",
+                )
+                chat_tokens = gr.Slider(
+                    16, 512, value=128, step=8, label="Max new tokens",
+                    info="Maximum number of words (tokens) the model generates in a single reply. Increase for longer answers, decrease for short responses.",
+                )
 
             chat_query    = gr.Textbox(label="Your query", lines=3)
             chat_response = gr.Textbox(label="Response", lines=8, interactive=False)
