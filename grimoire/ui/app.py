@@ -41,6 +41,13 @@ from typing import Generator, Optional
 
 import gradio as gr
 
+# Per-tab stop events — replaced each time a new run starts.
+_stop_events: dict[str, Optional[threading.Event]] = {
+    "preprocess": None,
+    "pretrain": None,
+    "finetune": None,
+}
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -99,6 +106,9 @@ def run_preprocess(
     """Train BPE tokenizer and write corpus binary; stream progress live."""
     from grimoire.llm.data.preprocessing import preprocess
 
+    stop_event = threading.Event()
+    _stop_events["preprocess"] = stop_event
+
     def _task(on_progress):
         preprocess(
             input_path=input_dir.strip(),
@@ -111,6 +121,13 @@ def run_preprocess(
     yield from _wrap_with_buttons(_stream_task(_task))
 
 
+def stop_preprocess() -> None:
+    """Signal the running preprocess task to stop."""
+    ev = _stop_events.get("preprocess")
+    if ev is not None:
+        ev.set()
+
+
 # ---------------------------------------------------------------------------
 # Pre-train tab logic
 # ---------------------------------------------------------------------------
@@ -118,6 +135,7 @@ def run_preprocess(
 def run_pretrain(
     corpus_path: str,
     checkpoint_dir: str,
+    resume_from: str,
     total_steps: int,
     warmup_steps: int,
     peak_lr: float,
@@ -132,6 +150,10 @@ def run_pretrain(
     from grimoire.llm.model.config import TransformerConfig
     from grimoire.llm.model.transformer import GrimoireTransformer
     from grimoire.llm.training.trainer import Trainer
+
+    stop_event = threading.Event()
+    _stop_events["pretrain"] = stop_event
+    resume = resume_from.strip() or None
 
     def _train(on_log, on_save, on_done):
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -153,9 +175,17 @@ def run_pretrain(
             on_log=on_log,
             on_save=on_save,
             on_done=on_done,
-        ).train()
+            stop_event=stop_event,
+        ).train(resume_from=resume)
 
     yield from _wrap_with_buttons(_stream_training(_train))
+
+
+def stop_pretrain() -> None:
+    """Signal the running pre-training loop to stop after the current step."""
+    ev = _stop_events.get("pretrain")
+    if ev is not None:
+        ev.set()
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +193,8 @@ def run_pretrain(
 # ---------------------------------------------------------------------------
 
 def run_finetune(
-    resume: str,
+    pretrain_ckpt: str,
+    resume_from: str,
     data_path: str,
     vocab_path: str,
     checkpoint_dir: str,
@@ -185,9 +216,13 @@ def run_finetune(
     from grimoire.llm.training.checkpoint import load_checkpoint
     from grimoire.llm.training.trainer import Trainer
 
+    stop_event = threading.Event()
+    _stop_events["finetune"] = stop_event
+    resume = resume_from.strip() or None
+
     def _train(on_log, on_save, on_done):
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        ckpt = load_checkpoint(resume)
+        ckpt = load_checkpoint(pretrain_ckpt)
         config = TransformerConfig.from_dict(ckpt["config"])
         model = GrimoireTransformer(config)
         model.load_state_dict(ckpt["model"])
@@ -212,9 +247,17 @@ def run_finetune(
             on_log=on_log,
             on_save=on_save,
             on_done=on_done,
-        ).train(resume_from=None)
+            stop_event=stop_event,
+        ).train(resume_from=resume)
 
     yield from _wrap_with_buttons(_stream_training(_train))
+
+
+def stop_finetune() -> None:
+    """Signal the running fine-tuning loop to stop after the current step."""
+    ev = _stop_events.get("finetune")
+    if ev is not None:
+        ev.set()
 
 
 # ---------------------------------------------------------------------------
@@ -762,7 +805,7 @@ def build_app() -> gr.Blocks:
                 inputs=[pp_input, pp_output, pp_vocab, pp_vocab_size],
                 outputs=[pp_log_box, pp_run_btn, pp_stop_btn],
             )
-            pp_stop_btn.click(fn=None, cancels=[pp_event])
+            pp_stop_btn.click(fn=stop_preprocess, inputs=[], outputs=[], cancels=[pp_event])
 
         # ----------------------------------------------------------------
         with gr.Tab("Pre-train"):
@@ -776,6 +819,15 @@ def build_app() -> gr.Blocks:
                     label="Checkpoint directory",
                     value="checkpoints/pretrain/",
                 )
+            pt_resume = gr.Textbox(
+                label="Resume from checkpoint (.pt)",
+                placeholder="Leave blank to start from scratch",
+                info=(
+                    "Optional. Load weights, optimizer state, and step counter from a "
+                    "previous checkpoint. Total steps is the final target — if the checkpoint "
+                    "is at step 5 000 and you set Total steps to 10 000, training runs 5 000 more steps."
+                ),
+            )
             with gr.Row():
                 pt_steps      = gr.Number(label="Total steps",      value=10_000, precision=0)
                 pt_warmup     = gr.Number(label="Warmup steps",     value=500,    precision=0)
@@ -799,13 +851,13 @@ def build_app() -> gr.Blocks:
             pt_event = pt_run_btn.click(
                 fn=run_pretrain,
                 inputs=[
-                    pt_corpus, pt_ckpt_dir,
+                    pt_corpus, pt_ckpt_dir, pt_resume,
                     pt_steps, pt_warmup, pt_lr,
                     pt_batch, pt_accum, pt_log, pt_save,
                 ],
                 outputs=[pt_log_box, pt_run_btn, pt_stop_btn],
             )
-            pt_stop_btn.click(fn=None, cancels=[pt_event])
+            pt_stop_btn.click(fn=stop_pretrain, inputs=[], outputs=[], cancels=[pt_event])
 
         # ----------------------------------------------------------------
         with gr.Tab("Fine-tune"):
@@ -813,9 +865,9 @@ def build_app() -> gr.Blocks:
                 "Continue from a pre-trained checkpoint on a JSONL conversation dataset."
             )
             with gr.Row():
-                ft_resume   = gr.Textbox(label="Pre-trained checkpoint (.pt)")
-                ft_data     = gr.Textbox(label="JSONL dataset path")
-                ft_vocab    = gr.Textbox(
+                ft_pretrain_ckpt = gr.Textbox(label="Pre-trained checkpoint (.pt)")
+                ft_data          = gr.Textbox(label="JSONL dataset path")
+                ft_vocab         = gr.Textbox(
                     label="Vocabulary path (.json)",
                     value="data/tokenizer/bpe.json",
                 )
@@ -825,6 +877,14 @@ def build_app() -> gr.Blocks:
                     value="checkpoints/finetune/",
                 )
                 ft_max_seq  = gr.Number(label="Max sequence length", value=512, precision=0)
+            ft_resume = gr.Textbox(
+                label="Resume fine-tune from checkpoint (.pt)",
+                placeholder="Leave blank to start fine-tuning from scratch",
+                info=(
+                    "Optional. Resume a previous fine-tuning run. Restores optimizer state "
+                    "and step counter. Total steps is the final target."
+                ),
+            )
             with gr.Row():
                 ft_steps    = gr.Number(label="Total steps",      value=500,  precision=0)
                 ft_warmup   = gr.Number(label="Warmup steps",     value=10,   precision=0)
@@ -848,14 +908,14 @@ def build_app() -> gr.Blocks:
             ft_event = ft_run_btn.click(
                 fn=run_finetune,
                 inputs=[
-                    ft_resume, ft_data, ft_vocab, ft_ckpt_dir,
+                    ft_pretrain_ckpt, ft_resume, ft_data, ft_vocab, ft_ckpt_dir,
                     ft_steps, ft_warmup, ft_lr,
                     ft_batch, ft_accum, ft_log, ft_save,
                     ft_max_seq,
                 ],
                 outputs=[ft_log_box, ft_run_btn, ft_stop_btn],
             )
-            ft_stop_btn.click(fn=None, cancels=[ft_event])
+            ft_stop_btn.click(fn=stop_finetune, inputs=[], outputs=[], cancels=[ft_event])
 
         # ----------------------------------------------------------------
         with gr.Tab("Ingest"):

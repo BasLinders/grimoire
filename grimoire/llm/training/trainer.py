@@ -43,6 +43,7 @@ Mixed precision (fp16 AMP)
 """
 
 import math
+import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -105,6 +106,7 @@ class Trainer:
         on_log: Optional[Callable[[int, float, float], None]] = None,
         on_save: Optional[Callable[[int, float], None]] = None,
         on_done: Optional[Callable[[int, float], None]] = None,
+        stop_event: Optional[threading.Event] = None,
     ) -> None:
         """Set up the trainer, optimizer, scheduler, and data loader.
 
@@ -155,6 +157,7 @@ class Trainer:
         self._on_log = on_log
         self._on_save = on_save
         self._on_done = on_done
+        self._stop_event = stop_event
 
         # --- Device setup -----------------------------------------------
         if device is None:
@@ -260,6 +263,9 @@ class Trainer:
         )
 
         while self._step < self.total_steps:
+            if self._stop_event is not None and self._stop_event.is_set():
+                break
+
             # Fetch the next micro-batch, cycling the loader if exhausted.
             try:
                 input_ids, target_ids, attention_mask = next(data_iter)
@@ -345,7 +351,11 @@ class Trainer:
                         self._on_save(self._step, elapsed_total)
 
         elapsed_total = time.time() - t_start
-        print(f"\nTraining complete. Final step: {self._step} | total time: {elapsed_total:.1f}s")
+        stopped_early = self._stop_event is not None and self._stop_event.is_set()
+        if stopped_early:
+            print(f"\nTraining stopped at step {self._step} | elapsed: {elapsed_total:.1f}s")
+        else:
+            print(f"\nTraining complete. Final step: {self._step} | total time: {elapsed_total:.1f}s")
         if self._on_done is not None:
             self._on_done(self._step, elapsed_total)
 
