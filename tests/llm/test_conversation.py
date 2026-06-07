@@ -24,9 +24,9 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from grimoire.llm.data.conversation import ConversationDataset
-from grimoire.llm.tokenizer.bpe import BytePairEncoder
-from grimoire.llm.tokenizer.special_tokens import (
+from grimoire_ai.llm.data.conversation import ConversationDataset
+from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
+from grimoire_ai.llm.tokenizer.special_tokens import (
     AST_ID,
     BOS_ID,
     EOS_ID,

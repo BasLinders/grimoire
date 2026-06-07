@@ -82,7 +82,7 @@ def test_covers_probability():
 @pytest.fixture(scope="module")
 def tiny_tokenizer(tmp_path_factory):
     """Train and return a minimal BPE tokenizer on the dataset text."""
-    from grimoire.llm.tokenizer.bpe import BytePairEncoder
+    from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
 
     examples = _examples()
     corpus = [ex["user"] + " " + ex["assistant"] + " " + ex.get("context", "") for ex in examples]
@@ -94,14 +94,14 @@ def tiny_tokenizer(tmp_path_factory):
 
 
 def test_conversation_dataset_loads(tiny_tokenizer):
-    from grimoire.llm.data.conversation import ConversationDataset
+    from grimoire_ai.llm.data.conversation import ConversationDataset
 
     ds = ConversationDataset(path=str(_DATA), tokenizer=tiny_tokenizer, max_seq_len=256)
     assert len(ds) > 0
 
 
 def test_conversation_dataset_returns_tensors(tiny_tokenizer):
-    from grimoire.llm.data.conversation import ConversationDataset
+    from grimoire_ai.llm.data.conversation import ConversationDataset
 
     ds = ConversationDataset(path=str(_DATA), tokenizer=tiny_tokenizer, max_seq_len=256)
     inp, tgt = ds[0]
@@ -112,7 +112,7 @@ def test_conversation_dataset_returns_tensors(tiny_tokenizer):
 
 
 def test_conversation_dataset_same_length(tiny_tokenizer):
-    from grimoire.llm.data.conversation import ConversationDataset
+    from grimoire_ai.llm.data.conversation import ConversationDataset
 
     ds = ConversationDataset(path=str(_DATA), tokenizer=tiny_tokenizer, max_seq_len=256)
     inp, tgt = ds[0]
@@ -120,7 +120,7 @@ def test_conversation_dataset_same_length(tiny_tokenizer):
 
 
 def test_conversation_dataset_respects_max_seq_len(tiny_tokenizer):
-    from grimoire.llm.data.conversation import ConversationDataset
+    from grimoire_ai.llm.data.conversation import ConversationDataset
 
     ds = ConversationDataset(path=str(_DATA), tokenizer=tiny_tokenizer, max_seq_len=128)
     for i in range(len(ds)):
@@ -130,8 +130,8 @@ def test_conversation_dataset_respects_max_seq_len(tiny_tokenizer):
 
 def test_response_masking_has_pad_at_start(tiny_tokenizer):
     """The target tensor should begin with PAD tokens (prompt is masked)."""
-    from grimoire.llm.data.conversation import ConversationDataset
-    from grimoire.llm.tokenizer.special_tokens import PAD_ID
+    from grimoire_ai.llm.data.conversation import ConversationDataset
+    from grimoire_ai.llm.tokenizer.special_tokens import PAD_ID
 
     ds = ConversationDataset(path=str(_DATA), tokenizer=tiny_tokenizer, max_seq_len=256)
     _, tgt = ds[0]
@@ -141,8 +141,8 @@ def test_response_masking_has_pad_at_start(tiny_tokenizer):
 
 def test_response_masking_has_non_pad_at_end(tiny_tokenizer):
     """The target tensor should end with real tokens (the response)."""
-    from grimoire.llm.data.conversation import ConversationDataset
-    from grimoire.llm.tokenizer.special_tokens import PAD_ID
+    from grimoire_ai.llm.data.conversation import ConversationDataset
+    from grimoire_ai.llm.tokenizer.special_tokens import PAD_ID
 
     ds = ConversationDataset(path=str(_DATA), tokenizer=tiny_tokenizer, max_seq_len=256)
     _, tgt = ds[0]
@@ -155,7 +155,7 @@ def test_response_masking_has_non_pad_at_end(tiny_tokenizer):
 
 def test_validate_script_runs_without_error(tmp_path):
     """validate_finetune_data.py should exit 0 on the real dataset when a tokenizer exists."""
-    from grimoire.llm.tokenizer.bpe import BytePairEncoder
+    from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
 
     examples = _examples()
     corpus = [ex["user"] + " " + ex["assistant"] + " " + ex.get("context", "") for ex in examples]

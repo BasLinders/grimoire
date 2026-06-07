@@ -35,15 +35,15 @@ import numpy as np
 import pytest
 import torch
 
-from grimoire.corpus.corpus import GrimoireCorpus
-from grimoire.llm.data.dataset import TokenizedDataset
-from grimoire.llm.inference.engine import InferenceEngine
-from grimoire.llm.inference.sampler import GenerationConfig
-from grimoire.llm.model.config import TransformerConfig
-from grimoire.llm.model.transformer import GrimoireTransformer
-from grimoire.llm.tokenizer.bpe import BytePairEncoder
-from grimoire.llm.training.trainer import Trainer
-from grimoire.state.conversation import ConversationState
+from grimoire_ai.corpus.corpus import GrimoireCorpus
+from grimoire_ai.llm.data.dataset import TokenizedDataset
+from grimoire_ai.llm.inference.engine import InferenceEngine
+from grimoire_ai.llm.inference.sampler import GenerationConfig
+from grimoire_ai.llm.model.config import TransformerConfig
+from grimoire_ai.llm.model.transformer import GrimoireTransformer
+from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
+from grimoire_ai.llm.training.trainer import Trainer
+from grimoire_ai.state.conversation import ConversationState
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +165,7 @@ def test_checkpoint_exists(checkpoint_path) -> None:
 
 def test_checkpoint_config_round_trip(checkpoint_path, tiny_config) -> None:
     """Config saved in the checkpoint must reconstruct the original model config."""
-    from grimoire.llm.training.checkpoint import load_checkpoint
+    from grimoire_ai.llm.training.checkpoint import load_checkpoint
     ckpt = load_checkpoint(checkpoint_path)
     loaded = TransformerConfig.from_dict(ckpt["config"])
     assert loaded.vocab_size  == tiny_config.vocab_size
@@ -275,7 +275,7 @@ def test_prompt_ids_never_exceed_max_seq_len(engine) -> None:
 
 def test_ingest_text_then_chat(tmp_dir, checkpoint_path, vocab_path) -> None:
     """Full pipeline: ingest text → build corpus → load engine → chat."""
-    from grimoire.corpus.ingest import from_txt
+    from grimoire_ai.corpus.ingest import from_txt
 
     # Write a tiny corpus file and ingest it.
     src = tmp_dir / "knowledge.txt"

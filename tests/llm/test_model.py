@@ -20,11 +20,11 @@ from pathlib import Path
 import pytest
 import torch
 
-from grimoire.llm.model.attention import GroupedQueryAttention, _apply_rope, _precompute_rope_tables
-from grimoire.llm.model.block import RMSNorm, TransformerBlock
-from grimoire.llm.model.config import TransformerConfig
-from grimoire.llm.model.feedforward import SwiGLUFeedForward
-from grimoire.llm.model.transformer import GrimoireTransformer
+from grimoire_ai.llm.model.attention import GroupedQueryAttention, _apply_rope, _precompute_rope_tables
+from grimoire_ai.llm.model.block import RMSNorm, TransformerBlock
+from grimoire_ai.llm.model.config import TransformerConfig
+from grimoire_ai.llm.model.feedforward import SwiGLUFeedForward
+from grimoire_ai.llm.model.transformer import GrimoireTransformer
 
 
 # ---------------------------------------------------------------------------
