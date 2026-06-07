@@ -4,7 +4,9 @@ Supported sources
 -----------------
 - **Web URL** — fetches HTML and strips boilerplate (scripts, nav, footer).
   Note: JavaScript-rendered pages are not supported; the raw HTML is parsed.
-- **PDF** (.pdf) — extracts text page-by-page via ``pypdf``.
+- **PDF** (.pdf) — extracts prose text and tables page-by-page via
+  ``pdfplumber``.  Tables are rendered as Markdown pipe tables so stat
+  blocks and ability-score grids survive extraction intact.
 - **Word document** (.docx) — extracts paragraph text via ``python-docx``.
 - **Markdown** (.md, .markdown) — strips syntax markers, returns plain text.
 - **Plain text** (.txt) — returned as-is.
@@ -211,34 +213,92 @@ def from_url(
     return _clean(body.get_text(separator="\n"), level=cleaning)
 
 
+def _table_to_markdown(table: list[list[str | None]]) -> str:
+    """Convert a pdfplumber table (list-of-rows) to a Markdown pipe table.
+
+    Empty cells are replaced with a single space so the pipe structure is
+    preserved.  A separator row is inserted after the first (header) row.
+    """
+    def _cell(v: str | None) -> str:
+        return (v or "").replace("\n", " ").strip() or " "
+
+    rows = [[_cell(c) for c in row] for row in table if any(c for c in row)]
+    if not rows:
+        return ""
+    col_count = max(len(r) for r in rows)
+    # Pad short rows
+    rows = [r + [" "] * (col_count - len(r)) for r in rows]
+    header = "| " + " | ".join(rows[0]) + " |"
+    sep    = "| " + " | ".join("---" for _ in rows[0]) + " |"
+    body   = "\n".join("| " + " | ".join(r) + " |" for r in rows[1:])
+    return "\n".join(filter(None, [header, sep, body]))
+
+
 def from_pdf(path: str, cleaning: CleaningLevel = CleaningLevel.STANDARD) -> str:
-    """Extract text from a PDF file.
+    """Extract text and tables from a PDF file.
+
+    Uses ``pdfplumber`` to detect table regions on each page and render them
+    as Markdown pipe tables.  Prose text outside those regions is extracted
+    separately and interleaved with the tables in page order.  This preserves
+    D&D stat blocks, ability-score grids, and other structured content that
+    plain text extraction would garble.
 
     Args:
         path: Path to the ``.pdf`` file.
+        cleaning: Cleaning level applied to the prose sections.
 
     Returns:
-        Concatenated plain-text from all pages.
+        Cleaned text with tables rendered as Markdown.
 
     Raises:
-        ImportError: If ``pypdf`` is not installed.
+        ImportError: If ``pdfplumber`` is not installed.
         FileNotFoundError: If ``path`` does not exist.
     """
     try:
-        from pypdf import PdfReader
+        import pdfplumber
     except ImportError as exc:
         raise ImportError(
-            "pypdf is required for PDF ingestion. "
-            "Install it with: pip install pypdf"
+            "pdfplumber is required for PDF ingestion. "
+            "Install it with: pip install pdfplumber"
         ) from exc
 
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"PDF not found: {path}")
 
-    reader = PdfReader(str(p))
-    pages = [page.extract_text() or "" for page in reader.pages]
-    return _clean("\n\n".join(pages), level=cleaning)
+    page_chunks: list[str] = []
+
+    with pdfplumber.open(str(p)) as pdf:
+        for page in pdf.pages:
+            tables      = page.find_tables()
+            table_bboxes = [t.bbox for t in tables]
+
+            # Crop out table regions and extract surrounding prose.
+            prose_page = page
+            for bbox in table_bboxes:
+                # pdfplumber.Page.filter() removes objects inside the bbox.
+                prose_page = prose_page.filter(
+                    lambda obj, bb=bbox: not (
+                        bb[0] <= obj.get("x0", 0) <= bb[2]
+                        and bb[1] <= obj.get("top", 0) <= bb[3]
+                    )
+                )
+            prose_text = prose_page.extract_text() or ""
+
+            # Render tables as Markdown.
+            md_tables = [
+                _table_to_markdown(t.extract())
+                for t in tables
+                if t.extract()
+            ]
+
+            # Interleave: prose first, then tables (pdfplumber tables are
+            # ordered top-to-bottom so this approximates reading order).
+            chunks = [prose_text] + md_tables
+            page_chunks.append("\n\n".join(c for c in chunks if c.strip()))
+
+    raw = "\n\n".join(page_chunks)
+    return _clean(raw, level=cleaning)
 
 
 def from_docx(path: str, cleaning: CleaningLevel = CleaningLevel.STANDARD) -> str:

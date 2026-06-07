@@ -3,7 +3,7 @@
 Gate criteria:
 - from_url: returns non-empty text; strips script/style/nav tags.
 - from_url: raises RuntimeError on HTTP error.
-- from_pdf: extracts text from a minimal PDF.
+- from_pdf: extracts text and markdown tables from a minimal PDF.
 - from_docx: extracts paragraph text from a minimal DOCX.
 - from_markdown: strips headings, bold, italic, links, code fences.
 - from_txt: returns file content unchanged (after normalisation).
@@ -178,32 +178,109 @@ def test_markdown_missing_file_raises() -> None:
 # from_pdf
 # ---------------------------------------------------------------------------
 
+def _minimal_pdf_bytes() -> bytes:
+    """Return the bytes of a minimal valid single-page PDF with embedded text.
+
+    Hand-crafted to avoid any runtime dependency on a PDF-writing library.
+    The page contains the text "Hello World" in a simple content stream.
+    """
+    content = b"BT /F1 12 Tf 50 700 Td (Hello World) Tj ET"
+    content_len = len(content)
+    body = (
+        b"%PDF-1.4\n"
+        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]"
+        b" /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n"
+        + b"4 0 obj\n<< /Length " + str(content_len).encode() + b" >>\nstream\n"
+        + content + b"\nendstream\nendobj\n"
+        b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n"
+    )
+    # Build cross-reference table
+    offsets = []
+    pos = 0
+    for obj_bytes in [
+        b"%PDF-1.4\n",
+        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+        (
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]"
+            b" /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n"
+        ),
+        (
+            b"4 0 obj\n<< /Length " + str(content_len).encode() + b" >>\nstream\n"
+            + content + b"\nendstream\nendobj\n"
+        ),
+        b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
+    ]:
+        offsets.append(pos)
+        pos += len(obj_bytes)
+    xref_pos = pos
+    xref = b"xref\n0 6\n0000000000 65535 f \n"
+    for off in offsets[1:]:
+        xref += f"{off:010d} 00000 n \n".encode()
+    trailer = (
+        b"trailer\n<< /Size 6 /Root 1 0 R >>\n"
+        b"startxref\n" + str(xref_pos).encode() + b"\n%%EOF"
+    )
+    return body + xref + trailer
+
+
 def test_from_pdf_extracts_text() -> None:
     try:
-        from pypdf import PdfWriter
+        import pdfplumber  # noqa: F401
         from grimoire.corpus.ingest import from_pdf
     except BaseException:
-        pytest.skip("pypdf not importable in this environment")
-
-    writer = PdfWriter()
-    writer.add_blank_page(width=200, height=200)
+        pytest.skip("pdfplumber not importable in this environment")
 
     with tempfile.TemporaryDirectory() as tmp:
         pdf_path = str(Path(tmp) / "test.pdf")
-        with open(pdf_path, "wb") as f:
-            writer.write(f)
+        Path(pdf_path).write_bytes(_minimal_pdf_bytes())
         result = from_pdf(pdf_path)
         assert isinstance(result, str)
 
 
 def test_from_pdf_missing_file_raises() -> None:
     try:
-        import pypdf  # noqa: F401
+        import pdfplumber  # noqa: F401
     except BaseException:
-        pytest.skip("pypdf not importable in this environment")
+        pytest.skip("pdfplumber not importable in this environment")
     from grimoire.corpus.ingest import from_pdf
     with pytest.raises(FileNotFoundError):
         from_pdf("/tmp/grimoire_no_such.pdf")
+
+
+def test_table_to_markdown_basic() -> None:
+    """_table_to_markdown should produce a pipe table with a separator row."""
+    from grimoire.corpus.ingest import _table_to_markdown
+
+    table = [
+        ["STR", "DEX", "CON"],
+        ["8 (-1)", "14 (+2)", "10 (+0)"],
+    ]
+    md = _table_to_markdown(table)
+    lines = md.splitlines()
+    assert lines[0].startswith("| STR")
+    assert lines[1] == "| --- | --- | --- |"
+    assert "8 (-1)" in lines[2]
+
+
+def test_table_to_markdown_empty_cells() -> None:
+    """Empty/None cells should be replaced with a space, not break the table."""
+    from grimoire.corpus.ingest import _table_to_markdown
+
+    table = [["A", None, "C"], [None, "B", None]]
+    md = _table_to_markdown(table)
+    assert "|" in md
+    assert "None" not in md
+
+
+def test_table_to_markdown_empty_table() -> None:
+    """An all-empty table should return an empty string."""
+    from grimoire.corpus.ingest import _table_to_markdown
+
+    assert _table_to_markdown([]) == ""
+    assert _table_to_markdown([[None, None]]) == ""
 
 
 # ---------------------------------------------------------------------------
