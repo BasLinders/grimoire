@@ -720,8 +720,10 @@ def build_app() -> gr.Blocks:
             )
         # Shutdown: Python fn schedules os._exit on a background thread so
         # Gradio can return a clean response before the process dies.
-        # JS navigates the tab away after 300 ms — before the 1 s kill fires —
-        # so neither the WebSocket error nor the reconnect banner ever shows.
+        # JS first tries window.close() directly — this works in some browsers
+        # when called from a click handler. If the browser blocks it, a 300 ms
+        # fallback navigates to a goodbye page that contains its own "Close this
+        # tab" button (user-initiated click makes window.close() reliable there).
         _SHUTDOWN_PAGE = (
             "data:text/html,"
             "%3Chtml%20style%3D%22background%3A%230d0d14%3Bcolor%3A%23e8c97a%3B"
@@ -729,8 +731,13 @@ def build_app() -> gr.Blocks:
             "center%3Bjustify-content%3Acenter%3Bheight%3A100vh%3Bmargin%3A0%22%3E"
             "%3Cdiv%20style%3D%22text-align%3Acenter%22%3E"
             "%3Ch1%3E%E2%9C%A6%20Grimoire%3C%2Fh1%3E"
-            "%3Cp%20style%3D%22color%3A%23c8c8d8%22%3EThe%20server%20has%20shut%20down."
-            "%20You%20may%20close%20this%20tab.%3C%2Fp%3E"
+            "%3Cp%20style%3D%22color%3A%23c8c8d8%3Bmargin-bottom%3A1.5rem%22%3E"
+            "The%20server%20has%20shut%20down.%3C%2Fp%3E"
+            "%3Cbutton%20onclick%3D%22window.close()%22%20style%3D%22"
+            "background%3Atransparent%3Bborder%3A1px%20solid%20%23b8860b%3B"
+            "color%3A%23e8c97a%3Bfont-family%3Ainherit%3Bfont-size%3A0.9rem%3B"
+            "padding%3A0.5rem%201.2rem%3Bborder-radius%3A4px%3Bcursor%3Apointer%22%3E"
+            "Close%20this%20tab%3C%2Fbutton%3E"
             "%3C%2Fdiv%3E%3C%2Fhtml%3E"
         )
 
@@ -744,7 +751,12 @@ def build_app() -> gr.Blocks:
             fn=_request_shutdown,
             inputs=[],
             outputs=[],
-            js=f"() => {{ setTimeout(() => window.location.replace('{_SHUTDOWN_PAGE}'), 300); }}",
+            js=(
+                f"() => {{"
+                f"  window.close();"
+                f"  setTimeout(() => window.location.replace('{_SHUTDOWN_PAGE}'), 300);"
+                f"}}"
+            ),
         )
         _JS_TOGGLE = f"""() => {{
             const root = document.documentElement;
