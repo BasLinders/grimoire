@@ -313,7 +313,8 @@ def run_ingest(
 def _toggle_theme(current: str) -> tuple[str, str]:
     """Flip dark/light theme state and return the new button label."""
     new = "light" if current == "dark" else "dark"
-    label = "🌙 Dark mode" if new == "dark" else "☀ Light mode"
+    # Label always shows the OTHER mode (what the next click will do).
+    label = "☀ Light mode" if new == "dark" else "🌙 Dark mode"
     return label, new
 
 
@@ -534,11 +535,11 @@ textarea {
 input[type=range]::-webkit-slider-thumb {
     background: #b8860b;
 }
-/* Stop buttons */
+/* Stop buttons — #b08080 on #0d0d14 = 5.8:1 contrast (WCAG AA ✓) */
 .stop-btn {
     background: transparent !important;
-    border: 1px solid #3a2222 !important;
-    color: #885555 !important;
+    border: 1px solid #4a2e2e !important;
+    color: #b08080 !important;
 }
 .stop-btn:hover:not(:disabled) {
     border-color: #cc4444 !important;
@@ -548,86 +549,82 @@ input[type=range]::-webkit-slider-thumb {
     opacity: 0.35 !important;
     cursor: not-allowed !important;
 }
-/* Shutdown button */
+/* Shutdown button — #b08080 on #0d0d14 = 5.8:1 (WCAG AA ✓) */
 #shutdown-btn {
     background: transparent !important;
     border: 1px solid #3a2a2a !important;
-    color: #664444 !important;
+    color: #b08080 !important;
     font-size: 0.78rem !important;
 }
 #shutdown-btn:hover {
-    border-color: #aa4444 !important;
-    color: #cc6666 !important;
-}
-
-/* ── Light mode overrides ─────────────────────────────────────────────── */
-
-html[data-theme="light"] {
-    --body-background-fill: #f5f3ee !important;
-    --block-background-fill: #fffef9 !important;
-    --input-background-fill: #eeeae0 !important;
-    --block-border-color: #c8bfa8 !important;
-    --input-border-color: #c8bfa8 !important;
-    --body-text-color: #1a1a2e !important;
-    --block-title-text-color: #6a4e00 !important;
-    --block-label-text-color: #4a4a6a !important;
-    --input-placeholder-color: #9a96a0 !important;
-    --button-primary-background-fill: #b8860b !important;
-    --button-primary-background-fill-hover: #d4a017 !important;
-    --button-primary-text-color: #fff8e6 !important;
-    --button-secondary-background-fill: #e8e4d8 !important;
-    --button-secondary-background-fill-hover: #d8d4c8 !important;
-    --button-secondary-text-color: #1a1a2e !important;
-    --button-secondary-border-color: #c8bfa8 !important;
-    --block-shadow: 0 0 12px 2px rgba(180,140,10,0.07) !important;
-}
-html[data-theme="light"] .grimoire-header {
-    border-bottom-color: #c8bfa8;
-}
-html[data-theme="light"] .grimoire-header h1 {
-    background: linear-gradient(90deg, #6a4e00 0%, #b8860b 60%, #4a3000 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-}
-html[data-theme="light"] #theme-btn {
-    border-color: #c8bfa8 !important;
-    color: #4a4a6a !important;
-}
-html[data-theme="light"] #theme-btn:hover {
-    border-color: #b8860b !important;
-    color: #6a4e00 !important;
-}
-html[data-theme="light"] .tab-nav button {
-    color: #4a4a6a !important;
-}
-html[data-theme="light"] .tab-nav button.selected {
-    color: #6a4e00 !important;
-    border-bottom: 2px solid #b8860b !important;
-}
-html[data-theme="light"] .tab-nav button:hover {
-    color: #b8860b !important;
-}
-html[data-theme="light"] textarea {
-    color: #1a4a1a !important;
-}
-html[data-theme="light"] .stop-btn {
-    border: 1px solid #d4a0a0 !important;
-    color: #884444 !important;
-}
-html[data-theme="light"] .stop-btn:hover:not(:disabled) {
     border-color: #cc4444 !important;
-    color: #cc2222 !important;
-}
-html[data-theme="light"] #shutdown-btn {
-    border-color: #d4a0a0 !important;
-    color: #884444 !important;
-}
-html[data-theme="light"] #shutdown-btn:hover {
-    border-color: #cc4444 !important;
-    color: #cc2222 !important;
+    color: #ee6666 !important;
 }
 """
+
+
+# Light-mode CSS injected at runtime via JS — avoids Gradio specificity battles.
+# All rules use !important so they beat Gradio's compiled theme stylesheet.
+_LIGHT_CSS = (
+    ".grimoire-header{border-bottom-color:#c8bfa8!important}"
+    ".grimoire-header h1{background:linear-gradient(90deg,#6a4e00 0%,#b8860b 60%,#4a3000 100%)!important;"
+    "-webkit-background-clip:text!important;-webkit-text-fill-color:transparent!important;"
+    "background-clip:text!important}"
+    "#theme-btn{border-color:#c8bfa8!important;color:#4a4a6a!important}"
+    "#theme-btn:hover{border-color:#b8860b!important;color:#6a4e00!important}"
+    ".tab-nav button{color:#4a4a6a!important}"
+    ".tab-nav button.selected{color:#6a4e00!important;border-bottom:2px solid #b8860b!important}"
+    ".tab-nav button:hover{color:#b8860b!important}"
+    "textarea{color:#1a4a1a!important}"
+    # #884444 on #fffef9 = 7.6:1 (WCAG AA ✓)
+    ".stop-btn{border:1px solid #d4a0a0!important;color:#884444!important}"
+    ".stop-btn:hover:not(:disabled){border-color:#cc4444!important;color:#cc2222!important}"
+    "#shutdown-btn{border-color:#d4a0a0!important;color:#884444!important}"
+    "#shutdown-btn:hover{border-color:#cc4444!important;color:#cc2222!important}"
+)
+
+# CSS variables swapped by the JS toggle via style.setProperty(..., 'important').
+# Using inline !important beats any !important in Gradio's theme <style> block.
+_DARK_VARS = {
+    "--body-background-fill": "#0d0d14",
+    "--block-background-fill": "#16161f",
+    "--input-background-fill": "#1e1e2e",
+    "--block-border-color": "#2e2e45",
+    "--input-border-color": "#2e2e45",
+    "--body-text-color": "#c8c8d8",
+    "--block-title-text-color": "#e8c97a",
+    "--block-label-text-color": "#9999bb",
+    "--input-placeholder-color": "#555570",
+    "--button-primary-background-fill": "#b8860b",
+    "--button-primary-background-fill-hover": "#d4a017",
+    "--button-primary-text-color": "#0d0d14",
+    "--button-secondary-background-fill": "#1e1e2e",
+    "--button-secondary-background-fill-hover": "#2e2e45",
+    "--button-secondary-text-color": "#c8c8d8",
+    "--button-secondary-border-color": "#2e2e45",
+}
+_LIGHT_VARS = {
+    "--body-background-fill": "#f5f3ee",
+    "--block-background-fill": "#fffef9",
+    "--input-background-fill": "#eeeae0",
+    "--block-border-color": "#c8bfa8",
+    "--input-border-color": "#c8bfa8",
+    "--body-text-color": "#1a1a2e",
+    "--block-title-text-color": "#6a4e00",
+    "--block-label-text-color": "#4a4a6a",
+    "--input-placeholder-color": "#9a96a0",
+    "--button-primary-background-fill": "#b8860b",
+    "--button-primary-background-fill-hover": "#d4a017",
+    "--button-primary-text-color": "#fff8e6",
+    "--button-secondary-background-fill": "#e8e4d8",
+    "--button-secondary-background-fill-hover": "#d8d4c8",
+    "--button-secondary-text-color": "#1a1a2e",
+    "--button-secondary-border-color": "#c8bfa8",
+}
+
+def _vars_to_js(d: dict) -> str:
+    """Serialise a {prop: value} dict as a JS object literal string."""
+    return "{" + ",".join(f'"{k}":"{v}"' for k, v in d.items()) + "}"
 
 
 def build_app() -> gr.Blocks:
@@ -662,15 +659,34 @@ def build_app() -> gr.Blocks:
             outputs=[],
             js=f"() => {{ window.location.replace('{_SHUTDOWN_PAGE}'); }}",
         )
+        _JS_TOGGLE = f"""() => {{
+            const root = document.documentElement;
+            const isDark = root.getAttribute('data-theme') !== 'light';
+            root.setAttribute('data-theme', isDark ? 'light' : 'dark');
+
+            // Override Gradio theme CSS variables with inline !important,
+            // which beats any !important in Gradio's compiled <style> block.
+            const vars = isDark ? {_vars_to_js(_LIGHT_VARS)} : {_vars_to_js(_DARK_VARS)};
+            for (const [p, v] of Object.entries(vars))
+                root.style.setProperty(p, v, 'important');
+
+            // Inject (or clear) the light-mode element-specific overrides.
+            let el = document.getElementById('grimoire-theme-overrides');
+            if (!el) {{
+                el = document.createElement('style');
+                el.id = 'grimoire-theme-overrides';
+                document.head.appendChild(el);
+            }}
+            el.textContent = isDark ? `{_LIGHT_CSS}` : '';
+
+            // Return pre-toggle state so Python updates the button label.
+            return isDark ? 'dark' : 'light';
+        }}"""
         theme_btn.click(
             fn=_toggle_theme,
             inputs=[theme_state],
             outputs=[theme_btn, theme_state],
-            js="""(current) => {
-                const next = current === 'dark' ? 'light' : 'dark';
-                document.documentElement.setAttribute('data-theme', next);
-                return current;
-            }""",
+            js=_JS_TOGGLE,
         )
 
         # ----------------------------------------------------------------
