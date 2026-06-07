@@ -496,6 +496,9 @@ _CSS = """
     border-bottom: 2px solid transparent !important;
     transition: color 0.2s, border-color 0.2s;
 }
+.tab-nav button:hover {
+    color: #c8a84b !important;
+}
 .tab-nav button.selected {
     color: #e8c97a !important;
     border-bottom: 2px solid #b8860b !important;
