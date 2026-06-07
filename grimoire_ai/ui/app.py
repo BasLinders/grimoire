@@ -581,11 +581,18 @@ textarea {
     line-height: 1.5 !important;
     color: #a8e8a8 !important;
 }
-/* Placeholder text — belt-and-suspenders over CSS variable resolution */
+/* Placeholder text — dark mode */
 input::placeholder,
 textarea::placeholder {
     color: #8888aa !important;  /* 4.8:1 on #1e1e2e (WCAG AA ✓) */
     opacity: 1 !important;      /* Firefox reduces opacity by default */
+}
+/* Placeholder text — light mode. Uses attribute selector (higher specificity
+   than the rule above) so it wins without depending on JS injection order. */
+[data-theme="light"] input::placeholder,
+[data-theme="light"] textarea::placeholder {
+    color: #5c5c70 !important;  /* 5.4:1 on #eeeae0 (WCAG AA ✓) */
+    opacity: 1 !important;
 }
 /* Primary CTA button text — explicit override so Gradio dark block can't revert to white */
 button.primary {
@@ -642,8 +649,6 @@ _LIGHT_CSS = (
     ".tab-nav button.selected{color:#6a4e00!important;border-bottom:2px solid #b8860b!important}"
     ".tab-nav button:hover{color:#7a5800!important}"  # 5.9:1 on #f5f3ee (WCAG AA ✓)
     "textarea{color:#1a1a2e!important}"      # dark navy, no green in light mode; 15.4:1 ✓
-    # Placeholder — #5c5c70 on #eeeae0 = 5.4:1 (WCAG AA ✓)
-    "input::placeholder,textarea::placeholder{color:#5c5c70!important;opacity:1!important}"
     # Primary CTA button text — #0d0d14 on #b8860b = 5.9:1 ✓
     "button.primary{color:#0d0d14!important}"
     # Code highlight — #1a1a2e on #dcd8cc = 12.0:1 ✓; var() also updated via JS vars
@@ -715,8 +720,10 @@ def build_app() -> gr.Blocks:
             )
         # Shutdown: Python fn schedules os._exit on a background thread so
         # Gradio can return a clean response before the process dies.
-        # JS navigates the tab away after 300 ms — before the 1 s kill fires —
-        # so neither the WebSocket error nor the reconnect banner ever shows.
+        # JS first tries window.close() directly — this works in some browsers
+        # when called from a click handler. If the browser blocks it, a 300 ms
+        # fallback navigates to a goodbye page that contains its own "Close this
+        # tab" button (user-initiated click makes window.close() reliable there).
         _SHUTDOWN_PAGE = (
             "data:text/html,"
             "%3Chtml%20style%3D%22background%3A%230d0d14%3Bcolor%3A%23e8c97a%3B"
@@ -724,8 +731,13 @@ def build_app() -> gr.Blocks:
             "center%3Bjustify-content%3Acenter%3Bheight%3A100vh%3Bmargin%3A0%22%3E"
             "%3Cdiv%20style%3D%22text-align%3Acenter%22%3E"
             "%3Ch1%3E%E2%9C%A6%20Grimoire%3C%2Fh1%3E"
-            "%3Cp%20style%3D%22color%3A%23c8c8d8%22%3EThe%20server%20has%20shut%20down."
-            "%20You%20may%20close%20this%20tab.%3C%2Fp%3E"
+            "%3Cp%20style%3D%22color%3A%23c8c8d8%3Bmargin-bottom%3A1.5rem%22%3E"
+            "The%20server%20has%20shut%20down.%3C%2Fp%3E"
+            "%3Cbutton%20onclick%3D%22window.close()%22%20style%3D%22"
+            "background%3Atransparent%3Bborder%3A1px%20solid%20%23b8860b%3B"
+            "color%3A%23e8c97a%3Bfont-family%3Ainherit%3Bfont-size%3A0.9rem%3B"
+            "padding%3A0.5rem%201.2rem%3Bborder-radius%3A4px%3Bcursor%3Apointer%22%3E"
+            "Close%20this%20tab%3C%2Fbutton%3E"
             "%3C%2Fdiv%3E%3C%2Fhtml%3E"
         )
 
@@ -739,7 +751,12 @@ def build_app() -> gr.Blocks:
             fn=_request_shutdown,
             inputs=[],
             outputs=[],
-            js=f"() => {{ setTimeout(() => window.location.replace('{_SHUTDOWN_PAGE}'), 300); }}",
+            js=(
+                f"() => {{"
+                f"  window.close();"
+                f"  setTimeout(() => window.location.replace('{_SHUTDOWN_PAGE}'), 300);"
+                f"}}"
+            ),
         )
         _JS_TOGGLE = f"""() => {{
             const root = document.documentElement;
