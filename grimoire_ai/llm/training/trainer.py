@@ -341,6 +341,7 @@ class Trainer:
                         path=str(ckpt_path),
                         model=self.model,
                         optimizer=self._optimizer,
+                        scheduler=self._scheduler,
                         step=self._step,
                         config_dict=self.config.to_dict(),
                         train_loss=self._last_avg_loss,
@@ -379,8 +380,12 @@ class Trainer:
             self._scaler.load_state_dict(ckpt["scaler"])
 
         self._step = ckpt["step"]
-        # Advance the scheduler to match the restored step count.
-        for _ in range(self._step):
-            self._scheduler.step()
+        if "scheduler" in ckpt:
+            self._scheduler.load_state_dict(ckpt["scheduler"])
+        else:
+            # Legacy checkpoints without scheduler state: replay steps to
+            # approximate the correct LR (less accurate but better than nothing).
+            for _ in range(self._step):
+                self._scheduler.step()
 
         print(f"  Resumed at step {self._step} / {self.total_steps}")
