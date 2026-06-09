@@ -36,9 +36,9 @@ def save_checkpoint(
     path: str,
     model: nn.Module,
     optimizer: Optimizer,
-    scheduler: LRScheduler,
     step: int,
     config_dict: dict,
+    scheduler: Optional[LRScheduler] = None,
     train_loss: float = 0.0,
     scaler: Optional[Any] = None,
 ) -> None:
@@ -67,7 +67,7 @@ def save_checkpoint(
         "config":     config_dict,
         "model":      model.state_dict(),
         "optimizer":  optimizer.state_dict(),
-        "scheduler":  scheduler.state_dict(),
+        "scheduler":  scheduler.state_dict() if scheduler is not None else None,
         "scaler":     scaler.state_dict() if scaler is not None else None,
         "train_loss": train_loss,
     }
