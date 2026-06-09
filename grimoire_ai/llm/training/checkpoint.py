@@ -8,6 +8,7 @@ resume training or run inference:
         "config":      dict,                    TransformerConfig as dict
         "model":       OrderedDict,             model.state_dict()
         "optimizer":   dict,                    optimizer.state_dict()
+        "scheduler":   dict,                    lr_scheduler.state_dict()
         "scaler":      dict | None,             GradScaler state (CUDA only)
         "train_loss":  float,                   most recent logged loss
     }
@@ -28,6 +29,7 @@ from typing import Any, Optional
 import torch
 import torch.nn as nn
 from torch.optim import Optimizer
+from torch.optim.lr_scheduler import LRScheduler
 
 
 def save_checkpoint(
@@ -36,6 +38,7 @@ def save_checkpoint(
     optimizer: Optimizer,
     step: int,
     config_dict: dict,
+    scheduler: Optional[LRScheduler] = None,
     train_loss: float = 0.0,
     scaler: Optional[Any] = None,
 ) -> None:
@@ -46,6 +49,7 @@ def save_checkpoint(
             created automatically.
         model: The ``GrimoireTransformer`` being trained.
         optimizer: The ``AdamW`` optimizer instance.
+        scheduler: The LR scheduler instance.
         step: Current global training step (number of optimizer updates).
         config_dict: The ``TransformerConfig`` serialised with
             ``config.to_dict()``.  Embedded so the model can be
@@ -63,6 +67,7 @@ def save_checkpoint(
         "config":     config_dict,
         "model":      model.state_dict(),
         "optimizer":  optimizer.state_dict(),
+        "scheduler":  scheduler.state_dict() if scheduler is not None else None,
         "scaler":     scaler.state_dict() if scaler is not None else None,
         "train_loss": train_loss,
     }
