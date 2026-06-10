@@ -322,7 +322,7 @@ def _stream_task(task_fn) -> Generator[str, None, None]:
 def run_ingest(
     mode: str,
     url_or_dir: str,
-    file_obj,
+    file_objs,
     output_dir: str,
     cleaning: str,
     recursive: bool,
@@ -335,9 +335,20 @@ def run_ingest(
 
     def _task(on_progress):
         if mode == "File":
-            if file_obj is None:
+            if not file_objs:
                 raise ValueError("No file uploaded.")
-            source = file_obj.name
+            files = file_objs if isinstance(file_objs, list) else [file_objs]
+            for f in files:
+                on_progress(f"Ingesting {Path(f.name).name} ...")
+                ingest(
+                    source=f.name,
+                    output_dir=output_dir.strip() or None,
+                    recursive=False,
+                    timeout=int(timeout),
+                    cleaning=cleaning_level,
+                    on_progress=on_progress,
+                )
+            return
         else:
             source = url_or_dir.strip()
             if not source:
@@ -1269,8 +1280,9 @@ def build_app() -> gr.Blocks:
             )
             # File: upload widget
             ing_file = gr.File(
-                label="Upload file",
+                label="Upload files",
                 visible=False,
+                file_count="multiple",
                 file_types=[".pdf", ".docx", ".xlsx", ".md", ".txt", ".png", ".jpg", ".jpeg", ".tiff"],
             )
 
@@ -1331,7 +1343,7 @@ def build_app() -> gr.Blocks:
                 inputs=[
                     ing_mode, ing_url_or_dir, ing_file,
                     ing_output, ing_cleaning, ing_recursive, ing_timeout,
-                ],
+                ],  # ing_file now returns a list when file_count="multiple"
                 outputs=[ing_log, ing_btn, ing_stop_btn],
             )
             ing_stop_btn.click(fn=None, cancels=[ing_event])
