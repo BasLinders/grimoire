@@ -36,7 +36,7 @@ import torch
 
 from grimoire_ai.corpus.corpus import GrimoireCorpus
 from grimoire_ai.llm.inference.prompt import PromptBuilder
-from grimoire_ai.llm.inference.sampler import GenerationConfig, generate
+from grimoire_ai.llm.inference.sampler import GenerationConfig, generate, generate_stream
 from grimoire_ai.llm.model.config import TransformerConfig
 from grimoire_ai.llm.model.transformer import GrimoireTransformer
 from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
@@ -214,3 +214,46 @@ class InferenceEngine:
         response = self.tokenizer.decode(new_token_ids).strip()
         state.add_turn(query, response)
         return response
+
+    def chat_stream(
+        self,
+        query: str,
+        state: "ConversationState",  # noqa: F821
+        top_k_corpus: int = 5,
+        gen_config: Optional[GenerationConfig] = None,
+    ):
+        """Like ``chat`` but yields the partial response string after each token.
+
+        The final yield is the complete decoded response.  ``state`` is updated
+        once generation is complete so callers see consistent state regardless
+        of when they stop consuming the generator.
+        """
+        from grimoire_ai.state.conversation import ConversationState  # local import avoids circular dep
+
+        cfg = gen_config if gen_config is not None else self.gen_config
+
+        context_ids: list[int] = []
+        if self.corpus is not None:
+            results = self.corpus.query(query, top_k=top_k_corpus)
+            context_ids = self.prompt_builder._encode_context(results)
+
+        prompt_ids = state.build_prompt_ids(
+            query=query,
+            tokenizer=self.tokenizer,
+            context_ids=context_ids or None,
+            max_seq_len=self.model.config.max_seq_len,
+        )
+
+        generated_ids: list[int] = []
+        for token_id in generate_stream(
+            model=self.model,
+            prompt_ids=prompt_ids,
+            config=cfg,
+            device=self.device,
+        ):
+            generated_ids.append(token_id)
+            # Decode the full sequence so far to handle multi-byte BPE tokens.
+            yield self.tokenizer.decode(generated_ids).strip()
+
+        response = self.tokenizer.decode(generated_ids).strip()
+        state.add_turn(query, response)

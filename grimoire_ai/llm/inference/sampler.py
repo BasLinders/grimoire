@@ -68,6 +68,85 @@ class GenerationConfig:
     repetition_penalty: float = 1.0
 
 
+def generate_stream(
+    model: GrimoireTransformer,
+    prompt_ids: list[int],
+    config: GenerationConfig | None = None,
+    device: str = "cpu",
+):
+    """Like ``generate`` but yields one token id at a time as it is sampled.
+
+    Useful for streaming UIs that want to display tokens as they arrive rather
+    than waiting for the full response.
+    """
+    if not prompt_ids:
+        raise ValueError("prompt_ids must not be empty.")
+
+    if config is None:
+        config = GenerationConfig()
+
+    model.eval()
+    max_seq = model.config.max_seq_len
+
+    ids = list(prompt_ids)
+    generated: list[int] = []
+
+    prompt_context = ids[-max_seq:]
+    prompt_tensor = torch.tensor([prompt_context], dtype=torch.long, device=device)
+
+    with torch.no_grad():
+        logits, past_kvs = model(prompt_tensor, use_cache=True)
+
+    next_logits = logits[0, -1, :].float().clone()
+
+    with torch.no_grad():
+        for _ in range(config.max_new_tokens):
+            if config.repetition_penalty != 1.0 and generated:
+                for token_id in set(generated):
+                    if next_logits[token_id] > 0:
+                        next_logits[token_id] /= config.repetition_penalty
+                    else:
+                        next_logits[token_id] *= config.repetition_penalty
+
+            if config.temperature != 1.0:
+                next_logits = next_logits / max(config.temperature, 1e-8)
+
+            if config.top_k > 0:
+                k = min(config.top_k, next_logits.size(-1))
+                top_k_values = torch.topk(next_logits, k).values
+                threshold = top_k_values[-1]
+                next_logits = next_logits.masked_fill(next_logits < threshold, float("-inf"))
+
+            if config.top_p < 1.0:
+                sorted_logits, sorted_indices = torch.sort(next_logits, descending=True)
+                cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+                remove_mask = cumulative_probs - F.softmax(sorted_logits, dim=-1) > config.top_p
+                sorted_logits[remove_mask] = float("-inf")
+                next_logits = torch.zeros_like(next_logits).scatter_(
+                    0, sorted_indices, sorted_logits
+                )
+
+            probs = F.softmax(next_logits, dim=-1)
+            next_token = int(torch.multinomial(probs, num_samples=1).item())
+
+            if next_token == EOS_ID:
+                break
+
+            generated.append(next_token)
+            yield next_token
+
+            past_len = past_kvs[0][0].shape[2]
+            if past_len >= max_seq - 1:
+                past_kvs = [
+                    (kv[0][:, :, 1:, :], kv[1][:, :, 1:, :])
+                    for kv in past_kvs
+                ]
+
+            token_tensor = torch.tensor([[next_token]], dtype=torch.long, device=device)
+            logits, past_kvs = model(token_tensor, past_kvs=past_kvs, use_cache=True)
+            next_logits = logits[0, -1, :].float().clone()
+
+
 def generate(
     model: GrimoireTransformer,
     prompt_ids: list[int],
