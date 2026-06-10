@@ -436,10 +436,11 @@ def chat(
     top_k: int,
     top_p: float,
     max_new_tokens: int,
-) -> tuple[str, object]:
-    """Generate a response and update the conversation state."""
+) -> Generator[tuple[str, object], None, None]:
+    """Stream a response token-by-token and update the conversation state."""
     if engine_state is None:
-        return "No model loaded. Use the Load button first.", conv_state
+        yield "No model loaded. Use the Load button first.", conv_state
+        return
     from grimoire_ai.llm.inference.sampler import GenerationConfig
     from grimoire_ai.state.conversation import ConversationState
     gen_config = GenerationConfig(
@@ -450,8 +451,8 @@ def chat(
     )
     if conv_state is None:
         conv_state = ConversationState()
-    response = engine_state.chat(query, conv_state, gen_config=gen_config)
-    return response, conv_state
+    for partial in engine_state.chat_stream(query, conv_state, gen_config=gen_config):
+        yield partial, conv_state
 
 
 def clear_conversation(conv_state) -> tuple[object, str]:
