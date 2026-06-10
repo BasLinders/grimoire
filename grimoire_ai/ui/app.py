@@ -455,6 +455,120 @@ def chat(
         yield partial, conv_state
 
 
+# ---------------------------------------------------------------------------
+# Scale calculator logic
+# ---------------------------------------------------------------------------
+
+def run_scale_calc(
+    corpus_path: str,
+    checkpoint_path: str,
+    batch_size: int,
+    accumulate_steps: int,
+    seq_len: int,
+    total_steps: int,
+) -> str:
+    """Compute Chinchilla scaling estimates and corpus statistics."""
+    import math
+    lines = []
+
+    # --- Corpus token count ------------------------------------------------
+    corpus_path = corpus_path.strip()
+    corpus_tokens = None
+    if corpus_path:
+        try:
+            import numpy as np
+            data = np.memmap(corpus_path, dtype=np.uint16, mode="r")
+            corpus_tokens = len(data)
+            lines.append(f"Corpus tokens:       {corpus_tokens:>15,}")
+        except Exception as exc:
+            lines.append(f"Corpus read error:   {exc}")
+    else:
+        lines.append("Corpus tokens:       (no path provided)")
+
+    # --- Model parameter count ---------------------------------------------
+    n_params = None
+    checkpoint_path = checkpoint_path.strip()
+    if checkpoint_path:
+        try:
+            from grimoire_ai.llm.training.checkpoint import load_checkpoint
+            from grimoire_ai.llm.model.config import TransformerConfig
+            from grimoire_ai.llm.model.transformer import GrimoireTransformer
+            ckpt = load_checkpoint(checkpoint_path)
+            config = TransformerConfig.from_dict(ckpt["config"])
+            model = GrimoireTransformer(config)
+            n_params = model.num_parameters()
+            lines.append(f"Model parameters:    {n_params:>15,}  (from checkpoint)")
+        except Exception as exc:
+            lines.append(f"Checkpoint error:    {exc}")
+    if n_params is None:
+        n_params = 25_000_000
+        lines.append(f"Model parameters:    {n_params:>15,}  (default — load a checkpoint for exact count)")
+
+    lines.append("")
+
+    # --- Tokens per step ---------------------------------------------------
+    tokens_per_step = int(batch_size) * int(accumulate_steps) * int(seq_len)
+    lines.append(f"Tokens per step:     {tokens_per_step:>15,}  (batch {batch_size} × accum {accumulate_steps} × seq {seq_len})")
+
+    # --- Chinchilla optimal ------------------------------------------------
+    chinchilla_tokens = 20 * n_params
+    chinchilla_steps  = chinchilla_tokens // tokens_per_step
+    lines.append(f"Chinchilla-optimal tokens: {chinchilla_tokens:>10,}  (20 × parameters)")
+    lines.append(f"Chinchilla-optimal steps:  {chinchilla_steps:>10,}  (at current batch config)")
+
+    lines.append("")
+
+    # --- Current run analysis ----------------------------------------------
+    total_steps = int(total_steps)
+    tokens_this_run = total_steps * tokens_per_step
+    pct_chinchilla  = tokens_this_run / chinchilla_tokens * 100
+    lines.append(f"Your total steps:    {total_steps:>15,}")
+    lines.append(f"Tokens this run:     {tokens_this_run:>15,}  ({pct_chinchilla:.1f}% of Chinchilla optimal)")
+
+    if corpus_tokens and corpus_tokens > 0:
+        passes = tokens_this_run / corpus_tokens
+        lines.append(f"Corpus passes:       {passes:>15.1f}x")
+        lines.append("")
+        if passes < 1.0:
+            lines.append("⚠  Less than one full pass through the corpus.")
+            lines.append("   The model won't have seen all your data. Increase total steps.")
+        elif passes < 3.0:
+            lines.append("✔  Good — 1–3 passes is healthy for a well-sized corpus.")
+        elif passes < 10.0:
+            lines.append("⚠  3–10 passes — risk of memorisation if corpus is small.")
+            lines.append("   Consider expanding the corpus or reducing total steps.")
+        else:
+            lines.append("✘  More than 10 passes — the model is likely overfitting.")
+            lines.append("   Expand the corpus significantly before training this long.")
+
+    lines.append("")
+
+    # --- Recommendation ----------------------------------------------------
+    lines.append("─" * 52)
+    if pct_chinchilla < 50:
+        rec_steps = chinchilla_steps
+        lines.append(f"Recommendation: significantly undertrained.")
+        lines.append(f"  Target {rec_steps:,} steps for Chinchilla-optimal training.")
+    elif pct_chinchilla < 80:
+        lines.append(f"Recommendation: undertrained (~{pct_chinchilla:.0f}% of optimal).")
+        lines.append(f"  Extending to {chinchilla_steps:,} steps would improve quality.")
+    elif pct_chinchilla < 120:
+        lines.append(f"Recommendation: well-trained ({pct_chinchilla:.0f}% of Chinchilla optimal). ✔")
+    else:
+        lines.append(f"Recommendation: over-budget ({pct_chinchilla:.0f}% of Chinchilla optimal).")
+        lines.append(f"  Fine for quality, but diminishing returns beyond ~120%.")
+
+    if corpus_tokens:
+        # Suggest steps that give ~3 passes without exceeding Chinchilla budget
+        steps_3_passes = math.ceil(corpus_tokens * 3 / tokens_per_step)
+        lines.append("")
+        lines.append(f"For 3 corpus passes:  {steps_3_passes:,} steps")
+        lines.append(f"For Chinchilla opt.:  {chinchilla_steps:,} steps")
+        lines.append(f"Use the larger of the two as your total_steps target.")
+
+    return "\n".join(lines)
+
+
 def clear_conversation(conv_state) -> tuple[object, str]:
     """Reset the conversation history."""
     from grimoire_ai.state.conversation import ConversationState
@@ -1094,6 +1208,45 @@ def build_app() -> gr.Blocks:
                 outputs=[ft_log_box, ft_run_btn, ft_stop_btn],
             )
             ft_stop_btn.click(fn=stop_finetune, inputs=[], outputs=[], cancels=[ft_event])
+
+        # ----------------------------------------------------------------
+        with gr.Tab("Scale"):
+            gr.Markdown(
+                "Estimate how many training steps your corpus and model size warrant, "
+                "based on the Chinchilla scaling laws."
+            )
+            with gr.Row():
+                sc_corpus = gr.Textbox(
+                    label="Corpus binary (.bin)",
+                    value="data/processed/corpus.bin",
+                    info="The tokenised corpus written by the Preprocess tab. Used to count tokens.",
+                )
+                sc_checkpoint = gr.Textbox(
+                    label="Checkpoint (.pt) — optional",
+                    placeholder="checkpoints/pretrain/step_0010000.pt",
+                    info="Load a checkpoint to read the exact parameter count. Leave blank to use the 25M default.",
+                )
+            with gr.Row():
+                sc_batch  = gr.Number(label="Batch size",        value=4,   precision=0,
+                    info="Must match what you use in Pre-train.")
+                sc_accum  = gr.Number(label="Gradient accum.",   value=8,   precision=0,
+                    info="Must match what you use in Pre-train.")
+                sc_seq    = gr.Number(label="Sequence length",   value=512, precision=0,
+                    info="Context window — 512 is the model default.")
+                sc_steps  = gr.Number(label="Planned total steps", value=20_000, precision=0,
+                    info="The total_steps value you intend to use. Adjust to see how it changes the estimates.")
+            sc_run_btn = gr.Button("Calculate", variant="primary")
+            sc_output  = gr.Textbox(
+                label="Results",
+                lines=22,
+                interactive=False,
+                elem_classes=["scale-output"],
+            )
+            sc_run_btn.click(
+                fn=run_scale_calc,
+                inputs=[sc_corpus, sc_checkpoint, sc_batch, sc_accum, sc_seq, sc_steps],
+                outputs=[sc_output],
+            )
 
         # ----------------------------------------------------------------
         with gr.Tab("Ingest"):
