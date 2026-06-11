@@ -134,6 +134,21 @@ def stop_preprocess() -> None:
 # Pre-train tab logic
 # ---------------------------------------------------------------------------
 
+def apply_model_preset(preset_name: str):
+    """Return field updates for the architectural param fields."""
+    from grimoire_ai.llm.model.config import MODEL_PRESETS
+    cfg = MODEL_PRESETS.get(preset_name)
+    if cfg is None:
+        return [gr.update()] * 5
+    return [
+        gr.update(value=cfg.d_model),
+        gr.update(value=cfg.n_layers),
+        gr.update(value=cfg.n_heads),
+        gr.update(value=cfg.n_kv_heads),
+        gr.update(value=cfg.d_ff),
+    ]
+
+
 def run_pretrain(
     corpus_path: str,
     checkpoint_dir: str,
@@ -145,6 +160,11 @@ def run_pretrain(
     accumulate_steps: int,
     log_every: int,
     save_every: int,
+    d_model: int,
+    n_layers: int,
+    n_heads: int,
+    n_kv_heads: int,
+    d_ff: int,
 ) -> Generator[str, None, None]:
     """Launch a pre-training run and stream log output."""
     import torch
@@ -159,7 +179,13 @@ def run_pretrain(
 
     def _train(on_log, on_save, on_done):
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        model_config = TransformerConfig()
+        model_config = TransformerConfig(
+            d_model=int(d_model),
+            n_layers=int(n_layers),
+            n_heads=int(n_heads),
+            n_kv_heads=int(n_kv_heads),
+            d_ff=int(d_ff),
+        )
         model = GrimoireTransformer(model_config)
         dataset = TokenizedDataset(corpus_path, seq_len=model_config.max_seq_len)
         Trainer(
@@ -1111,6 +1137,33 @@ def build_app() -> gr.Blocks:
                     label="Save every N steps", value=1000, precision=0,
                     info="How often a snapshot is written to disk. More checkpoints = more recovery points but more disk space.",
                 )
+
+            # ---- Model architecture -------------------------------------
+            with gr.Accordion("Model architecture", open=False):
+                gr.Markdown(
+                    "Choose a preset or adjust individual dimensions. "
+                    "**Changing these requires training from scratch** — "
+                    "you cannot resume a run with a different architecture."
+                )
+                pt_preset = gr.Dropdown(
+                    choices=["small-25M", "medium-85M", "large-250M"],
+                    value="small-25M",
+                    label="Size preset",
+                    info="small-25M: fast, good for small corpora. medium-85M: recommended once corpus exceeds 100M tokens. large-250M: requires 8 GB+ VRAM.",
+                )
+                with gr.Row():
+                    pt_d_model   = gr.Number(label="d_model",   value=512,  precision=0, info="Embedding dimension. Larger = more expressive but slower.")
+                    pt_n_layers  = gr.Number(label="n_layers",  value=6,    precision=0, info="Number of transformer blocks stacked.")
+                    pt_n_heads   = gr.Number(label="n_heads",   value=8,    precision=0, info="Number of attention heads. Must divide d_model evenly.")
+                    pt_n_kv_heads= gr.Number(label="n_kv_heads",value=2,    precision=0, info="Key/value heads for grouped query attention. Must divide n_heads evenly.")
+                    pt_d_ff      = gr.Number(label="d_ff",      value=1408, precision=0, info="Feed-forward hidden dimension. Default ≈ 2/3 × 4 × d_model.")
+
+                pt_preset.change(
+                    fn=apply_model_preset,
+                    inputs=[pt_preset],
+                    outputs=[pt_d_model, pt_n_layers, pt_n_heads, pt_n_kv_heads, pt_d_ff],
+                )
+
             with gr.Row():
                 pt_run_btn  = gr.Button("Start pre-training", variant="primary")
                 pt_stop_btn = gr.Button(
@@ -1128,6 +1181,7 @@ def build_app() -> gr.Blocks:
                     pt_corpus, pt_ckpt_dir, pt_resume,
                     pt_steps, pt_warmup, pt_lr,
                     pt_batch, pt_accum, pt_log, pt_save,
+                    pt_d_model, pt_n_layers, pt_n_heads, pt_n_kv_heads, pt_d_ff,
                 ],
                 outputs=[pt_log_box, pt_run_btn, pt_stop_btn],
             )
