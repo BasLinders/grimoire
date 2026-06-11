@@ -154,3 +154,30 @@ class TransformerConfig:
         """
         data = json.loads(Path(path).read_text(encoding="utf-8"))
         return cls.from_dict(data)
+
+
+# ---------------------------------------------------------------------------
+# Named size presets
+# ---------------------------------------------------------------------------
+
+#: Ready-made configurations for common model sizes.
+#: All presets share the same vocab_size, max_seq_len, dropout, and
+#: rope_theta defaults; only the architectural dimensions differ.
+#:
+#: Approximate parameter counts assume vocab_size=16384 with weight tying.
+MODEL_PRESETS: dict[str, TransformerConfig] = {
+    # ~25M params — fast to train, good for small corpora or quick experiments.
+    "small-25M": TransformerConfig(
+        d_model=512, n_layers=6, n_heads=8, n_kv_heads=2, d_ff=1408,
+    ),
+    # ~85M params — meaningful quality jump, still trainable overnight on a
+    # consumer GPU.  Recommended once corpus exceeds ~100M tokens.
+    "medium-85M": TransformerConfig(
+        d_model=768, n_layers=12, n_heads=12, n_kv_heads=3, d_ff=2048,
+    ),
+    # ~250M params — approaching small open-weight LLM territory.  Requires
+    # a substantial corpus (500M+ tokens) and a GPU with ≥8 GB VRAM.
+    "large-250M": TransformerConfig(
+        d_model=1024, n_layers=20, n_heads=16, n_kv_heads=4, d_ff=2816,
+    ),
+}
