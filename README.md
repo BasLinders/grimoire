@@ -20,17 +20,17 @@ The first agent built on Grimoire is **Saga**: a focused domain chatbot covering
 ```
 grimoire/
 ├── grimoire/
-│   ├── agents/             # Agent registry — loads agents.json, builds InferenceEngine  ✓
-│   ├── corpus/             # Corpus ingestion, stemming, n-gram index, Jaccard retrieval  ✓
-│   ├── llm/                # Scratch-built transformer LLM                                ✓
+│   ├── agents/             # Agent registry — loads agents.json, builds InferenceEngine
+│   ├── corpus/             # Corpus ingestion, stemming, n-gram index, Jaccard retrieval
+│   ├── llm/                # Scratch-built transformer LLM
 │   │   ├── tokenizer/      # Byte-level BPE tokenizer (vocab size 16 384)
 │   │   ├── model/          # Decoder-only transformer (GQA, RoPE, SwiGLU, RMSNorm)
 │   │   ├── data/           # TokenizedDataset, PaddingCollator, ConversationDataset
 │   │   ├── training/       # Trainer, checkpointing, pretrain + finetune entry points
 │   │   └── inference/      # PromptBuilder, KV-cache sampler, InferenceEngine
-│   ├── state/              # ConversationState — rolling multi-turn history + prompt build  ✓
-│   ├── cli/                # Interactive terminal chat loop                                ✓
-│   └── ui/                 # Gradio app — Pre-train, Fine-tune, Ingest, Chat tabs          ✓
+│   ├── state/              # ConversationState — rolling multi-turn history + prompt build
+│   ├── cli/                # Interactive terminal chat loop   
+│   └── ui/                 # Gradio app — Pre-train, Fine-tune, Ingest, Chat tabs
 ├── agents.json             # Named agent configurations (checkpoint, vocab, corpus, gen defaults)
 ├── scripts/
 │   ├── build_saga_corpus.py        # Download D&D 5e SRD + copy math references
