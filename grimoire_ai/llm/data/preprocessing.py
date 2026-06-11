@@ -60,6 +60,13 @@ def _collect_text_files(input_path: Path) -> list[Path]:
     """
     if input_path.is_file():
         return [input_path]
+    # Force the OS to flush its directory cache before globbing.
+    # On Windows, a long-running process may not see files added after startup
+    # without explicitly re-reading the directory via os.scandir.
+    import os
+    for dirpath, _, _ in os.walk(input_path):
+        with os.scandir(dirpath):
+            pass
     files = sorted(input_path.rglob("*.txt"))
     if not files:
         raise ValueError(f"No .txt files found under {input_path}")
