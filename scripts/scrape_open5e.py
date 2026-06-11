@@ -15,6 +15,7 @@ Requirements
 """
 
 import argparse
+import json
 import time
 from pathlib import Path
 
@@ -34,7 +35,7 @@ ENDPOINTS = [
     ("armor",        "open5e_armor.txt"),
     ("feats",        "open5e_feats.txt"),
     ("backgrounds",  "open5e_backgrounds.txt"),
-    ("sections",     "open5e_sections.txt"),  # rules text
+    ("sections",     "open5e_sections.txt"),  # rules text — very useful
 ]
 
 
@@ -73,11 +74,11 @@ def _fmt_monster(m: dict) -> str:
     for trait in m.get("special_abilities") or []:
         lines.append(f"\n{trait.get('name', '')}: {trait.get('desc', '')}")
     for action in m.get("actions") or []:
-        lines.append(f"\nAction -- {action.get('name', '')}: {action.get('desc', '')}")
+        lines.append(f"\nAction — {action.get('name', '')}: {action.get('desc', '')}")
     for reaction in m.get("reactions") or []:
-        lines.append(f"\nReaction -- {reaction.get('name', '')}: {reaction.get('desc', '')}")
+        lines.append(f"\nReaction — {reaction.get('name', '')}: {reaction.get('desc', '')}")
     for la in m.get("legendary_actions") or []:
-        lines.append(f"\nLegendary action -- {la.get('name', '')}: {la.get('desc', '')}")
+        lines.append(f"\nLegendary action — {la.get('name', '')}: {la.get('desc', '')}")
     if m.get("desc"):
         lines.append(f"\n{m['desc']}")
     return "\n".join(lines)
@@ -152,12 +153,12 @@ def _fetch_all(endpoint: str, delay: float, page_size: int = 100) -> list[dict]:
             resp = requests.get(url, timeout=30)
             resp.raise_for_status()
         except requests.RequestException as exc:
-            print(f"  {endpoint} page {page}: {exc}")
+            print(f"  ✘ {endpoint} page {page}: {exc}")
             break
         data = resp.json()
         batch = data.get("results", [])
         results.extend(batch)
-        print(f"  {endpoint}: page {page} -- {len(results)} items so far")
+        print(f"  {endpoint}: page {page} — {len(results)} items so far")
         url = data.get("next")
         if url:
             time.sleep(delay)
@@ -187,7 +188,7 @@ def scrape(output_dir: str, delay: float) -> None:
 
         out_path = out / filename
         out_path.write_text("\n\n---\n\n".join(texts), encoding="utf-8")
-        print(f"  {len(texts)} records -> {out_path}")
+        print(f"  ✔ {len(texts)} records → {out_path}")
 
     print("\nDone. Run the Preprocess tab to tokenize the new files.")
 

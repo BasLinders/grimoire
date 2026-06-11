@@ -1,8 +1,8 @@
 """Scrape the Forgotten Realms wiki via the MediaWiki API.
 
 Fetches articles from specific categories and writes one .txt file per
-category into the output directory.  Uses raw wikitext (prop=revisions)
-rather than the TextExtracts extension, which Fandom has disabled.
+category into the output directory.  Uses the TextExtracts API extension
+to get clean plain text without parsing wikitext or HTML manually.
 
 Usage
 -----
@@ -81,14 +81,14 @@ def _get_category_members(category: str, delay: float) -> list[str]:
 
 
 def _get_page_text(title: str) -> str:
-    """Fetch plain text from a wiki page via raw wikitext."""
+    """Fetch the plain-text extract of a single wiki page."""
     params = {
-        "action":  "query",
-        "titles":  title,
-        "prop":    "revisions",
-        "rvprop":  "content",
-        "rvslots": "main",
-        "format":  "json",
+        "action":      "query",
+        "titles":      title,
+        "prop":        "extracts",
+        "explaintext": "true",
+        "exsectionformat": "plain",
+        "format":      "json",
     }
     resp = SESSION.get(API_URL, params=params, timeout=30)
     resp.raise_for_status()
@@ -97,40 +97,17 @@ def _get_page_text(title: str) -> str:
     for page in pages.values():
         if "missing" in page:
             return ""
-        slots = page.get("revisions", [{}])[0].get("slots", {})
-        wikitext = slots.get("main", {}).get("*", "")
-        return _wikitext_to_text(wikitext)
+        return page.get("extract", "")
     return ""
 
 
-def _wikitext_to_text(wikitext: str) -> str:
-    """Strip wikitext markup to plain text."""
-    # Remove templates: {{...}} — two passes handle shallow nesting
-    text = re.sub(r"\{\{[^{}]*\}\}", "", wikitext)
-    text = re.sub(r"\{\{[^{}]*\}\}", "", text)
-    # Remove File/Image links
-    text = re.sub(r"\[\[(?:File|Image):[^\]]*\]\]", "", text, flags=re.IGNORECASE)
-    # [[link|display]] → display,  [[link]] → link
-    text = re.sub(r"\[\[(?:[^\]|]+\|)?([^\]]+)\]\]", r"\1", text)
-    # External links [url text] → text,  bare [url] → removed
-    text = re.sub(r"\[https?://\S+\s+([^\]]+)\]", r"\1", text)
-    text = re.sub(r"\[https?://\S+\]", "", text)
-    # Remove HTML tags
-    text = re.sub(r"<[^>]+>", "", text)
-    # Remove table markup lines
-    text = re.sub(r"^\s*[|!{].*$", "", text, flags=re.MULTILINE)
-    # Section headers: == Foo == → Foo
-    text = re.sub(r"=+\s*(.+?)\s*=+", r"\1", text)
-    # Bold/italic markers
-    text = re.sub(r"'{2,3}", "", text)
-    # Collapse 3+ blank lines to 2
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
-
-
 def _clean(text: str) -> str:
-    """Remove any remaining wikitext artifacts after extraction."""
+    """Light cleaning: collapse excessive blank lines, strip edit markers."""
+    # Remove leftover wikitext artifacts that sometimes survive extraction
     text = re.sub(r"\[\s*edit\s*\]", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\{\{[^}]*\}\}", "", text)   # {{template}} remnants
+    text = re.sub(r"\[\[([^\]|]+\|)?([^\]]+)\]\]", r"\2", text)  # [[link|text]]
+    # Collapse 3+ blank lines to 2
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
@@ -148,7 +125,7 @@ def scrape(output_dir: str, delay: float, max_articles: int) -> None:
         try:
             titles = _get_category_members(category, delay=delay)
         except Exception as exc:
-            print(f"  Could not fetch category members: {exc}")
+            print(f"  ✘ Could not fetch category members: {exc}")
             continue
 
         if not titles:
@@ -172,7 +149,7 @@ def scrape(output_dir: str, delay: float, max_articles: int) -> None:
                     print(f"  {i}/{len(titles)} fetched...")
                 time.sleep(delay)
             except Exception as exc:
-                print(f"  {title}: {exc}")
+                print(f"  ✘ {title}: {exc}")
                 continue
 
         if not articles:
@@ -181,7 +158,7 @@ def scrape(output_dir: str, delay: float, max_articles: int) -> None:
 
         out_path = out / filename
         out_path.write_text("\n\n---\n\n".join(articles), encoding="utf-8")
-        print(f"  {len(articles)} articles -> {out_path}")
+        print(f"  ✔ {len(articles)} articles → {out_path}")
 
     print("\nDone. Run the Preprocess tab to tokenize the new files.")
 
@@ -196,7 +173,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--delay", type=float, default=0.5,
-        help="Seconds between requests (default: 0.5 -- do not go below 0.25)",
+        help="Seconds between requests (default: 0.5 — do not go below 0.25)",
     )
     parser.add_argument(
         "--max-articles", type=int, default=0,

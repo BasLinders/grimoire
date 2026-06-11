@@ -20,7 +20,7 @@ This guide covers everything needed to prepare a corpus, pre-train a Grimoire mo
 ### CPU only
 
 ```bash
-git clone https://github.com/BasLinders/grimoire.git
+git clone https://github.com/BasLinders/grimoire_ai.git
 cd grimoire
 pip install -e ".[dev]"
 ```
@@ -74,7 +74,7 @@ This downloads the SRD (~1.5 MB from GitHub), splits it into 24 rule sections, c
 **Via the Ingest tab (UI):**
 
 ```bash
-python -m grimoire.ui
+python -m grimoire_ai.ui
 # → Ingest tab
 ```
 
@@ -84,18 +84,18 @@ Paste a URL, upload a file, or point at a directory. Choose a cleaning level (mi
 
 ```bash
 # Web page
-python -m grimoire.corpus.ingest --source https://example.com/rules --output data/raw/
+python -m grimoire_ai.corpus.ingest --source https://example.com/rules --output data/raw/
 
 # Raw Markdown URL (GitHub etc.) — detected automatically
-python -m grimoire.corpus.ingest \
+python -m grimoire_ai.corpus.ingest \
     --source https://raw.githubusercontent.com/user/repo/main/doc.md \
     --output data/raw/
 
 # Local file (PDF, DOCX, Markdown, plain text)
-python -m grimoire.corpus.ingest --source docs/phb_excerpt.pdf --output data/raw/
+python -m grimoire_ai.corpus.ingest --source docs/phb_excerpt.pdf --output data/raw/
 
 # Directory (batch, with cleaning level)
-python -m grimoire.corpus.ingest \
+python -m grimoire_ai.corpus.ingest \
     --source docs/ --output data/raw/ --recursive --cleaning thorough
 ```
 
@@ -127,7 +127,7 @@ data/
 Run preprocessing:
 
 ```bash
-python -m grimoire.llm.data.preprocessing \
+python -m grimoire_ai.llm.data.preprocessing \
     --input  data/raw/ \
     --output data/processed/corpus.bin \
     --vocab  data/tokenizer/bpe.json
@@ -148,7 +148,7 @@ Pre-training teaches language patterns from raw text. It does **not** teach the 
 ### Via CLI
 
 ```bash
-python -m grimoire.llm.training.train \
+python -m grimoire_ai.llm.training.train \
     --corpus data/processed/corpus.bin
 ```
 
@@ -195,7 +195,7 @@ On a 4 GB GPU with defaults, expect ~2–4 hours for 10 000 steps depending on c
 ### Via Training UI
 
 ```bash
-python -m grimoire.ui
+python -m grimoire_ai.ui
 ```
 
 Open `http://localhost:7860`, go to the **Pre-train** tab, fill in the corpus path and hyperparameters, then click **Start pre-training**. Loss updates stream live.
@@ -242,7 +242,7 @@ Defaults: 300 steps, peak lr 5e-5, batch 4, gradient accumulation 4. Per-step lo
 ### Via CLI (general)
 
 ```bash
-python -m grimoire.llm.training.finetune \
+python -m grimoire_ai.llm.training.finetune \
     --resume  checkpoints/pretrain/step_0010000.pt \
     --data    data/finetune/examples.jsonl \
     --vocab   data/tokenizer/bpe.json \
@@ -279,7 +279,7 @@ Checkpoints are saved as `step_NNNNNNN.pt` files in the output directory. Each c
 To resume an interrupted run:
 
 ```bash
-python -m grimoire.llm.training.train \
+python -m grimoire_ai.llm.training.train \
     --resume checkpoints/pretrain/step_0005000.pt
 ```
 
@@ -303,13 +303,13 @@ Step 3 is the important one: **resume, don't restart**. The model continues from
 
 ```bash
 # Re-preprocess (fast — tokenizer already trained)
-python -m grimoire.llm.data.preprocessing \
+python -m grimoire_ai.llm.data.preprocessing \
     --input  data/corpus/saga/ \
     --output data/processed/corpus.bin \
     --vocab  data/tokenizer/bpe.json
 
 # Resume pre-training for extra steps
-python -m grimoire.llm.training.train \
+python -m grimoire_ai.llm.training.train \
     --corpus data/processed/corpus.bin \
     --resume checkpoints/pretrain/step_0010000.pt
 ```
@@ -334,7 +334,7 @@ Delete `bpe.json` before preprocessing only if the new content is from a very di
 Quick sanity check after fine-tuning:
 
 ```python
-from grimoire.llm.inference.engine import InferenceEngine
+from grimoire_ai.llm.inference.engine import InferenceEngine
 
 engine = InferenceEngine(
     checkpoint_path="checkpoints/finetune/step_0000500.pt",

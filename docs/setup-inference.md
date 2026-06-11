@@ -21,7 +21,7 @@ A trained checkpoint is required. If you do not have one yet, see [setup-trainin
 ### CPU only
 
 ```bash
-git clone https://github.com/BasLinders/grimoire.git
+git clone https://github.com/BasLinders/grimoire_ai.git
 cd grimoire
 pip install -e "."
 ```
@@ -46,7 +46,7 @@ pip install -e ".[ui]"
 The simplest way to run inference. `agents.json` at the project root maps agent names to their checkpoint, vocabulary, corpus directories, and generation defaults. `AgentRegistry.build_engine()` loads everything in one call.
 
 ```python
-from grimoire.agents.registry import AgentRegistry
+from grimoire_ai.agents.registry import AgentRegistry
 
 registry = AgentRegistry("agents.json")   # loads agents.json
 engine   = registry.build_engine("saga")  # checkpoint + corpus auto-loaded
@@ -79,7 +79,7 @@ All paths in `agents.json` are resolved relative to the file's location. `corpus
 ## 3 — Single-turn inference (Python API)
 
 ```python
-from grimoire.llm.inference.engine import InferenceEngine
+from grimoire_ai.llm.inference.engine import InferenceEngine
 
 engine = InferenceEngine(
     checkpoint_path="checkpoints/finetune/step_0000500.pt",
@@ -97,8 +97,8 @@ The engine auto-detects CUDA and falls back to CPU.
 ## 4 — Multi-turn chat (Python API)
 
 ```python
-from grimoire.llm.inference.engine import InferenceEngine
-from grimoire.state.conversation import ConversationState
+from grimoire_ai.llm.inference.engine import InferenceEngine
+from grimoire_ai.state.conversation import ConversationState
 
 engine = InferenceEngine(
     checkpoint_path="checkpoints/finetune/step_0000500.pt",
@@ -121,8 +121,8 @@ print(r2)
 Attaching a `GrimoireCorpus` grounds answers in a defined knowledge base. Retrieved passages are injected into the prompt before generation — no retraining required.
 
 ```python
-from grimoire.corpus.corpus import GrimoireCorpus
-from grimoire.llm.inference.engine import InferenceEngine
+from grimoire_ai.corpus.corpus import GrimoireCorpus
+from grimoire_ai.llm.inference.engine import InferenceEngine
 
 corpus = GrimoireCorpus()
 corpus.add_text(
@@ -145,7 +145,7 @@ print(response)
 
 ```python
 from pathlib import Path
-from grimoire.corpus.corpus import GrimoireCorpus
+from grimoire_ai.corpus.corpus import GrimoireCorpus
 
 corpus = GrimoireCorpus()
 for path in Path("data/corpus/saga/").glob("*.txt"):
@@ -161,7 +161,7 @@ The corpus engine indexes stemmed 4-gram multi-tokens from every added text. At 
 ## 6 — Tuning generation behaviour
 
 ```python
-from grimoire.llm.inference.sampler import GenerationConfig
+from grimoire_ai.llm.inference.sampler import GenerationConfig
 
 config = GenerationConfig(
     max_new_tokens=256,
@@ -194,7 +194,7 @@ engine.chat("Roll for initiative", state, gen_config=GenerationConfig(max_new_to
 ## 7 — Chat UI
 
 ```bash
-python -m grimoire.ui
+python -m grimoire_ai.ui
 ```
 
 Open `http://localhost:7860` and go to the **Chat** tab:
@@ -209,7 +209,7 @@ Open `http://localhost:7860` and go to the **Chat** tab:
 ## 8 — Terminal chat CLI
 
 ```bash
-python -m grimoire.cli.chat \
+python -m grimoire_ai.cli.chat \
     --checkpoint checkpoints/finetune/step_0000500.pt \
     --vocab      data/tokenizer/bpe.json \
     --corpus-dir data/corpus/saga/

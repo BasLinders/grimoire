@@ -33,6 +33,7 @@ Usage
     # then open http://localhost:7860
 """
 
+import json
 import os
 import queue
 import threading
@@ -133,6 +134,21 @@ def stop_preprocess() -> None:
 # Pre-train tab logic
 # ---------------------------------------------------------------------------
 
+def apply_model_preset(preset_name: str):
+    """Return field updates for the architectural param fields."""
+    from grimoire_ai.llm.model.config import MODEL_PRESETS
+    cfg = MODEL_PRESETS.get(preset_name)
+    if cfg is None:
+        return [gr.update()] * 5
+    return [
+        gr.update(value=cfg.d_model),
+        gr.update(value=cfg.n_layers),
+        gr.update(value=cfg.n_heads),
+        gr.update(value=cfg.n_kv_heads),
+        gr.update(value=cfg.d_ff),
+    ]
+
+
 def run_pretrain(
     corpus_path: str,
     checkpoint_dir: str,
@@ -144,6 +160,11 @@ def run_pretrain(
     accumulate_steps: int,
     log_every: int,
     save_every: int,
+    d_model: int,
+    n_layers: int,
+    n_heads: int,
+    n_kv_heads: int,
+    d_ff: int,
 ) -> Generator[str, None, None]:
     """Launch a pre-training run and stream log output."""
     import torch
@@ -158,7 +179,13 @@ def run_pretrain(
 
     def _train(on_log, on_save, on_done):
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        model_config = TransformerConfig()
+        model_config = TransformerConfig(
+            d_model=int(d_model),
+            n_layers=int(n_layers),
+            n_heads=int(n_heads),
+            n_kv_heads=int(n_kv_heads),
+            d_ff=int(d_ff),
+        )
         model = GrimoireTransformer(model_config)
         dataset = TokenizedDataset(corpus_path, seq_len=model_config.max_seq_len)
         Trainer(
@@ -321,7 +348,7 @@ def _stream_task(task_fn) -> Generator[str, None, None]:
 def run_ingest(
     mode: str,
     url_or_dir: str,
-    file_obj,
+    file_objs,
     output_dir: str,
     cleaning: str,
     recursive: bool,
@@ -334,9 +361,20 @@ def run_ingest(
 
     def _task(on_progress):
         if mode == "File":
-            if file_obj is None:
+            if not file_objs:
                 raise ValueError("No file uploaded.")
-            source = file_obj.name
+            files = file_objs if isinstance(file_objs, list) else [file_objs]
+            for f in files:
+                on_progress(f"Ingesting {Path(f.name).name} ...")
+                ingest(
+                    source=f.name,
+                    output_dir=output_dir.strip() or None,
+                    recursive=False,
+                    timeout=int(timeout),
+                    cleaning=cleaning_level,
+                    on_progress=on_progress,
+                )
+            return
         else:
             source = url_or_dir.strip()
             if not source:
@@ -435,10 +473,11 @@ def chat(
     top_k: int,
     top_p: float,
     max_new_tokens: int,
-) -> tuple[str, object]:
-    """Generate a response and update the conversation state."""
+) -> Generator[tuple[str, object], None, None]:
+    """Stream a response token-by-token and update the conversation state."""
     if engine_state is None:
-        return "No model loaded. Use the Load button first.", conv_state
+        yield "No model loaded. Use the Load button first.", conv_state
+        return
     from grimoire_ai.llm.inference.sampler import GenerationConfig
     from grimoire_ai.state.conversation import ConversationState
     gen_config = GenerationConfig(
@@ -449,8 +488,122 @@ def chat(
     )
     if conv_state is None:
         conv_state = ConversationState()
-    response = engine_state.chat(query, conv_state, gen_config=gen_config)
-    return response, conv_state
+    for partial in engine_state.chat_stream(query, conv_state, gen_config=gen_config):
+        yield partial, conv_state
+
+
+# ---------------------------------------------------------------------------
+# Scale calculator logic
+# ---------------------------------------------------------------------------
+
+def run_scale_calc(
+    corpus_path: str,
+    checkpoint_path: str,
+    batch_size: int,
+    accumulate_steps: int,
+    seq_len: int,
+    total_steps: int,
+) -> str:
+    """Compute Chinchilla scaling estimates and corpus statistics."""
+    import math
+    lines = []
+
+    # --- Corpus token count ------------------------------------------------
+    corpus_path = corpus_path.strip()
+    corpus_tokens = None
+    if corpus_path:
+        try:
+            import numpy as np
+            data = np.memmap(corpus_path, dtype=np.uint16, mode="r")
+            corpus_tokens = len(data)
+            lines.append(f"Corpus tokens:       {corpus_tokens:>15,}")
+        except Exception as exc:
+            lines.append(f"Corpus read error:   {exc}")
+    else:
+        lines.append("Corpus tokens:       (no path provided)")
+
+    # --- Model parameter count ---------------------------------------------
+    n_params = None
+    checkpoint_path = checkpoint_path.strip()
+    if checkpoint_path:
+        try:
+            from grimoire_ai.llm.training.checkpoint import load_checkpoint
+            from grimoire_ai.llm.model.config import TransformerConfig
+            from grimoire_ai.llm.model.transformer import GrimoireTransformer
+            ckpt = load_checkpoint(checkpoint_path)
+            config = TransformerConfig.from_dict(ckpt["config"])
+            model = GrimoireTransformer(config)
+            n_params = model.num_parameters()
+            lines.append(f"Model parameters:    {n_params:>15,}  (from checkpoint)")
+        except Exception as exc:
+            lines.append(f"Checkpoint error:    {exc}")
+    if n_params is None:
+        n_params = 25_000_000
+        lines.append(f"Model parameters:    {n_params:>15,}  (default — load a checkpoint for exact count)")
+
+    lines.append("")
+
+    # --- Tokens per step ---------------------------------------------------
+    tokens_per_step = int(batch_size) * int(accumulate_steps) * int(seq_len)
+    lines.append(f"Tokens per step:     {tokens_per_step:>15,}  (batch {batch_size} × accum {accumulate_steps} × seq {seq_len})")
+
+    # --- Chinchilla optimal ------------------------------------------------
+    chinchilla_tokens = 20 * n_params
+    chinchilla_steps  = chinchilla_tokens // tokens_per_step
+    lines.append(f"Chinchilla-optimal tokens: {chinchilla_tokens:>10,}  (20 × parameters)")
+    lines.append(f"Chinchilla-optimal steps:  {chinchilla_steps:>10,}  (at current batch config)")
+
+    lines.append("")
+
+    # --- Current run analysis ----------------------------------------------
+    total_steps = int(total_steps)
+    tokens_this_run = total_steps * tokens_per_step
+    pct_chinchilla  = tokens_this_run / chinchilla_tokens * 100
+    lines.append(f"Your total steps:    {total_steps:>15,}")
+    lines.append(f"Tokens this run:     {tokens_this_run:>15,}  ({pct_chinchilla:.1f}% of Chinchilla optimal)")
+
+    if corpus_tokens and corpus_tokens > 0:
+        passes = tokens_this_run / corpus_tokens
+        lines.append(f"Corpus passes:       {passes:>15.1f}x")
+        lines.append("")
+        if passes < 1.0:
+            lines.append("⚠  Less than one full pass through the corpus.")
+            lines.append("   The model won't have seen all your data. Increase total steps.")
+        elif passes < 3.0:
+            lines.append("✔  Good — 1–3 passes is healthy for a well-sized corpus.")
+        elif passes < 10.0:
+            lines.append("⚠  3–10 passes — risk of memorisation if corpus is small.")
+            lines.append("   Consider expanding the corpus or reducing total steps.")
+        else:
+            lines.append("✘  More than 10 passes — the model is likely overfitting.")
+            lines.append("   Expand the corpus significantly before training this long.")
+
+    lines.append("")
+
+    # --- Recommendation ----------------------------------------------------
+    lines.append("─" * 52)
+    if pct_chinchilla < 50:
+        rec_steps = chinchilla_steps
+        lines.append(f"Recommendation: significantly undertrained.")
+        lines.append(f"  Target {rec_steps:,} steps for Chinchilla-optimal training.")
+    elif pct_chinchilla < 80:
+        lines.append(f"Recommendation: undertrained (~{pct_chinchilla:.0f}% of optimal).")
+        lines.append(f"  Extending to {chinchilla_steps:,} steps would improve quality.")
+    elif pct_chinchilla < 120:
+        lines.append(f"Recommendation: well-trained ({pct_chinchilla:.0f}% of Chinchilla optimal). ✔")
+    else:
+        lines.append(f"Recommendation: over-budget ({pct_chinchilla:.0f}% of Chinchilla optimal).")
+        lines.append(f"  Fine for quality, but diminishing returns beyond ~120%.")
+
+    if corpus_tokens:
+        # Suggest steps that give ~3 passes without exceeding Chinchilla budget
+        steps_3_passes = math.ceil(corpus_tokens * 3 / tokens_per_step)
+        lines.append("")
+        lines.append(f"For 3 corpus passes:  {steps_3_passes:,} steps")
+        lines.append(f"For Chinchilla opt.:  {chinchilla_steps:,} steps")
+        lines.append(f"Use the larger of the two as your total_steps target.")
+
+    return "\n".join(lines)
 
 
 def clear_conversation(conv_state) -> tuple[object, str]:
@@ -461,6 +614,100 @@ def clear_conversation(conv_state) -> tuple[object, str]:
     else:
         conv_state = ConversationState()
     return conv_state, ""
+
+
+# ---------------------------------------------------------------------------
+# Dataset builder helpers
+# ---------------------------------------------------------------------------
+
+def _dataset_preview(pairs: list[dict]) -> str:
+    """Render the last three saved pairs as readable text."""
+    if not pairs:
+        return ""
+    lines = []
+    for p in pairs[-3:]:
+        lines.append(f"prompt:   {p['prompt']}")
+        lines.append(f"response: {p['response']}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def stage_exchange(query: str, response: str) -> tuple[str, str]:
+    """Copy the current chat exchange into the editable staging fields."""
+    return query.strip(), response.strip()
+
+
+def add_to_dataset(
+    prompt: str,
+    response: str,
+    pairs: list[dict],
+) -> tuple[list[dict], str, str, str, str]:
+    """Append the staged pair to the dataset and clear the staging fields."""
+    prompt = prompt.strip()
+    response = response.strip()
+    if not prompt or not response:
+        status = "Both prompt and response must be non-empty."
+        return pairs, _dataset_label(pairs), _dataset_preview(pairs), prompt, response
+    pairs = pairs + [{"prompt": prompt, "response": response}]
+    return pairs, _dataset_label(pairs), _dataset_preview(pairs), "", ""
+
+
+def remove_last_pair(pairs: list[dict]) -> tuple[list[dict], str, str]:
+    """Remove the most recently added pair."""
+    pairs = pairs[:-1] if pairs else pairs
+    return pairs, _dataset_label(pairs), _dataset_preview(pairs)
+
+
+def load_dataset(path: str) -> tuple[list[dict], str, str, str]:
+    """Load an existing JSONL file into session state."""
+    path = path.strip() or "data/finetune/conversations.jsonl"
+    p = Path(path)
+    if not p.exists():
+        return [], _dataset_label([]), "", f"File not found: {path}"
+    pairs = []
+    skipped = 0
+    with p.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                if "prompt" in obj and "response" in obj:
+                    pairs.append({"prompt": obj["prompt"], "response": obj["response"]})
+                else:
+                    skipped += 1
+            except json.JSONDecodeError:
+                skipped += 1
+    msg = f"Loaded {len(pairs)} pair(s) from {p}"
+    if skipped:
+        msg += f" ({skipped} invalid line(s) skipped)"
+    return pairs, _dataset_label(pairs), _dataset_preview(pairs), msg
+
+
+def export_dataset(pairs: list[dict], path: str, overwrite: bool) -> str:
+    """Append (or overwrite) pairs to a JSONL file."""
+    if not pairs:
+        return "Nothing to export — add some pairs first."
+    path = path.strip() or "data/finetune/conversations.jsonl"
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    mode = "w" if overwrite else "a"
+    with out.open(mode, encoding="utf-8") as f:
+        for pair in pairs:
+            f.write(json.dumps(pair, ensure_ascii=False) + "\n")
+    action = "Overwrote" if overwrite else "Appended"
+    return f"{action} {len(pairs)} pair(s) to {out}"
+
+
+def clear_dataset() -> tuple[list, str, str]:
+    """Wipe all saved pairs."""
+    return [], _dataset_label([]), ""
+
+
+def _dataset_label(pairs: list[dict]) -> str:
+    n = len(pairs)
+    return f"{n} pair{'s' if n != 1 else ''} saved"
 
 
 # ---------------------------------------------------------------------------
@@ -574,18 +821,27 @@ _CSS = """
 .tab-nav button:hover {
     color: #c8a84b !important;
 }
-/* Scrollable log boxes */
+/* Scrollable log boxes — green only in dark mode; light mode overridden by _LIGHT_CSS */
+:root:not([data-theme="light"]) textarea {
+    color: #a8e8a8 !important;
+}
 textarea {
     font-family: 'Fira Code', monospace !important;
     font-size: 0.82rem !important;
     line-height: 1.5 !important;
-    color: #a8e8a8 !important;
 }
-/* Placeholder text — belt-and-suspenders over CSS variable resolution */
+/* Placeholder text — dark mode */
 input::placeholder,
 textarea::placeholder {
     color: #8888aa !important;  /* 4.8:1 on #1e1e2e (WCAG AA ✓) */
     opacity: 1 !important;      /* Firefox reduces opacity by default */
+}
+/* Placeholder text — light mode. Uses attribute selector (higher specificity
+   than the rule above) so it wins without depending on JS injection order. */
+[data-theme="light"] input::placeholder,
+[data-theme="light"] textarea::placeholder {
+    color: #5c5c70 !important;  /* 5.4:1 on #eeeae0 (WCAG AA ✓) */
+    opacity: 1 !important;
 }
 /* Primary CTA button text — explicit override so Gradio dark block can't revert to white */
 button.primary {
@@ -626,6 +882,15 @@ input[type=range]::-webkit-slider-thumb {
     border-color: #cc4444 !important;
     color: #ee6666 !important;
 }
+/* Button press feedback — scale + brightness dip gives a clear 'clicked' feel.
+   Disabled buttons are excluded so they don't react at all. */
+button:not(:disabled) {
+    transition: transform 0.08s ease, filter 0.08s ease !important;
+}
+button:not(:disabled):active {
+    transform: scale(0.95) !important;
+    filter: brightness(0.80) !important;
+}
 """
 
 
@@ -642,8 +907,6 @@ _LIGHT_CSS = (
     ".tab-nav button.selected{color:#6a4e00!important;border-bottom:2px solid #b8860b!important}"
     ".tab-nav button:hover{color:#7a5800!important}"  # 5.9:1 on #f5f3ee (WCAG AA ✓)
     "textarea{color:#1a1a2e!important}"      # dark navy, no green in light mode; 15.4:1 ✓
-    # Placeholder — #5c5c70 on #eeeae0 = 5.4:1 (WCAG AA ✓)
-    "input::placeholder,textarea::placeholder{color:#5c5c70!important;opacity:1!important}"
     # Primary CTA button text — #0d0d14 on #b8860b = 5.9:1 ✓
     "button.primary{color:#0d0d14!important}"
     # Code highlight — #1a1a2e on #dcd8cc = 12.0:1 ✓; var() also updated via JS vars
@@ -715,8 +978,10 @@ def build_app() -> gr.Blocks:
             )
         # Shutdown: Python fn schedules os._exit on a background thread so
         # Gradio can return a clean response before the process dies.
-        # JS navigates the tab away after 300 ms — before the 1 s kill fires —
-        # so neither the WebSocket error nor the reconnect banner ever shows.
+        # JS first tries window.close() directly — this works in some browsers
+        # when called from a click handler. If the browser blocks it, a 300 ms
+        # fallback navigates to a goodbye page that contains its own "Close this
+        # tab" button (user-initiated click makes window.close() reliable there).
         _SHUTDOWN_PAGE = (
             "data:text/html,"
             "%3Chtml%20style%3D%22background%3A%230d0d14%3Bcolor%3A%23e8c97a%3B"
@@ -724,8 +989,13 @@ def build_app() -> gr.Blocks:
             "center%3Bjustify-content%3Acenter%3Bheight%3A100vh%3Bmargin%3A0%22%3E"
             "%3Cdiv%20style%3D%22text-align%3Acenter%22%3E"
             "%3Ch1%3E%E2%9C%A6%20Grimoire%3C%2Fh1%3E"
-            "%3Cp%20style%3D%22color%3A%23c8c8d8%22%3EThe%20server%20has%20shut%20down."
-            "%20You%20may%20close%20this%20tab.%3C%2Fp%3E"
+            "%3Cp%20style%3D%22color%3A%23c8c8d8%3Bmargin-bottom%3A1.5rem%22%3E"
+            "The%20server%20has%20shut%20down.%3C%2Fp%3E"
+            "%3Cbutton%20onclick%3D%22window.close()%22%20style%3D%22"
+            "background%3Atransparent%3Bborder%3A1px%20solid%20%23b8860b%3B"
+            "color%3A%23e8c97a%3Bfont-family%3Ainherit%3Bfont-size%3A0.9rem%3B"
+            "padding%3A0.5rem%201.2rem%3Bborder-radius%3A4px%3Bcursor%3Apointer%22%3E"
+            "Close%20this%20tab%3C%2Fbutton%3E"
             "%3C%2Fdiv%3E%3C%2Fhtml%3E"
         )
 
@@ -739,7 +1009,12 @@ def build_app() -> gr.Blocks:
             fn=_request_shutdown,
             inputs=[],
             outputs=[],
-            js=f"() => {{ setTimeout(() => window.location.replace('{_SHUTDOWN_PAGE}'), 300); }}",
+            js=(
+                f"() => {{"
+                f"  window.close();"
+                f"  setTimeout(() => window.location.replace('{_SHUTDOWN_PAGE}'), 300);"
+                f"}}"
+            ),
         )
         _JS_TOGGLE = f"""() => {{
             const root = document.documentElement;
@@ -790,13 +1065,13 @@ def build_app() -> gr.Blocks:
                 pp_vocab = gr.Textbox(
                     label="Vocabulary path (.json)",
                     value="data/tokenizer/bpe.json",
-                    info="Trained and saved here if it does not exist; loaded otherwise.",
+                    info="Trained and saved here on first run; reloaded on subsequent runs.",
                 )
                 pp_vocab_size = gr.Number(
                     label="Vocabulary size",
                     value=16384,
                     precision=0,
-                    info="Used only when training a new tokenizer.",
+                    info="How many unique word-pieces the tokenizer learns. 16 384 is a good default; only used when training a new tokenizer.",
                 )
             with gr.Row():
                 pp_run_btn  = gr.Button("Start preprocessing", variant="primary")
@@ -831,21 +1106,64 @@ def build_app() -> gr.Blocks:
             pt_resume = gr.Textbox(
                 label="Resume from checkpoint (.pt)",
                 placeholder="Leave blank to start from scratch",
-                info=(
-                    "Optional. Load weights, optimizer state, and step counter from a "
-                    "previous checkpoint. Total steps is the final target — if the checkpoint "
-                    "is at step 5 000 and you set Total steps to 10 000, training runs 5 000 more steps."
-                ),
+                info="Continue a stopped run. Total steps is the final target — resuming from step 5 000 with 10 000 total runs only 5 000 more.",
             )
             with gr.Row():
-                pt_steps      = gr.Number(label="Total steps",      value=10_000, precision=0)
-                pt_warmup     = gr.Number(label="Warmup steps",     value=500,    precision=0)
-                pt_lr         = gr.Number(label="Peak LR",          value=3e-4)
+                pt_steps  = gr.Number(
+                    label="Total steps", value=10_000, precision=0,
+                    info="Total training iterations. More = better quality, but slower.",
+                )
+                pt_warmup = gr.Number(
+                    label="Warmup steps", value=500, precision=0,
+                    info="Ramps the learning rate up gradually at the start to avoid unstable early updates. ~5% of Total steps is a safe default.",
+                )
+                pt_lr = gr.Number(
+                    label="Peak LR", value=3e-4,
+                    info="Peak learning rate (how large each weight update is). 3e-4 is well-tested for this model; lower = more stable but slower.",
+                )
             with gr.Row():
-                pt_batch      = gr.Number(label="Batch size",       value=4,  precision=0)
-                pt_accum      = gr.Number(label="Gradient accum.",  value=8,  precision=0)
-                pt_log        = gr.Number(label="Log every N steps",value=50, precision=0)
-                pt_save       = gr.Number(label="Save every N steps",value=1000,precision=0)
+                pt_batch = gr.Number(
+                    label="Batch size", value=4, precision=0,
+                    info="Sequences processed per step. Reduce to 1–2 if you run out of memory.",
+                )
+                pt_accum = gr.Number(
+                    label="Gradient accum.", value=8, precision=0,
+                    info="Simulates a larger batch without extra memory. Effective batch = Batch size × this value.",
+                )
+                pt_log = gr.Number(
+                    label="Log every N steps", value=50, precision=0,
+                )
+                pt_save = gr.Number(
+                    label="Save every N steps", value=1000, precision=0,
+                    info="How often a snapshot is written to disk. More checkpoints = more recovery points but more disk space.",
+                )
+
+            # ---- Model architecture -------------------------------------
+            with gr.Accordion("Model architecture", open=False):
+                gr.Markdown(
+                    "Choose a preset or adjust individual dimensions. "
+                    "**Changing these requires training from scratch** — "
+                    "you cannot resume a run with a different architecture."
+                )
+                pt_preset = gr.Dropdown(
+                    choices=["small-25M", "medium-85M", "large-250M"],
+                    value="small-25M",
+                    label="Size preset",
+                    info="small-25M: fast, good for small corpora. medium-85M: recommended once corpus exceeds 100M tokens. large-250M: requires 8 GB+ VRAM.",
+                )
+                with gr.Row():
+                    pt_d_model   = gr.Number(label="d_model",   value=512,  precision=0, info="Embedding dimension. Larger = more expressive but slower.")
+                    pt_n_layers  = gr.Number(label="n_layers",  value=6,    precision=0, info="Number of transformer blocks stacked.")
+                    pt_n_heads   = gr.Number(label="n_heads",   value=8,    precision=0, info="Number of attention heads. Must divide d_model evenly.")
+                    pt_n_kv_heads= gr.Number(label="n_kv_heads",value=2,    precision=0, info="Key/value heads for grouped query attention. Must divide n_heads evenly.")
+                    pt_d_ff      = gr.Number(label="d_ff",      value=1408, precision=0, info="Feed-forward hidden dimension. Default ≈ 2/3 × 4 × d_model.")
+
+                pt_preset.change(
+                    fn=apply_model_preset,
+                    inputs=[pt_preset],
+                    outputs=[pt_d_model, pt_n_layers, pt_n_heads, pt_n_kv_heads, pt_d_ff],
+                )
+
             with gr.Row():
                 pt_run_btn  = gr.Button("Start pre-training", variant="primary")
                 pt_stop_btn = gr.Button(
@@ -863,6 +1181,7 @@ def build_app() -> gr.Blocks:
                     pt_corpus, pt_ckpt_dir, pt_resume,
                     pt_steps, pt_warmup, pt_lr,
                     pt_batch, pt_accum, pt_log, pt_save,
+                    pt_d_model, pt_n_layers, pt_n_heads, pt_n_kv_heads, pt_d_ff,
                 ],
                 outputs=[pt_log_box, pt_run_btn, pt_stop_btn],
             )
@@ -871,38 +1190,67 @@ def build_app() -> gr.Blocks:
         # ----------------------------------------------------------------
         with gr.Tab("Fine-tune"):
             gr.Markdown(
-                "Continue from a pre-trained checkpoint on a JSONL conversation dataset."
+                "Specialise a pre-trained model on a conversation dataset. "
+                "Fine-tuning teaches the model to respond in a specific style or domain "
+                "without retraining from scratch."
             )
             with gr.Row():
-                ft_pretrain_ckpt = gr.Textbox(label="Pre-trained checkpoint (.pt)")
-                ft_data          = gr.Textbox(label="JSONL dataset path")
-                ft_vocab         = gr.Textbox(
+                ft_pretrain_ckpt = gr.Textbox(
+                    label="Pre-trained checkpoint (.pt)",
+                    info="The base model from Pre-train that fine-tuning builds on.",
+                )
+                ft_data = gr.Textbox(
+                    label="JSONL dataset path",
+                    info='Each line must be a JSON object with "prompt" and "response" keys.',
+                )
+                ft_vocab = gr.Textbox(
                     label="Vocabulary path (.json)",
                     value="data/tokenizer/bpe.json",
+                    info="Must be the same vocabulary used during pre-training — mismatching produces garbled output.",
                 )
             with gr.Row():
                 ft_ckpt_dir = gr.Textbox(
                     label="Output checkpoint directory",
                     value="checkpoints/finetune/",
                 )
-                ft_max_seq  = gr.Number(label="Max sequence length", value=512, precision=0)
+                ft_max_seq = gr.Number(
+                    label="Max sequence length", value=512, precision=0,
+                    info="Max tokens per prompt+response pair. Pairs longer than this are truncated. Longer = more memory.",
+                )
             ft_resume = gr.Textbox(
                 label="Resume fine-tune from checkpoint (.pt)",
                 placeholder="Leave blank to start fine-tuning from scratch",
-                info=(
-                    "Optional. Resume a previous fine-tuning run. Restores optimizer state "
-                    "and step counter. Total steps is the final target."
-                ),
+                info="Continue a stopped fine-tuning run. Restores optimizer state and step counter.",
             )
             with gr.Row():
-                ft_steps    = gr.Number(label="Total steps",      value=500,  precision=0)
-                ft_warmup   = gr.Number(label="Warmup steps",     value=10,   precision=0)
-                ft_lr       = gr.Number(label="Peak LR",          value=5e-5)
+                ft_steps  = gr.Number(
+                    label="Total steps", value=500, precision=0,
+                    info="Fine-tuning needs far fewer steps than pre-training. Too many can make the model forget its general knowledge.",
+                )
+                ft_warmup = gr.Number(
+                    label="Warmup steps", value=10, precision=0,
+                    info="Ramps the learning rate up gradually to avoid disruptive early updates.",
+                )
+                ft_lr = gr.Number(
+                    label="Peak LR", value=5e-5,
+                    info="Keep this much lower than pre-training (5e-5 vs 3e-4) to make careful adjustments without overwriting prior learning.",
+                )
             with gr.Row():
-                ft_batch    = gr.Number(label="Batch size",       value=4, precision=0)
-                ft_accum    = gr.Number(label="Gradient accum.",  value=4, precision=0)
-                ft_log      = gr.Number(label="Log every N steps",value=25,precision=0)
-                ft_save     = gr.Number(label="Save every N steps",value=100,precision=0)
+                ft_batch = gr.Number(
+                    label="Batch size", value=4, precision=0,
+                    info="Reduce if you run out of memory.",
+                )
+                ft_accum = gr.Number(
+                    label="Gradient accum.", value=4, precision=0,
+                    info="Simulates a larger batch without extra memory. Effective batch = Batch size × this value.",
+                )
+                ft_log = gr.Number(
+                    label="Log every N steps", value=25, precision=0,
+                )
+                ft_save = gr.Number(
+                    label="Save every N steps", value=100, precision=0,
+                    info="How often a snapshot is written to disk.",
+                )
             with gr.Row():
                 ft_run_btn  = gr.Button("Start fine-tuning", variant="primary")
                 ft_stop_btn = gr.Button(
@@ -927,6 +1275,45 @@ def build_app() -> gr.Blocks:
             ft_stop_btn.click(fn=stop_finetune, inputs=[], outputs=[], cancels=[ft_event])
 
         # ----------------------------------------------------------------
+        with gr.Tab("Scale"):
+            gr.Markdown(
+                "Estimate how many training steps your corpus and model size warrant, "
+                "based on the Chinchilla scaling laws."
+            )
+            with gr.Row():
+                sc_corpus = gr.Textbox(
+                    label="Corpus binary (.bin)",
+                    value="data/processed/corpus.bin",
+                    info="The tokenised corpus written by the Preprocess tab. Used to count tokens.",
+                )
+                sc_checkpoint = gr.Textbox(
+                    label="Checkpoint (.pt) — optional",
+                    placeholder="checkpoints/pretrain/step_0010000.pt",
+                    info="Load a checkpoint to read the exact parameter count. Leave blank to use the 25M default.",
+                )
+            with gr.Row():
+                sc_batch  = gr.Number(label="Batch size",        value=4,   precision=0,
+                    info="Must match what you use in Pre-train.")
+                sc_accum  = gr.Number(label="Gradient accum.",   value=8,   precision=0,
+                    info="Must match what you use in Pre-train.")
+                sc_seq    = gr.Number(label="Sequence length",   value=512, precision=0,
+                    info="Context window — 512 is the model default.")
+                sc_steps  = gr.Number(label="Planned total steps", value=20_000, precision=0,
+                    info="The total_steps value you intend to use. Adjust to see how it changes the estimates.")
+            sc_run_btn = gr.Button("Calculate", variant="primary")
+            sc_output  = gr.Textbox(
+                label="Results",
+                lines=22,
+                interactive=False,
+                elem_classes=["scale-output"],
+            )
+            sc_run_btn.click(
+                fn=run_scale_calc,
+                inputs=[sc_corpus, sc_checkpoint, sc_batch, sc_accum, sc_seq, sc_steps],
+                outputs=[sc_output],
+            )
+
+        # ----------------------------------------------------------------
         with gr.Tab("Ingest"):
             gr.Markdown(
                 "Convert web pages, documents, and images into corpus `.txt` files."
@@ -936,6 +1323,7 @@ def build_app() -> gr.Blocks:
                 choices=["URL", "File", "Directory"],
                 value="URL",
                 label="Source type",
+                info="URL: scrape a web page | File: upload a document | Directory: process a local folder.",
             )
 
             # URL / Directory: text box
@@ -945,13 +1333,19 @@ def build_app() -> gr.Blocks:
                 visible=True,
             )
             # File: upload widget
-            ing_file = gr.File(label="Upload file", visible=False)
+            ing_file = gr.File(
+                label="Upload files",
+                visible=False,
+                file_count="multiple",
+                file_types=[".pdf", ".docx", ".xlsx", ".md", ".txt", ".png", ".jpg", ".jpeg", ".tiff"],
+            )
 
             with gr.Row():
                 ing_output = gr.Textbox(
                     label="Output directory",
                     value="data/raw/",
                     placeholder="data/raw/",
+                    info="Extracted text files are saved here, ready for the Preprocess tab.",
                 )
                 ing_cleaning = gr.Radio(
                     choices=["minimal", "standard", "thorough"],
@@ -959,8 +1353,8 @@ def build_app() -> gr.Blocks:
                     label="Cleaning level",
                     info=(
                         "minimal — whitespace only | "
-                        "standard — collapse blank lines & spaces | "
-                        "thorough — also drop short lines & deduplicate paragraphs"
+                        "standard — collapse blank lines & extra spaces | "
+                        "thorough — also drop very short lines & deduplicate paragraphs"
                     ),
                 )
 
@@ -969,12 +1363,14 @@ def build_app() -> gr.Blocks:
                     label="Recursive (subdirectories)",
                     value=False,
                     visible=False,
+                    info="Also process files inside subfolders.",
                 )
                 ing_timeout = gr.Number(
                     label="HTTP timeout (seconds)",
                     value=15,
                     precision=0,
                     visible=True,
+                    info="Seconds to wait for a web page before giving up. Increase for slow sites.",
                 )
 
             with gr.Row():
@@ -1001,7 +1397,7 @@ def build_app() -> gr.Blocks:
                 inputs=[
                     ing_mode, ing_url_or_dir, ing_file,
                     ing_output, ing_cleaning, ing_recursive, ing_timeout,
-                ],
+                ],  # ing_file now returns a list when file_count="multiple"
                 outputs=[ing_log, ing_btn, ing_stop_btn],
             )
             ing_stop_btn.click(fn=None, cancels=[ing_event])
@@ -1032,26 +1428,83 @@ def build_app() -> gr.Blocks:
             # ---- Manual load --------------------------------------------
             with gr.Accordion("Load checkpoint manually", open=not bool(_agent_names)):
                 with gr.Row():
-                    chat_ckpt  = gr.Textbox(label="Checkpoint path (.pt)")
+                    chat_ckpt = gr.Textbox(
+                        label="Checkpoint path (.pt)",
+                    )
                     chat_vocab = gr.Textbox(
                         label="Vocabulary path (.json)",
                         value="data/tokenizer/bpe.json",
+                        info="Must be the same vocabulary used during training — mismatching produces garbled output.",
                     )
                     load_btn = gr.Button("Load model")
                 load_status = gr.Textbox(label="Status", interactive=False)
 
             # ---- Generation controls ------------------------------------
             with gr.Row():
-                chat_temp   = gr.Slider(0.1, 2.0, value=0.8,  step=0.05, label="Temperature")
-                chat_top_k  = gr.Slider(1,   200, value=50,   step=1,    label="Top-k")
-                chat_top_p  = gr.Slider(0.1, 1.0, value=0.9,  step=0.05, label="Top-p")
-                chat_tokens = gr.Slider(16,  512, value=128,  step=8,    label="Max new tokens")
+                chat_temp = gr.Slider(
+                    0.1, 2.0, value=0.8, step=0.05, label="Temperature",
+                    info="Randomness of replies. Low (0.3) = focused & predictable. High (1.2) = creative but may ramble.",
+                )
+                chat_top_k = gr.Slider(
+                    1, 200, value=50, step=1, label="Top-k",
+                    info="Only the K most likely next words are considered at each step. Lower = safer; higher = more variety.",
+                )
+                chat_top_p = gr.Slider(
+                    0.1, 1.0, value=0.9, step=0.05, label="Top-p",
+                    info="Cuts off unlikely words until the remaining options together reach this probability. Works alongside Top-k.",
+                )
+                chat_tokens = gr.Slider(
+                    16, 512, value=128, step=8, label="Max new tokens",
+                    info="Maximum length of the generated reply in word-pieces.",
+                )
 
             chat_query    = gr.Textbox(label="Your query", lines=3)
             chat_response = gr.Textbox(label="Response", lines=8, interactive=False)
             with gr.Row():
-                chat_btn  = gr.Button("Send", variant="primary")
-                clear_btn = gr.Button("Clear conversation")
+                chat_btn      = gr.Button("Send", variant="primary")
+                stage_btn     = gr.Button("✦ Save this exchange", scale=0, min_width=160)
+                clear_btn     = gr.Button("Clear conversation", scale=0)
+
+            # ---- Dataset builder ----------------------------------------
+            with gr.Accordion("Dataset builder — collect fine-tune pairs", open=False):
+                gr.Markdown(
+                    "After a good exchange, click **✦ Save this exchange** above. "
+                    "Edit the prompt or response below if needed, then click **Add pair**. "
+                    "Export to JSONL when you have enough pairs."
+                )
+                with gr.Row():
+                    ds_prompt   = gr.Textbox(label="Prompt", lines=3, interactive=True)
+                    ds_response = gr.Textbox(label="Response", lines=3, interactive=True)
+                with gr.Row():
+                    ds_add_btn    = gr.Button("Add pair", variant="primary")
+                    ds_undo_btn   = gr.Button("Undo last", scale=0, min_width=100)
+                    ds_clear_btn  = gr.Button("Clear all", scale=0, min_width=100)
+                ds_count   = gr.Textbox(
+                    label="Dataset", value="0 pairs saved", interactive=False, scale=0
+                )
+                ds_preview = gr.Textbox(
+                    label="Preview (last 3 pairs)", lines=8, interactive=False
+                )
+                gr.Markdown("---")
+                with gr.Row():
+                    ds_path = gr.Textbox(
+                        label="Dataset file path",
+                        value="data/finetune/conversations.jsonl",
+                        info="Shared by Load and Export. File is created automatically if it doesn't exist.",
+                        scale=3,
+                    )
+                    ds_load_btn   = gr.Button("Load existing", scale=0, min_width=130)
+                    ds_export_btn = gr.Button("Export JSONL", variant="primary", scale=0, min_width=130)
+                with gr.Row():
+                    ds_overwrite = gr.Checkbox(
+                        label="Overwrite file on export",
+                        value=False,
+                        info="Unchecked (default): new pairs are appended to the existing file. Check this only when you want to replace the file completely.",
+                    )
+                ds_status = gr.Textbox(label="Status", interactive=False)
+
+            # ---- Dataset state ------------------------------------------
+            dataset_state = gr.State(value=[])
 
             # ---- Event wiring -------------------------------------------
             agent_load_btn.click(
@@ -1074,6 +1527,36 @@ def build_app() -> gr.Blocks:
                 fn=clear_conversation,
                 inputs=[conv_state],
                 outputs=[conv_state, chat_response],
+            )
+            stage_btn.click(
+                fn=stage_exchange,
+                inputs=[chat_query, chat_response],
+                outputs=[ds_prompt, ds_response],
+            )
+            ds_add_btn.click(
+                fn=add_to_dataset,
+                inputs=[ds_prompt, ds_response, dataset_state],
+                outputs=[dataset_state, ds_count, ds_preview, ds_prompt, ds_response],
+            )
+            ds_undo_btn.click(
+                fn=remove_last_pair,
+                inputs=[dataset_state],
+                outputs=[dataset_state, ds_count, ds_preview],
+            )
+            ds_clear_btn.click(
+                fn=clear_dataset,
+                inputs=[],
+                outputs=[dataset_state, ds_count, ds_preview],
+            )
+            ds_load_btn.click(
+                fn=load_dataset,
+                inputs=[ds_path],
+                outputs=[dataset_state, ds_count, ds_preview, ds_status],
+            )
+            ds_export_btn.click(
+                fn=export_dataset,
+                inputs=[dataset_state, ds_path, ds_overwrite],
+                outputs=[ds_status],
             )
 
     return app
