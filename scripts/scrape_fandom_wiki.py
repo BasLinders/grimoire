@@ -80,15 +80,31 @@ def _get_category_members(category: str, delay: float) -> list[str]:
     return titles
 
 
+def _wikitext_to_text(wikitext: str) -> str:
+    """Strip wikitext markup to plain text."""
+    text = re.sub(r"\{\{[^{}]*\}\}", "", wikitext)
+    text = re.sub(r"\{\{[^{}]*\}\}", "", text)
+    text = re.sub(r"\[\[(?:File|Image):[^\]]*\]\]", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\[\[(?:[^\]|]+\|)?([^\]]+)\]\]", r"\1", text)
+    text = re.sub(r"\[https?://\S+\s+([^\]]+)\]", r"\1", text)
+    text = re.sub(r"\[https?://\S+\]", "", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"^\s*[|!{].*$", "", text, flags=re.MULTILINE)
+    text = re.sub(r"=+\s*(.+?)\s*=+", r"\1", text)
+    text = re.sub(r"'{2,3}", "", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def _get_page_text(title: str) -> str:
-    """Fetch the plain-text extract of a single wiki page."""
+    """Fetch plain text from a wiki page via raw wikitext."""
     params = {
-        "action":      "query",
-        "titles":      title,
-        "prop":        "extracts",
-        "explaintext": "true",
-        "exsectionformat": "plain",
-        "format":      "json",
+        "action":  "query",
+        "titles":  title,
+        "prop":    "revisions",
+        "rvprop":  "content",
+        "rvslots": "main",
+        "format":  "json",
     }
     resp = SESSION.get(API_URL, params=params, timeout=30)
     resp.raise_for_status()
@@ -97,7 +113,9 @@ def _get_page_text(title: str) -> str:
     for page in pages.values():
         if "missing" in page:
             return ""
-        return page.get("extract", "")
+        slots = page.get("revisions", [{}])[0].get("slots", {})
+        wikitext = slots.get("main", {}).get("*", "")
+        return _wikitext_to_text(wikitext)
     return ""
 
 
