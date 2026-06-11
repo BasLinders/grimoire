@@ -79,7 +79,7 @@ flowchart TD
 | **GrimoireTransformer** | Scratch-built decoder-only transformer (~25 M params); GQA, RoPE, SwiGLU, RMSNorm, weight-tied output head | ✓ done |
 | **Training Pipeline** | AdamW + cosine-warmup LR, fp16 AMP, gradient accumulation, checkpointing; `on_log` callback for live loss streaming | ✓ done |
 | **Instruction Fine-tuning** | `ConversationDataset` on `{user, assistant, context?}` JSONL; response-only loss masking | ✓ done |
-| **Inference Engine** | PromptBuilder (corpus → prompt), KV-cache autoregressive sampler (temperature / top-k / top-p / repetition penalty), `respond()` and `chat()` | ✓ done |
+| **Inference Engine** | PromptBuilder (corpus → prompt), KV-cache autoregressive sampler (temperature / top-k / top-p / repetition penalty), `respond()`, `chat()`, and `chat_stream()` (token-by-token generator) | ✓ done |
 | **KV-Cache** | Caches K/V projections: O(n²) → O(1) per generation step; sliding-window truncation at `max_seq_len` | ✓ done |
 | **Conversation State** | `ConversationState` packs rolling history newest-first within the token budget, then fills remaining space with corpus context | ✓ done |
 | **Training UI** | Gradio app: Pre-train, Fine-tune, Ingest, and Chat tabs with live loss streaming | ✓ done |
@@ -165,7 +165,7 @@ Saga is the first Grimoire agent. It focuses on:
 python scripts/build_saga_corpus.py
 
 # 2. Pre-train a model (or use an existing checkpoint)
-python -m grimoire.llm.training.train
+python -m grimoire_ai.llm.training.train
 
 # 3. Validate the fine-tuning dataset
 python scripts/validate_finetune_data.py \
@@ -179,7 +179,7 @@ python scripts/finetune_saga.py \
 
 # 5. Update agents.json with the fine-tuned checkpoint path, then load
 #    Saga from the Chat tab dropdown in the UI.
-python -m grimoire.ui
+python -m grimoire_ai.ui
 ```
 
 ## Usage
@@ -188,24 +188,24 @@ python -m grimoire.ui
 
 ```bash
 # Web page (HTML)
-python -m grimoire.corpus.ingest --source https://example.com/rules --output data/raw/
+python -m grimoire_ai.corpus.ingest --source https://example.com/rules --output data/raw/
 
 # Raw Markdown URL (e.g. GitHub) — detected automatically, no HTML parsing
-python -m grimoire.corpus.ingest --source https://raw.githubusercontent.com/user/repo/main/doc.md --output data/raw/
+python -m grimoire_ai.corpus.ingest --source https://raw.githubusercontent.com/user/repo/main/doc.md --output data/raw/
 
 # Local file (PDF, DOCX, Markdown, plain text)
-python -m grimoire.corpus.ingest --source docs/phb_excerpt.pdf --output data/raw/
+python -m grimoire_ai.corpus.ingest --source docs/phb_excerpt.pdf --output data/raw/
 
 # Directory (batch)
-python -m grimoire.corpus.ingest --source docs/ --output data/raw/ --recursive
+python -m grimoire_ai.corpus.ingest --source docs/ --output data/raw/ --recursive
 ```
 
-Or from the **Ingest** tab in `python -m grimoire.ui`.
+Or from the **Ingest** tab in `python -m grimoire_ai.ui`.
 
 ### Pre-process corpus for training
 
 ```bash
-python -m grimoire.llm.data.preprocessing \
+python -m grimoire_ai.llm.data.preprocessing \
     --input  data/raw/ \
     --output data/processed/corpus.bin \
     --vocab  data/tokenizer/bpe.json
@@ -214,25 +214,25 @@ python -m grimoire.llm.data.preprocessing \
 ### Pre-train
 
 ```bash
-python -m grimoire.llm.training.train
-# or via UI:  python -m grimoire.ui  → Pre-train tab
+python -m grimoire_ai.llm.training.train
+# or via UI:  python -m grimoire_ai.ui  → Pre-train tab
 ```
 
 ### Fine-tune
 
 ```bash
-python -m grimoire.llm.training.finetune \
+python -m grimoire_ai.llm.training.finetune \
     --resume  checkpoints/step_0010000.pt \
     --data    data/finetune/examples.jsonl \
     --vocab   data/tokenizer/bpe.json \
     --output  checkpoints/finetune/
-# or via UI:  python -m grimoire.ui  → Fine-tune tab
+# or via UI:  python -m grimoire_ai.ui  → Fine-tune tab
 ```
 
 ### Chat (terminal)
 
 ```bash
-python -m grimoire.cli.chat \
+python -m grimoire_ai.cli.chat \
     --checkpoint checkpoints/finetune/step_0000500.pt \
     --vocab      data/tokenizer/bpe.json \
     --corpus-dir data/corpus/saga/
@@ -243,8 +243,8 @@ Commands: `/clear` (reset history), `/history` (review turns), `/quit`.
 ### Chat (Python API)
 
 ```python
-from grimoire.llm.inference.engine import InferenceEngine
-from grimoire.state.conversation import ConversationState
+from grimoire_ai.llm.inference.engine import InferenceEngine
+from grimoire_ai.state.conversation import ConversationState
 
 engine = InferenceEngine(
     checkpoint_path="checkpoints/finetune/step_0000500.pt",
@@ -259,7 +259,7 @@ r2 = engine.chat("How do I escape the grapple?", state)  # model sees prior turn
 ### Load a named agent (Python API)
 
 ```python
-from grimoire.agents.registry import AgentRegistry
+from grimoire_ai.agents.registry import AgentRegistry
 
 registry = AgentRegistry("agents.json")
 engine = registry.build_engine("saga")  # loads checkpoint + corpus from agents.json
@@ -269,11 +269,11 @@ engine = registry.build_engine("saga")  # loads checkpoint + corpus from agents.
 
 ```bash
 pip install -e ".[ui]"
-python -m grimoire.ui
+python -m grimoire_ai.ui
 # open http://localhost:7860
 ```
 
-Four tabs: **Pre-train**, **Fine-tune**, **Ingest**, **Chat** (with agent selector dropdown).
+Six tabs: **Preprocess**, **Pre-train** (with model size presets), **Fine-tune**, **Ingest** (multi-file upload), **Chat** (streaming responses + dataset builder), **Scale** (Chinchilla scaling calculator).
 
 ## Development
 
