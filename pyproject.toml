@@ -31,6 +31,9 @@ scraper-ocr = [
     "pytesseract>=0.3",
     "Pillow>=10.0",
 ]
+encoder = [
+    "sentence-transformers>=2.2",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -36,8 +36,65 @@ import re
 from typing import Callable, Optional
 
 import torch
+import torch.nn.functional as F
 
 from grimoire_ai.corpus.corpus import QueryResult
+
+# ---------------------------------------------------------------------------
+# External encoder factory
+# ---------------------------------------------------------------------------
+
+#: Maps the user-facing encoder name to its sentence-transformers model id.
+EXTERNAL_ENCODERS: dict[str, str] = {
+    "MiniLM (all-MiniLM-L6-v2)":   "all-MiniLM-L6-v2",
+    "MPNet (all-mpnet-base-v2)":    "all-mpnet-base-v2",
+}
+
+
+def make_external_embed_fn(model_name: str) -> Callable[[list[str]], torch.Tensor]:
+    """Return an ``embed_fn`` backed by a sentence-transformers model.
+
+    The returned callable has the same signature as ``InferenceEngine.embed``:
+    it accepts a list of strings and returns an L2-normalised
+    ``(n, d_model)`` float tensor on CPU.  It can be passed directly to
+    ``SemanticRetriever`` as ``embed_fn``.
+
+    The sentence-transformers model is downloaded on first call (~90 MB for
+    MiniLM) and cached by the ``sentence_transformers`` library in
+    ``~/.cache/torch/sentence_transformers``.
+
+    Args:
+        model_name: A sentence-transformers model identifier, e.g.
+            ``"all-MiniLM-L6-v2"``.
+
+    Returns:
+        A callable ``(list[str]) -> Tensor`` that embeds texts as L2-normalised
+        CPU float tensors of shape ``(n, hidden_size)``.
+
+    Raises:
+        ImportError: If ``sentence-transformers`` is not installed.
+            Install with ``pip install -e ".[encoder]"``.
+    """
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError as exc:
+        raise ImportError(
+            "sentence-transformers is required for external encoders. "
+            "Install it with:  pip install -e \".[encoder]\""
+        ) from exc
+
+    _model = SentenceTransformer(model_name)
+
+    def _embed(texts: list[str]) -> torch.Tensor:
+        vecs = _model.encode(
+            texts,
+            convert_to_tensor=True,
+            show_progress_bar=False,
+            normalize_embeddings=True,
+        )
+        return vecs.float().cpu()
+
+    return _embed
 
 # Target size of a passage chunk, in characters. Short enough that several
 # passages fit comfortably inside the prompt context budget, long enough to
