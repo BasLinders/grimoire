@@ -156,6 +156,56 @@ class GrimoireTransformer(nn.Module):
             return logits, present_kvs
         return logits
 
+    @torch.no_grad()
+    def embed(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Produce a dense sentence embedding for each input sequence.
+
+        Runs the same trunk as ``forward`` (token embedding → blocks →
+        final RMSNorm) but stops *before* the output projection head, then
+        mean-pools the final hidden states across the sequence dimension.
+        The result is the model's own learned representation of the text —
+        suitable for semantic similarity search (cosine retrieval) using
+        exactly the domain knowledge the model was trained on.
+
+        Unlike ``forward``, this method never uses a KV cache and always runs
+        the full bidirectional-within-window trunk in a single pass. It is
+        decorated with ``torch.no_grad`` because embeddings are only consumed
+        at inference time.
+
+        Args:
+            input_ids: Integer tensor of shape ``(batch, seq_len)`` with
+                token ids in ``[0, vocab_size)``.
+            attention_mask: Optional tensor of shape ``(batch, seq_len)`` with
+                ``1`` for real tokens and ``0`` for padding. When provided,
+                padded positions are excluded from the mean pool so that
+                padding never dilutes the embedding.
+
+        Returns:
+            Float tensor of shape ``(batch, d_model)`` — one pooled embedding
+            per input sequence. Not L2-normalised; callers that want cosine
+            similarity should normalise the result.
+        """
+        x = self.embedding(input_ids)
+        for block in self.blocks:
+            x, _ = block(
+                x,
+                attention_mask=attention_mask,
+                past_kv=None,
+                use_cache=False,
+            )
+        x = self.final_norm(x)  # (batch, seq_len, d_model)
+
+        if attention_mask is not None:
+            mask = attention_mask.unsqueeze(-1).to(x.dtype)  # (batch, seq, 1)
+            summed = (x * mask).sum(dim=1)
+            counts = mask.sum(dim=1).clamp(min=1.0)
+            return summed / counts
+        return x.mean(dim=1)
+
     def num_parameters(self, trainable_only: bool = True) -> int:
         """Count the total number of (trainable) parameters.
 

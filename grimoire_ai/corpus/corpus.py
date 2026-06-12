@@ -12,15 +12,20 @@ Typical usage:
     for r in results:
         print(r.multi_token, r.score, r.excerpt)
 
-Phase 2 note:
-    The ``query`` method currently scores results with Jaccard similarity
-    weighted by frequency. This is a structurally correct placeholder.
-    In Phase 2 it will be replaced by Granville's RBF kernel formula:
+Retrieval backends
+------------------
+``GrimoireCorpus.query`` scores results with Jaccard similarity weighted by
+frequency — a fast, dependency-free *lexical* matcher. It remains the default
+for ingest-time previews and environments without a trained model.
 
-        f_pred(x) = Σ ω_k(x) · f(β_k) · exp[−τ · K(x, β_k)]
-
-    The ``QueryResult`` dataclass and the ``query`` method signature will
-    not change — only the internal scoring logic.
+For *semantic* retrieval (matching on meaning, e.g. "frightened" ≈ "fear"),
+use ``grimoire_ai.llm.inference.semantic.SemanticRetriever``, which embeds
+passages with the trained transformer's own representations and ranks by
+cosine similarity. It returns the same ``QueryResult`` objects, so it is a
+drop-in replacement anywhere a corpus is consumed (see
+``InferenceEngine.build_semantic_corpus``). This supersedes the originally
+planned Granville RBF kernel while keeping the same retrieve → ground →
+generate hybrid pipeline.
 """
 
 from dataclasses import dataclass

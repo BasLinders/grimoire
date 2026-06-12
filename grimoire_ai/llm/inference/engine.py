@@ -30,17 +30,18 @@ With corpus grounding
     print(engine.respond("grapple speed movement", top_k_corpus=5))
 """
 
-from typing import Optional
+from typing import Iterable, Optional, Union
 
 import torch
 
 from grimoire_ai.corpus.corpus import GrimoireCorpus
 from grimoire_ai.llm.inference.prompt import PromptBuilder
 from grimoire_ai.llm.inference.sampler import GenerationConfig, generate, generate_stream
+from grimoire_ai.llm.inference.semantic import SemanticRetriever
 from grimoire_ai.llm.model.config import TransformerConfig
 from grimoire_ai.llm.model.transformer import GrimoireTransformer
 from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
-from grimoire_ai.llm.tokenizer.special_tokens import AST_ID, EOS_ID
+from grimoire_ai.llm.tokenizer.special_tokens import AST_ID, BOS_ID, EOS_ID, PAD_ID
 from grimoire_ai.llm.training.checkpoint import load_checkpoint
 
 
@@ -67,7 +68,7 @@ class InferenceEngine:
         self,
         checkpoint_path: str,
         tokenizer_path: str,
-        corpus: Optional[GrimoireCorpus] = None,
+        corpus: Optional[Union[GrimoireCorpus, SemanticRetriever]] = None,
         gen_config: Optional[GenerationConfig] = None,
         max_context_tokens: int = 512,
         device: Optional[str] = None,
@@ -154,6 +155,88 @@ class InferenceEngine:
         )
 
         return self.tokenizer.decode(new_token_ids).strip()
+
+    @torch.no_grad()
+    def embed(self, texts: list[str], batch_size: int = 32) -> torch.Tensor:
+        """Embed a list of texts into L2-normalised vectors via the model.
+
+        Each text is BPE-encoded (with a leading ``<BOS>``), truncated to the
+        model's sequence length, and padded within its batch. The transformer's
+        ``embed`` method mean-pools the final hidden states; the result is then
+        L2-normalised so that downstream cosine similarity is a plain dot
+        product. This is the embedding backend used by ``SemanticRetriever``.
+
+        Args:
+            texts: Texts to embed. May be passages or queries.
+            batch_size: Number of texts per forward pass.
+
+        Returns:
+            A float tensor of shape ``(len(texts), d_model)`` on CPU, with each
+            row L2-normalised to unit length.
+        """
+        max_len = self.model.config.max_seq_len
+        out: list[torch.Tensor] = []
+
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start : start + batch_size]
+            encoded = [[BOS_ID] + self.tokenizer.encode(t)[: max_len - 1] for t in batch]
+            # Guard against an empty encode producing a zero-length row.
+            encoded = [ids if ids else [BOS_ID] for ids in encoded]
+            width = max(len(ids) for ids in encoded)
+
+            input_ids = torch.full((len(batch), width), PAD_ID, dtype=torch.long)
+            attention_mask = torch.zeros((len(batch), width), dtype=torch.long)
+            for row, ids in enumerate(encoded):
+                input_ids[row, : len(ids)] = torch.tensor(ids, dtype=torch.long)
+                attention_mask[row, : len(ids)] = 1
+
+            input_ids = input_ids.to(self.device)
+            attention_mask = attention_mask.to(self.device)
+
+            pooled = self.model.embed(input_ids, attention_mask=attention_mask)
+            pooled = torch.nn.functional.normalize(pooled, p=2, dim=-1)
+            out.append(pooled.float().cpu())
+
+        return torch.cat(out, dim=0) if out else torch.empty(0)
+
+    def build_semantic_corpus(
+        self,
+        documents: Iterable[Union[str, tuple[str, Optional[str]]]],
+        chunk_chars: int = 400,
+        batch_size: int = 32,
+        attach: bool = True,
+    ) -> SemanticRetriever:
+        """Build a semantic retriever from documents and (optionally) attach it.
+
+        This is the recommended way to grant the engine semantic (embedding
+        cosine) retrieval instead of the lexical Jaccard ``GrimoireCorpus``.
+        Because ``SemanticRetriever.query`` returns the same ``QueryResult``
+        objects, attaching it replaces ``self.corpus`` with no other change to
+        the ``respond`` / ``chat`` pipelines.
+
+        Args:
+            documents: Either raw text strings, or ``(text, source)`` tuples to
+                record provenance.
+            chunk_chars: Target passage size for chunking.
+            batch_size: Embedding batch size.
+            attach: When ``True`` (default), set ``self.corpus`` to the new
+                retriever so subsequent ``respond``/``chat`` calls use it.
+
+        Returns:
+            The populated, indexed ``SemanticRetriever``.
+        """
+        retriever = SemanticRetriever(embed_fn=self.embed, chunk_chars=chunk_chars)
+        for doc in documents:
+            if isinstance(doc, tuple):
+                text, source = doc
+            else:
+                text, source = doc, None
+            retriever.add_text(text, source=source)
+        retriever.index(batch_size=batch_size)
+
+        if attach:
+            self.corpus = retriever
+        return retriever
 
     def chat(
         self,

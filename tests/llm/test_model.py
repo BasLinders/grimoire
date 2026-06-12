@@ -380,3 +380,38 @@ def test_kv_cache_matches_full_forward(
         "KV-cache produced different logits from a full forward pass. "
         "RoPE position offset or cache concatenation is incorrect."
     )
+
+
+# ---------------------------------------------------------------------------
+# Sentence embeddings (semantic retrieval backend)
+# ---------------------------------------------------------------------------
+
+def test_embed_output_shape(model: GrimoireTransformer, cfg: TransformerConfig) -> None:
+    """embed() should return one (d_model,) vector per input sequence."""
+    model.eval()
+    input_ids = torch.randint(1, cfg.vocab_size, (3, 7))
+    vecs = model.embed(input_ids)
+    assert vecs.shape == (3, cfg.d_model)
+
+
+def test_embed_ignores_padding(model: GrimoireTransformer, cfg: TransformerConfig) -> None:
+    """Padded positions must not change the pooled embedding.
+
+    A sequence embedded alone should match the same sequence embedded with
+    trailing padding masked out, proving the mean pool excludes padding.
+    """
+    model.eval()
+    real = torch.randint(1, cfg.vocab_size, (1, 5))
+
+    padded = torch.full((1, 9), 0, dtype=torch.long)
+    padded[0, :5] = real[0]
+    mask = torch.zeros((1, 9), dtype=torch.long)
+    mask[0, :5] = 1
+
+    full_mask = torch.ones((1, 5), dtype=torch.long)
+    vec_real = model.embed(real, attention_mask=full_mask)
+    vec_padded = model.embed(padded, attention_mask=mask)
+
+    assert torch.allclose(vec_real, vec_padded, atol=1e-5), (
+        "Padding leaked into the embedding — the masked mean pool is wrong."
+    )
