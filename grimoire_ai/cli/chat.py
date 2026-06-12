@@ -50,6 +50,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Number of corpus passages to retrieve per query.",
     )
     p.add_argument(
+        "--semantic", action="store_true",
+        help="Use the model's own embeddings for semantic (cosine) retrieval "
+             "instead of lexical Jaccard matching. Requires --corpus-dir.",
+    )
+    p.add_argument(
+        "--retrieval-threshold", type=float, default=None,
+        help="Minimum retrieval score to inject corpus context. Queries whose "
+             "best match scores below this value are answered without grounding "
+             "(pure-chat). For semantic retrieval cosine scores are in [-1, 1]; "
+             "0.0 is a reasonable starting point. Omit to always inject context "
+             "when a corpus is attached.",
+    )
+    p.add_argument(
         "--max-turns", type=int, default=20,
         help="Maximum number of turns to keep in rolling history.",
     )
@@ -78,21 +91,24 @@ def main(argv: list[str] | None = None) -> None:
     from grimoire_ai.state.conversation import ConversationState
 
     # --- Load corpus (optional) -----------------------------------------
+    # In semantic mode we defer corpus construction until after the engine is
+    # loaded, because semantic retrieval embeds passages with the model itself.
     corpus = None
+    documents: list[tuple[str, str]] = []
     if args.corpus_dir is not None:
         corpus_dir = Path(args.corpus_dir)
         if not corpus_dir.exists():
             print(f"Warning: corpus directory not found: {corpus_dir}", file=sys.stderr)
         else:
-            corpus = GrimoireCorpus()
-            loaded = 0
             for txt_file in sorted(corpus_dir.glob("*.txt")):
-                corpus.add_text(
-                    txt_file.read_text(encoding="utf-8"),
-                    source=txt_file.stem,
-                )
-                loaded += 1
-            print(f"Corpus: {loaded} file(s) loaded from {corpus_dir}")
+                text = txt_file.read_text(encoding="utf-8")
+                documents.append((text, txt_file.stem))
+                if not args.semantic:
+                    if corpus is None:
+                        corpus = GrimoireCorpus()
+                    corpus.add_text(text, source=txt_file.stem)
+            mode = "semantic (embedding cosine)" if args.semantic else "lexical (Jaccard)"
+            print(f"Corpus: {len(documents)} file(s) loaded from {corpus_dir} [{mode}]")
 
     # --- Load engine ----------------------------------------------------
     print(f"Loading checkpoint: {args.checkpoint}")
@@ -100,8 +116,15 @@ def main(argv: list[str] | None = None) -> None:
         checkpoint_path=args.checkpoint,
         tokenizer_path=args.vocab,
         corpus=corpus,
+        retrieval_threshold=args.retrieval_threshold,
     )
     print(f"Model ready on {engine.device.upper()}.")
+
+    # Build the semantic index now that the model is loaded.
+    if args.semantic and documents:
+        print("Embedding corpus passages for semantic retrieval...")
+        retriever = engine.build_semantic_corpus(documents)
+        print(f"Semantic index ready: {retriever.size} passage(s).")
 
     gen_config = GenerationConfig(
         max_new_tokens=args.max_new_tokens,

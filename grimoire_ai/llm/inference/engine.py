@@ -30,17 +30,18 @@ With corpus grounding
     print(engine.respond("grapple speed movement", top_k_corpus=5))
 """
 
-from typing import Optional
+from typing import Iterable, Optional, Union
 
 import torch
 
 from grimoire_ai.corpus.corpus import GrimoireCorpus
 from grimoire_ai.llm.inference.prompt import PromptBuilder
 from grimoire_ai.llm.inference.sampler import GenerationConfig, generate, generate_stream
+from grimoire_ai.llm.inference.semantic import SemanticRetriever
 from grimoire_ai.llm.model.config import TransformerConfig
 from grimoire_ai.llm.model.transformer import GrimoireTransformer
 from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
-from grimoire_ai.llm.tokenizer.special_tokens import AST_ID, EOS_ID
+from grimoire_ai.llm.tokenizer.special_tokens import AST_ID, BOS_ID, EOS_ID, PAD_ID
 from grimoire_ai.llm.training.checkpoint import load_checkpoint
 
 
@@ -67,10 +68,11 @@ class InferenceEngine:
         self,
         checkpoint_path: str,
         tokenizer_path: str,
-        corpus: Optional[GrimoireCorpus] = None,
+        corpus: Optional[Union[GrimoireCorpus, SemanticRetriever]] = None,
         gen_config: Optional[GenerationConfig] = None,
         max_context_tokens: int = 512,
         device: Optional[str] = None,
+        retrieval_threshold: Optional[float] = None,
     ) -> None:
         """Load model and tokenizer from disk and prepare the engine.
 
@@ -79,14 +81,24 @@ class InferenceEngine:
                 ``save_checkpoint``.
             tokenizer_path: Path to a BPE vocabulary JSON written by
                 ``BytePairEncoder.save``.
-            corpus: Optional ``GrimoireCorpus`` instance.  When provided,
-                ``respond`` will query it and inject the results as context.
+            corpus: Optional ``GrimoireCorpus`` or ``SemanticRetriever``.
+                When provided, queries are routed through retrieval before
+                generation.
             gen_config: Default generation hyperparameters.  Defaults to
                 ``GenerationConfig()`` if ``None``.
             max_context_tokens: Token budget passed to ``PromptBuilder``.
                 Must be at most ``model.config.max_seq_len``.
             device: PyTorch device (``"cpu"``, ``"cuda"``, etc.).  Auto-
                 detected (CUDA if available, otherwise CPU) when ``None``.
+            retrieval_threshold: Minimum score the top corpus result must
+                reach for context to be injected into the prompt. When the
+                best match scores below this value, the query is treated as
+                pure-chat (no retrieval context). ``None`` (default) always
+                injects context when a corpus is attached. For
+                ``SemanticRetriever`` a value of ``0.0`` is a reasonable
+                starting point (cosine scores are in ``[-1, 1]``); for
+                ``GrimoireCorpus`` scores are Jaccard × frequency so a small
+                positive value (e.g. ``0.1``) is more appropriate.
         """
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -104,6 +116,7 @@ class InferenceEngine:
         self.tokenizer = BytePairEncoder.load(tokenizer_path)
 
         self.corpus = corpus
+        self.retrieval_threshold = retrieval_threshold
         # A prompt can never usefully exceed the model's context window; clamp
         # so PromptBuilder never emits a prompt that generate() would silently
         # left-truncate (which could drop the <USR>/context framing).
@@ -114,6 +127,33 @@ class InferenceEngine:
         )
         self.gen_config = gen_config if gen_config is not None else GenerationConfig()
 
+    def _retrieve(self, query: str, top_k: int) -> list:
+        """Query the corpus and apply the retrieval threshold router.
+
+        Returns an empty list when no corpus is attached, when the corpus
+        returns no results, or when the top result's score falls below
+        ``self.retrieval_threshold``. In the last case the query is treated
+        as pure-chat — context would not improve the answer and would only
+        consume prompt budget.
+
+        Args:
+            query: Plain-text query string.
+            top_k: Maximum number of passages to retrieve.
+
+        Returns:
+            A (possibly empty) list of ``QueryResult`` objects to inject.
+        """
+        if self.corpus is None:
+            return []
+        results = self.corpus.query(query, top_k=top_k)
+        if (
+            results
+            and self.retrieval_threshold is not None
+            and results[0].score < self.retrieval_threshold
+        ):
+            return []
+        return results
+
     def respond(
         self,
         query: str,
@@ -123,7 +163,9 @@ class InferenceEngine:
         """Generate a response to a user query.
 
         Pipeline:
-        1. Query the corpus (if one was provided) for ``top_k_corpus`` results.
+        1. Query the corpus (if attached) for ``top_k_corpus`` results and
+           apply the retrieval threshold router — context is only injected
+           when the top match meets the threshold.
         2. Build the prompt token-id sequence via ``PromptBuilder``.
         3. Run autoregressive generation with ``generate()``.
         4. Decode the new tokens back to a string with the BPE tokenizer.
@@ -141,9 +183,7 @@ class InferenceEngine:
         """
         cfg = gen_config if gen_config is not None else self.gen_config
 
-        results = []
-        if self.corpus is not None:
-            results = self.corpus.query(query, top_k=top_k_corpus)
+        results = self._retrieve(query, top_k=top_k_corpus)
 
         prompt_ids = self.prompt_builder.build(query, results)
         new_token_ids = generate(
@@ -154,6 +194,88 @@ class InferenceEngine:
         )
 
         return self.tokenizer.decode(new_token_ids).strip()
+
+    @torch.no_grad()
+    def embed(self, texts: list[str], batch_size: int = 32) -> torch.Tensor:
+        """Embed a list of texts into L2-normalised vectors via the model.
+
+        Each text is BPE-encoded (with a leading ``<BOS>``), truncated to the
+        model's sequence length, and padded within its batch. The transformer's
+        ``embed`` method mean-pools the final hidden states; the result is then
+        L2-normalised so that downstream cosine similarity is a plain dot
+        product. This is the embedding backend used by ``SemanticRetriever``.
+
+        Args:
+            texts: Texts to embed. May be passages or queries.
+            batch_size: Number of texts per forward pass.
+
+        Returns:
+            A float tensor of shape ``(len(texts), d_model)`` on CPU, with each
+            row L2-normalised to unit length.
+        """
+        max_len = self.model.config.max_seq_len
+        out: list[torch.Tensor] = []
+
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start : start + batch_size]
+            encoded = [[BOS_ID] + self.tokenizer.encode(t)[: max_len - 1] for t in batch]
+            # Guard against an empty encode producing a zero-length row.
+            encoded = [ids if ids else [BOS_ID] for ids in encoded]
+            width = max(len(ids) for ids in encoded)
+
+            input_ids = torch.full((len(batch), width), PAD_ID, dtype=torch.long)
+            attention_mask = torch.zeros((len(batch), width), dtype=torch.long)
+            for row, ids in enumerate(encoded):
+                input_ids[row, : len(ids)] = torch.tensor(ids, dtype=torch.long)
+                attention_mask[row, : len(ids)] = 1
+
+            input_ids = input_ids.to(self.device)
+            attention_mask = attention_mask.to(self.device)
+
+            pooled = self.model.embed(input_ids, attention_mask=attention_mask)
+            pooled = torch.nn.functional.normalize(pooled, p=2, dim=-1)
+            out.append(pooled.float().cpu())
+
+        return torch.cat(out, dim=0) if out else torch.empty(0)
+
+    def build_semantic_corpus(
+        self,
+        documents: Iterable[Union[str, tuple[str, Optional[str]]]],
+        chunk_chars: int = 400,
+        batch_size: int = 32,
+        attach: bool = True,
+    ) -> SemanticRetriever:
+        """Build a semantic retriever from documents and (optionally) attach it.
+
+        This is the recommended way to grant the engine semantic (embedding
+        cosine) retrieval instead of the lexical Jaccard ``GrimoireCorpus``.
+        Because ``SemanticRetriever.query`` returns the same ``QueryResult``
+        objects, attaching it replaces ``self.corpus`` with no other change to
+        the ``respond`` / ``chat`` pipelines.
+
+        Args:
+            documents: Either raw text strings, or ``(text, source)`` tuples to
+                record provenance.
+            chunk_chars: Target passage size for chunking.
+            batch_size: Embedding batch size.
+            attach: When ``True`` (default), set ``self.corpus`` to the new
+                retriever so subsequent ``respond``/``chat`` calls use it.
+
+        Returns:
+            The populated, indexed ``SemanticRetriever``.
+        """
+        retriever = SemanticRetriever(embed_fn=self.embed, chunk_chars=chunk_chars)
+        for doc in documents:
+            if isinstance(doc, tuple):
+                text, source = doc
+            else:
+                text, source = doc, None
+            retriever.add_text(text, source=source)
+        retriever.index(batch_size=batch_size)
+
+        if attach:
+            self.corpus = retriever
+        return retriever
 
     def chat(
         self,
@@ -191,11 +313,8 @@ class InferenceEngine:
 
         cfg = gen_config if gen_config is not None else self.gen_config
 
-        # Retrieve corpus context and encode it to token ids.
-        context_ids: list[int] = []
-        if self.corpus is not None:
-            results = self.corpus.query(query, top_k=top_k_corpus)
-            context_ids = self.prompt_builder._encode_context(results)
+        results = self._retrieve(query, top_k=top_k_corpus)
+        context_ids = self.prompt_builder._encode_context(results) if results else []
 
         prompt_ids = state.build_prompt_ids(
             query=query,
@@ -232,10 +351,8 @@ class InferenceEngine:
 
         cfg = gen_config if gen_config is not None else self.gen_config
 
-        context_ids: list[int] = []
-        if self.corpus is not None:
-            results = self.corpus.query(query, top_k=top_k_corpus)
-            context_ids = self.prompt_builder._encode_context(results)
+        results = self._retrieve(query, top_k=top_k_corpus)
+        context_ids = self.prompt_builder._encode_context(results) if results else []
 
         prompt_ids = state.build_prompt_ids(
             query=query,
