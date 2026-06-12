@@ -257,27 +257,46 @@ class GroupedQueryAttention(nn.Module):
         v = v.reshape(batch, self.n_heads, full_seq, self.head_dim)
 
         # --- Scaled dot-product attention --------------------------------
-        scale = math.sqrt(self.head_dim)
-        # scores: (batch, n_heads, seq_len, full_seq)
-        scores = torch.matmul(q, k.transpose(-2, -1)) / scale
-
-        # Apply causal mask. With a cache, query positions are
-        # past_len … past_len+seq_len-1 attending to all full_seq positions.
-        causal = self._mask[past_len : past_len + seq_len, :full_seq]
-        scores = scores + causal
-
-        # Apply padding mask if provided.
-        if attention_mask is not None:
-            pad_mask = attention_mask.unsqueeze(1).unsqueeze(2)  # (batch,1,1,full_seq)
-            scores = scores.masked_fill(pad_mask == 0, float("-inf"))
-
-        weights = torch.softmax(scores, dim=-1)
-        # Guard against all-inf rows (fully-padded edge case) producing NaN.
-        weights = torch.nan_to_num(weights, nan=0.0)
-        weights = self._dropout(weights)
+        # Use PyTorch's fused SDPA when available (PyTorch >= 2.0).
+        # It dispatches to Flash Attention on supported hardware, giving
+        # lower memory use and better throughput than the manual matmul path.
+        # Fall back to the manual path during inference with a KV cache
+        # (use_cache=True) because SDPA's is_causal flag assumes full sequences.
+        use_sdpa = past_kv is None and hasattr(F, "scaled_dot_product_attention")
+        if use_sdpa:
+            # Build an additive attention bias from the padding mask so SDPA
+            # handles both causal masking and padding in one fused kernel.
+            attn_bias: Optional[torch.Tensor] = None
+            if attention_mask is not None:
+                # (batch, 1, 1, full_seq) additive mask: 0 for valid, -inf for pad
+                attn_bias = torch.zeros(
+                    batch, 1, seq_len, full_seq,
+                    dtype=q.dtype, device=q.device,
+                )
+                attn_bias = attn_bias.masked_fill(
+                    attention_mask.unsqueeze(1).unsqueeze(2) == 0, float("-inf")
+                )
+            dropout_p = self._dropout.p if self.training else 0.0
+            out = F.scaled_dot_product_attention(
+                q, k, v,
+                attn_mask=attn_bias,
+                dropout_p=dropout_p,
+                is_causal=(attn_bias is None),
+            )
+        else:
+            scale = math.sqrt(self.head_dim)
+            scores = torch.matmul(q, k.transpose(-2, -1)) / scale
+            causal = self._mask[past_len : past_len + seq_len, :full_seq]
+            scores = scores + causal
+            if attention_mask is not None:
+                pad_mask = attention_mask.unsqueeze(1).unsqueeze(2)
+                scores = scores.masked_fill(pad_mask == 0, float("-inf"))
+            weights = torch.softmax(scores, dim=-1)
+            weights = torch.nan_to_num(weights, nan=0.0)
+            weights = self._dropout(weights)
+            out = torch.matmul(weights, v)
 
         # --- Merge heads and project ------------------------------------
         # (batch, n_heads, seq_len, head_dim) → (batch, seq_len, n_heads × head_dim)
-        out = torch.matmul(weights, v)
         out = out.transpose(1, 2).contiguous().view(batch, seq_len, self.n_heads * self.head_dim)
         return self.o_proj(out), present_kv

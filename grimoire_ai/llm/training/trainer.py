@@ -164,7 +164,20 @@ class Trainer:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = device
         self._use_amp = device == "cuda"
+
+        if device == "cuda":
+            # Let cuDNN auto-tune kernel selection for the fixed input shapes
+            # used during training.  One-time overhead at first step; free
+            # speed improvement thereafter.
+            torch.backends.cudnn.benchmark = True
+
         self.model = model.to(device)
+
+        # torch.compile() traces the model graph and emits optimised CUDA
+        # kernels (operator fusion, reduced memory traffic).  Falls back
+        # silently on CPU or if compilation is unavailable.
+        if device == "cuda" and hasattr(torch, "compile"):
+            self.model = torch.compile(self.model)
 
         # GradScaler is a no-op on CPU but we instantiate it uniformly
         # to avoid branching in the training loop.
@@ -255,9 +268,11 @@ class Trainer:
         t_start = time.time()
         t0 = t_start
 
+        compiled = self.device == "cuda" and hasattr(torch, "compile")
         print(
             f"Training on {self.device.upper()} | "
             f"AMP={'on' if self._use_amp else 'off'} | "
+            f"compile={'on' if compiled else 'off'} | "
             f"params={self.model.num_parameters():,} | "
             f"effective batch={self.batch_size * self.accumulate_steps}"
         )
@@ -273,9 +288,12 @@ class Trainer:
                 data_iter = iter(self._loader)
                 input_ids, target_ids, attention_mask = next(data_iter)
 
-            input_ids      = input_ids.to(self.device)
-            target_ids     = target_ids.to(self.device)
-            attention_mask = attention_mask.to(self.device)
+            # non_blocking=True overlaps the H→D transfer with GPU work
+            # when pin_memory=True on the DataLoader (CUDA only, no-op on CPU).
+            non_blocking = self.device == "cuda"
+            input_ids      = input_ids.to(self.device, non_blocking=non_blocking)
+            target_ids     = target_ids.to(self.device, non_blocking=non_blocking)
+            attention_mask = attention_mask.to(self.device, non_blocking=non_blocking)
 
             # --- Forward pass with optional AMP --------------------------
             with torch.autocast(
