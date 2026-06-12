@@ -154,6 +154,48 @@ def apply_model_preset(preset_name: str):
     ]
 
 
+def read_checkpoint_config(checkpoint_path: str) -> str:
+    """Return a human-readable summary of the model config stored in a checkpoint.
+
+    Used by the Fine-tune tab to show the architecture of the checkpoint being
+    fine-tuned, so the user knows what model size they are working with.
+    """
+    path = checkpoint_path.strip() if checkpoint_path else ""
+    if not path:
+        return ""
+    from pathlib import Path as _Path
+    if not _Path(path).exists():
+        return "Checkpoint not found."
+    try:
+        import torch as _torch
+        ckpt = _torch.load(path, map_location="cpu", weights_only=True)
+        cfg = ckpt.get("config", {})
+        d_model   = cfg.get("d_model", "?")
+        n_layers  = cfg.get("n_layers", "?")
+        n_heads   = cfg.get("n_heads", "?")
+        n_kv      = cfg.get("n_kv_heads", "?")
+        d_ff      = cfg.get("d_ff", "?")
+        vocab     = cfg.get("vocab_size", "?")
+        max_seq   = cfg.get("max_seq_len", "?")
+        step      = ckpt.get("step", "?")
+        # Match to a known preset for a friendly label.
+        from grimoire_ai.llm.model.config import MODEL_PRESETS
+        label = next(
+            (name for name, p in MODEL_PRESETS.items()
+             if p.d_model == d_model and p.n_layers == n_layers),
+            "custom",
+        )
+        return (
+            f"Architecture: {label}  |  "
+            f"d_model={d_model}  n_layers={n_layers}  n_heads={n_heads}  "
+            f"n_kv_heads={n_kv}  d_ff={d_ff}  "
+            f"vocab={vocab}  max_seq={max_seq}  |  "
+            f"saved at step {step}"
+        )
+    except Exception as exc:
+        return f"Could not read checkpoint: {exc}"
+
+
 def run_pretrain(
     corpus_path: str,
     checkpoint_dir: str,
@@ -463,24 +505,63 @@ def _load_agent_names() -> list[str]:
         return []
 
 
-def load_agent(display_name: str) -> tuple[object, object, str, str, str]:
-    """Load an agent by display name.
+def load_agent(
+    display_name: str,
+    encoder: str = "Model (decoder embeddings)",
+    retrieval_threshold: Optional[float] = None,
+) -> tuple[object, object, str, str, str]:
+    """Load an agent by display name, applying the chosen retrieval backend.
 
     Returns (engine, conv_state, status, checkpoint_path, vocab_path).
     The last two values are passed back so the manual path fields reflect what
     was actually loaded.
     """
     from grimoire_ai.agents.registry import AgentRegistry
+    from grimoire_ai.llm.inference.semantic import EXTERNAL_ENCODERS, SemanticRetriever, make_external_embed_fn
     from grimoire_ai.state.conversation import ConversationState
 
     registry = AgentRegistry(_AGENTS_JSON)
     cfg = registry.get_by_display_name(display_name)
+
+    use_lexical  = encoder == "Lexical (Jaccard)"
+    use_external = encoder in EXTERNAL_ENCODERS
+
+    # build_engine always loads the lexical corpus from corpus_dirs.
+    # For semantic / external we replace it afterwards.
     engine = registry.build_engine(cfg.key)
+    engine.retrieval_threshold = retrieval_threshold
+
+    if not use_lexical and engine.corpus is not None:
+        # Collect the raw text already in the lexical corpus index for
+        # re-embedding.  AgentRegistry pre-loads a GrimoireCorpus whose index
+        # holds excerpts — we can reconstruct document text from excerpts well
+        # enough to build passage-level embeddings.  For a cleaner path we
+        # read the original .txt files from the agent's corpus_dirs instead.
+        from pathlib import Path as _Path
+        documents: list[tuple[str, str]] = []
+        for corpus_dir in cfg.corpus_dirs or []:
+            for txt_file in sorted(_Path(corpus_dir).glob("*.txt")):
+                documents.append((txt_file.read_text(encoding="utf-8"), txt_file.stem))
+
+        if documents:
+            if use_external:
+                try:
+                    embed_fn = make_external_embed_fn(EXTERNAL_ENCODERS[encoder])
+                except ImportError as exc:
+                    return None, None, str(exc), cfg.checkpoint, cfg.vocab
+                retriever = SemanticRetriever(embed_fn=embed_fn)
+                for text, source in documents:
+                    retriever.add_text(text, source=source)
+                retriever.index()
+                engine.corpus = retriever
+            else:
+                engine.build_semantic_corpus(documents)
+
     state = ConversationState()
     return (
         engine,
         state,
-        f"Agent '{cfg.display_name}' loaded.  {cfg.description}",
+        f"Agent '{cfg.display_name}' loaded ({encoder}).  {cfg.description}",
         cfg.checkpoint,
         cfg.vocab,
     )
@@ -1327,6 +1408,17 @@ def build_app() -> gr.Blocks:
                     label="Pre-trained checkpoint (.pt)",
                     info="The base model from Pre-train that fine-tuning builds on.",
                 )
+                ft_ckpt_info = gr.Textbox(
+                    label="Checkpoint architecture",
+                    interactive=False,
+                    info="Architecture and step count read from the checkpoint above.",
+                )
+            ft_pretrain_ckpt.change(
+                fn=read_checkpoint_config,
+                inputs=[ft_pretrain_ckpt],
+                outputs=[ft_ckpt_info],
+            )
+            with gr.Row():
                 ft_data = gr.Textbox(
                     label="JSONL dataset path",
                     info='Each line must be a JSON object with "prompt" and "response" keys.',
@@ -1553,6 +1645,34 @@ def build_app() -> gr.Blocks:
             engine_state = gr.State(value=None)
             conv_state   = gr.State(value=None)
 
+            # ---- Shared retrieval config (used by both agent and manual load)
+            _ENCODER_CHOICES = [
+                "Model (decoder embeddings)",
+                "MiniLM (all-MiniLM-L6-v2)",
+                "MPNet (all-mpnet-base-v2)",
+                "Lexical (Jaccard)",
+            ]
+            with gr.Accordion("Retrieval configuration", open=True):
+                with gr.Row():
+                    chat_encoder = gr.Dropdown(
+                        choices=_ENCODER_CHOICES,
+                        value="Model (decoder embeddings)",
+                        label="Embedding backend",
+                        info="How corpus passages are matched to your query. "
+                             "Model: the trained transformer's own representations — no extra install. "
+                             "MiniLM / MPNet: dedicated sentence encoders, better quality early in training — requires pip install -e \".[encoder]\". "
+                             "Lexical: fast word-overlap matching, no neural embedding.",
+                        scale=2,
+                    )
+                    chat_threshold = gr.Slider(
+                        minimum=-1.0, maximum=1.0, value=0.0, step=0.05,
+                        label="Retrieval threshold",
+                        info="Minimum similarity score for a passage to be injected as context. "
+                             "Queries below this score are answered without grounding (pure-chat). "
+                             "Cosine scores live in [-1, 1]; 0.0 is a good starting point.",
+                        scale=3,
+                    )
+
             # ---- Agent selector -----------------------------------------
             _agent_names = _load_agent_names()
             with gr.Group(visible=bool(_agent_names)) as agent_group:
@@ -1584,29 +1704,6 @@ def build_app() -> gr.Blocks:
                         label="Corpus directory (optional)",
                         value="",
                         info="Directory of .txt files used to ground replies in your corpus. Leave blank for ungrounded chat.",
-                        scale=3,
-                    )
-                    chat_encoder = gr.Dropdown(
-                        choices=[
-                            "Model (decoder embeddings)",
-                            "MiniLM (all-MiniLM-L6-v2)",
-                            "MPNet (all-mpnet-base-v2)",
-                            "Lexical (Jaccard)",
-                        ],
-                        value="Model (decoder embeddings)",
-                        label="Embedding backend",
-                        info="How corpus passages are matched to your query. "
-                             "Model: the trained transformer's own representations — no extra install. "
-                             "MiniLM / MPNet: dedicated sentence encoders, better quality early in training — requires pip install -e \".[encoder]\". "
-                             "Lexical: fast word-overlap matching, no neural embedding.",
-                    )
-                with gr.Row():
-                    chat_threshold = gr.Slider(
-                        minimum=-1.0, maximum=1.0, value=0.0, step=0.05,
-                        label="Retrieval threshold",
-                        info="Minimum similarity score a corpus passage must reach for context to be injected. "
-                             "Queries that don't clear this bar are answered without grounding (pure-chat). "
-                             "Cosine scores live in [-1, 1]; 0.0 is a good default. Has no effect when corpus directory is blank.",
                     )
                 load_status = gr.Textbox(label="Status", interactive=False)
 
@@ -1680,7 +1777,7 @@ def build_app() -> gr.Blocks:
             # ---- Event wiring -------------------------------------------
             agent_load_btn.click(
                 fn=load_agent,
-                inputs=[agent_dropdown],
+                inputs=[agent_dropdown, chat_encoder, chat_threshold],
                 outputs=[engine_state, conv_state, agent_status, chat_ckpt, chat_vocab],
             )
             load_btn.click(
