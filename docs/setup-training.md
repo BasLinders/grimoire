@@ -285,7 +285,51 @@ python -m grimoire_ai.llm.training.train \
 
 ---
 
-## 6 — Adding corpus files after training
+## 6 — Verify training worked
+
+Quick sanity check after fine-tuning:
+
+```python
+from grimoire_ai.llm.inference.engine import InferenceEngine
+
+engine = InferenceEngine(
+    checkpoint_path="checkpoints/finetune/step_0000500.pt",
+    tokenizer_path="data/tokenizer/bpe.json",
+)
+print(engine.respond("What happens when a creature is grappled?"))
+```
+
+If the model produces a direct answer rather than continuing the question, fine-tuning succeeded.
+
+### Verify semantic retrieval quality
+
+After training, the model's embeddings encode domain knowledge. You can probe retrieval quality directly without a full chat session:
+
+```python
+from grimoire_ai.llm.inference.engine import InferenceEngine
+from pathlib import Path
+
+engine = InferenceEngine(
+    checkpoint_path="checkpoints/finetune/step_0000500.pt",
+    tokenizer_path="data/tokenizer/bpe.json",
+)
+
+documents = [
+    (path.read_text(encoding="utf-8"), path.stem)
+    for path in sorted(Path("data/corpus/saga/").glob("*.txt"))
+]
+retriever = engine.build_semantic_corpus(documents, attach=False)
+
+results = retriever.query("grapple speed movement", top_k=3)
+for r in results:
+    print(f"[{r.score:.3f}] {r.source}: {r.excerpt[:80]}")
+```
+
+At early checkpoints (~1k steps), scores will be broadly similar across passages — the embeddings are not yet meaningful. By ~15k steps scores should clearly separate on-topic from off-topic passages. A well-trained model will return the grapple speed rule as the top result with a score noticeably above unrelated passages.
+
+---
+
+## 8 — Corpus updates after training
 
 Training is **step-count based**, not corpus-size based. The trainer samples random windows from `corpus.bin` until `total_steps` is reached, so a larger corpus means more variety per step — not more training time.
 
@@ -316,6 +360,8 @@ python -m grimoire_ai.llm.training.train \
 
 The same applies to fine-tuning: if you add new JSONL examples, resume from the existing fine-tuned checkpoint rather than the pre-trained one.
 
+The semantic embedding index is built from corpus `.txt` files at inference startup — it does not live inside the checkpoint and does not need a training step when you add corpus files.
+
 ### When to retrain the tokenizer
 
 Delete `bpe.json` before preprocessing only if the new content is from a very different domain whose vocabulary the current BPE cannot represent well (e.g., a non-Latin-script language). For additional D&D, mathematics, or plain-English content, the existing 16 384-token vocabulary is sufficient and retraining the tokenizer would require a full pre-training run from scratch.
@@ -326,23 +372,5 @@ Delete `bpe.json` before preprocessing only if the new content is from a very di
 | Add a completely new domain | Reprocess → resume (or full retrain if the domain shift is large) |
 | Add fine-tune examples only | Skip preprocessing; re-run fine-tuning from the fine-tuned checkpoint |
 | Force tokenizer retrain | Delete `bpe.json`, reprocess, full pre-train from scratch |
-
----
-
-## 7 — Verify training worked
-
-Quick sanity check after fine-tuning:
-
-```python
-from grimoire_ai.llm.inference.engine import InferenceEngine
-
-engine = InferenceEngine(
-    checkpoint_path="checkpoints/finetune/step_0000500.pt",
-    tokenizer_path="data/tokenizer/bpe.json",
-)
-print(engine.respond("What happens when a creature is grappled?"))
-```
-
-If the model produces a direct answer rather than continuing the question, fine-tuning succeeded.
 
 See [setup-inference.md](setup-inference.md) for the full inference and chat setup.

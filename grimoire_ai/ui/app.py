@@ -454,6 +454,7 @@ def load_engine(
     vocab_path: str,
     corpus_dir: str = "",
     semantic: bool = True,
+    retrieval_threshold: Optional[float] = None,
 ) -> tuple[object, object, str]:
     """Load an ``InferenceEngine`` and a fresh ``ConversationState``.
 
@@ -494,6 +495,7 @@ def load_engine(
         checkpoint_path=checkpoint_path,
         tokenizer_path=vocab_path,
         corpus=lexical_corpus,
+        retrieval_threshold=retrieval_threshold if corpus_dir else None,
     )
 
     if corpus_dir and semantic:
@@ -1495,6 +1497,14 @@ def build_app() -> gr.Blocks:
                         value=True,
                         info="On: rank passages by meaning using the model's own embeddings. Off: lexical (Jaccard) word-overlap matching. Embedding the corpus runs once at load.",
                     )
+                with gr.Row():
+                    chat_threshold = gr.Slider(
+                        minimum=-1.0, maximum=1.0, value=0.0, step=0.05,
+                        label="Retrieval threshold",
+                        info="Minimum similarity score a corpus passage must reach for context to be injected. "
+                             "Queries that don't clear this bar are answered without grounding (pure-chat). "
+                             "Cosine scores live in [-1, 1]; 0.0 is a good default. Has no effect when corpus directory is blank.",
+                    )
                 load_status = gr.Textbox(label="Status", interactive=False)
 
             # ---- Generation controls ------------------------------------
@@ -1572,7 +1582,7 @@ def build_app() -> gr.Blocks:
             )
             load_btn.click(
                 fn=load_engine,
-                inputs=[chat_ckpt, chat_vocab, chat_corpus_dir, chat_semantic],
+                inputs=[chat_ckpt, chat_vocab, chat_corpus_dir, chat_semantic, chat_threshold],
                 outputs=[engine_state, conv_state, load_status],
             )
             chat_btn.click(

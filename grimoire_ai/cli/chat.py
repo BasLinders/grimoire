@@ -55,6 +55,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "instead of lexical Jaccard matching. Requires --corpus-dir.",
     )
     p.add_argument(
+        "--retrieval-threshold", type=float, default=None,
+        help="Minimum retrieval score to inject corpus context. Queries whose "
+             "best match scores below this value are answered without grounding "
+             "(pure-chat). For semantic retrieval cosine scores are in [-1, 1]; "
+             "0.0 is a reasonable starting point. Omit to always inject context "
+             "when a corpus is attached.",
+    )
+    p.add_argument(
         "--max-turns", type=int, default=20,
         help="Maximum number of turns to keep in rolling history.",
     )
@@ -108,6 +116,7 @@ def main(argv: list[str] | None = None) -> None:
         checkpoint_path=args.checkpoint,
         tokenizer_path=args.vocab,
         corpus=corpus,
+        retrieval_threshold=args.retrieval_threshold,
     )
     print(f"Model ready on {engine.device.upper()}.")
 

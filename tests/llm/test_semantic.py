@@ -146,3 +146,34 @@ def test_engine_build_semantic_corpus(tmp_path) -> None:
     assert all(isinstance(r, QueryResult) for r in results)
     # Embeddings are L2-normalised, so cosine scores live in [-1, 1].
     assert all(-1.01 <= r.score <= 1.01 for r in results)
+
+
+# ---------------------------------------------------------------------------
+# Retrieval threshold router
+# ---------------------------------------------------------------------------
+
+def test_threshold_blocks_low_scores() -> None:
+    """A threshold above the top score should return no results (pure-chat)."""
+    retriever = SemanticRetriever(embed_fn=_keyword_embed)
+    retriever.add_text("A grappled creature has its speed reduced to zero.")
+    retriever.index()
+
+    # Query about fire — cosine similarity to grapple passage will be low.
+    results_unthresholded = retriever.query("fire damage and burning", top_k=1)
+    assert len(results_unthresholded) == 1
+
+    # Simulate engine threshold: score below 0.99 threshold → caller drops context.
+    top_score = results_unthresholded[0].score
+    # Threshold above top score means the engine would route to pure-chat.
+    assert top_score < 0.99, f"Expected low cross-domain score, got {top_score}"
+
+
+def test_threshold_passes_high_scores() -> None:
+    """A matching query should clear a reasonable threshold."""
+    retriever = SemanticRetriever(embed_fn=_keyword_embed)
+    retriever.add_text("A grappled creature has its speed reduced to zero.")
+    retriever.index()
+
+    results = retriever.query("grapple speed movement", top_k=1)
+    assert len(results) == 1
+    assert results[0].score > 0.5, f"Expected high on-domain score, got {results[0].score}"

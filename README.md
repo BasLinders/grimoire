@@ -1,6 +1,6 @@
 # Grimoire
 
-**Grimoire** is a hybrid small language model (SLM) engine built entirely from scratch, designed to run on consumer hardware with optional GPU acceleration. It pairs a corpus retrieval engine with a scratch-built transformer LLM — the retrieval engine provides grounded domain facts, the LLM provides coherent language and conversational flow.
+**Grimoire** is a hybrid small language model (SLM) engine built entirely from scratch, designed to run on consumer hardware with optional GPU acceleration. It pairs a semantic retrieval engine with a scratch-built transformer LLM — the retrieval engine grounds answers in your corpus, the LLM provides coherent conversational language, and a retrieval-score router decides per-query whether grounding is needed or the model should answer from its own knowledge.
 
 Grimoire is intentionally domain-agnostic. Agents are named configurations: each agent declares its corpus, its checkpoint, and its generation defaults. The engine stays the same.
 
@@ -9,17 +9,18 @@ The first agent built on Grimoire is **Saga**: a focused domain chatbot covering
 ## Goals
 
 - Run on consumer hardware (CPU or CUDA GPU — no cloud required)
-- Zero domain training cost: corpus retrieval handles facts; the LLM handles language and conversation
+- Grounded domain facts from semantic retrieval; coherent conversation from the LLM
+- Automatic routing: only inject corpus context when retrieval finds a confident match
 - Full conversational coherence with multi-turn context tracking
 - Modular: swap corpora, agents, and checkpoints independently
-- Deterministic, explainable retrieval — no hallucination on domain facts
+- One model powers both retrieval and generation — no separate embedding server
 - Built from scratch as a learning project: tokenizer, transformer, training loop, and fine-tuning pipeline are all hand-written
 
 ## Repository Structure
 
 ```
 grimoire/
-├── grimoire/
+├── grimoire_ai/
 │   ├── agents/             # Agent registry — loads agents.json, builds InferenceEngine
 │   ├── corpus/             # Corpus ingestion, stemming, n-gram index, Jaccard retrieval
 │   ├── llm/                # Scratch-built transformer LLM
@@ -27,9 +28,9 @@ grimoire/
 │   │   ├── model/          # Decoder-only transformer (GQA, RoPE, SwiGLU, RMSNorm)
 │   │   ├── data/           # TokenizedDataset, PaddingCollator, ConversationDataset
 │   │   ├── training/       # Trainer, checkpointing, pretrain + finetune entry points
-│   │   └── inference/      # PromptBuilder, KV-cache sampler, InferenceEngine
+│   │   └── inference/      # PromptBuilder, KV-cache sampler, InferenceEngine, SemanticRetriever
 │   ├── state/              # ConversationState — rolling multi-turn history + prompt build
-│   ├── cli/                # Interactive terminal chat loop   
+│   ├── cli/                # Interactive terminal chat loop
 │   └── ui/                 # Gradio app — Pre-train, Fine-tune, Ingest, Chat tabs
 ├── agents.json             # Named agent configurations (checkpoint, vocab, corpus, gen defaults)
 ├── scripts/
@@ -48,7 +49,7 @@ grimoire/
 │   │   └── saga/           # Populated by scripts/build_saga_corpus.py
 │   └── finetune/           # Any additional fine-tuning datasets
 ├── checkpoints/            # Saved model checkpoints — gitignored
-└── tests/                  # 227 unit tests + 15 integration tests — all green
+└── tests/                  # unit tests + integration tests — all green
 ```
 
 ## Architecture
@@ -59,9 +60,10 @@ grimoire/
 flowchart TD
     A([User message]) --> B[ConversationState\nrolling turn history]
 
-    B --> C[GrimoireCorpus\nJaccard retrieval]
-    C --> D[(Corpus Index\nn-gram hash map)]
-    D -->|top-k excerpts| E
+    B --> C[SemanticRetriever\ncosine similarity over\nmodel embeddings]
+    C --> R{Retrieval router\nscore ≥ threshold?}
+    R -->|yes — inject context| E
+    R -->|no — pure-chat| E
 
     B -->|packed prompt ids| E[GrimoireTransformer\nPromptBuilder → KV-cache sampler]
 
@@ -69,17 +71,25 @@ flowchart TD
     F --> B
 ```
 
+### How the hybrid works
+
+Every user query is embedded by the same transformer that will generate the reply. That embedding is compared against pre-indexed corpus passage vectors (also embedded by the same model). If the top match exceeds the **retrieval threshold**, the passage is injected into the prompt as grounding context before generation. If no passage clears the threshold — because the query is conversational rather than domain-factual — the model answers from its own knowledge, without cluttering the prompt.
+
+Both halves run the same model, in the same learned representation space. There is no separate embedding server and no external vector database.
+
 ### Component Table
 
 | Component | Role | Status |
 |---|---|---|
 | **BPE Tokenizer** | Byte-level Byte-Pair Encoding; vocab 16 384; lossless round-trip for any Unicode | ✓ done |
-| **Corpus Engine** | Ingests text, indexes stemmed 4-gram multi-tokens, retrieves top-k passages by Jaccard similarity with unstemmed excerpts | ✓ done |
+| **Corpus Engine** | Ingests text, indexes stemmed 4-gram multi-tokens, retrieves top-k passages by Jaccard similarity (lexical fallback) | ✓ done |
+| **Semantic Retriever** | Chunks documents into passages, embeds each with the model's own representations, and ranks by cosine similarity — the primary retrieval path | ✓ done |
+| **Retrieval Router** | Compares the top retrieval score against a configurable threshold; routes to grounded or pure-chat generation per query | ✓ done |
 | **Corpus Scraper** | `ingest()` dispatcher for web URLs (HTML + Markdown), PDFs, DOCX, Markdown files, plain text, and images (OCR) | ✓ done |
-| **GrimoireTransformer** | Scratch-built decoder-only transformer (~25 M params); GQA, RoPE, SwiGLU, RMSNorm, weight-tied output head | ✓ done |
-| **Training Pipeline** | AdamW + cosine-warmup LR, fp16 AMP, gradient accumulation, checkpointing; `on_log` callback for live loss streaming | ✓ done |
+| **GrimoireTransformer** | Scratch-built decoder-only transformer (~25 M params); GQA, RoPE, SwiGLU, RMSNorm, weight-tied output head; `embed()` for sentence embeddings | ✓ done |
+| **Training Pipeline** | AdamW + cosine-warmup LR, fp16 AMP, Flash Attention (SDPA), torch.compile, gradient accumulation, checkpointing | ✓ done |
 | **Instruction Fine-tuning** | `ConversationDataset` on `{user, assistant, context?}` JSONL; response-only loss masking | ✓ done |
-| **Inference Engine** | PromptBuilder (corpus → prompt), KV-cache autoregressive sampler (temperature / top-k / top-p / repetition penalty), `respond()`, `chat()`, and `chat_stream()` (token-by-token generator) | ✓ done |
+| **Inference Engine** | PromptBuilder (corpus → prompt), KV-cache autoregressive sampler (temperature / top-k / top-p / repetition penalty), `respond()`, `chat()`, `chat_stream()`, `embed()`, `build_semantic_corpus()` | ✓ done |
 | **KV-Cache** | Caches K/V projections: O(n²) → O(1) per generation step; sliding-window truncation at `max_seq_len` | ✓ done |
 | **Conversation State** | `ConversationState` packs rolling history newest-first within the token budget, then fills remaining space with corpus context | ✓ done |
 | **Training UI** | Gradio app: Pre-train, Fine-tune, Ingest, and Chat tabs with live loss streaming | ✓ done |
@@ -97,7 +107,7 @@ flowchart TD
                                      <USR> current query <AST>
 ```
 
-History is packed newest-first within the token budget. The corpus context fills whatever space remains after history. If the budget is exhausted the oldest turns are dropped first, then the context is trimmed. The current query is always preserved.
+History is packed newest-first within the token budget. When retrieval clears the threshold, the corpus context fills whatever space remains after history. If the budget is exhausted the oldest turns are dropped first, then the context is trimmed. The current query is always preserved.
 
 ### Why Hybrid
 
@@ -105,9 +115,9 @@ History is packed newest-first within the token budget. The corpus context fills
 |---|---|---|
 | LLM alone | Fluent, coherent, conversational | Hallucinates domain facts; expensive to specialise |
 | Corpus alone | Accurate, deterministic, explainable | Cannot track context or produce natural sentences |
-| **Grimoire (hybrid)** | Grounded facts from corpus + coherent language from LLM | Slightly more complex setup |
+| **Grimoire (hybrid)** | Grounded facts when the corpus is relevant + coherent language always + pure-chat when it isn't | Slightly more complex setup |
 
-New domain knowledge requires only adding `.txt` files to the corpus and calling `corpus.add_text()` — no retraining.
+New domain knowledge requires only adding `.txt` files to the corpus — no retraining. Because retrieval uses the model's own embeddings, the index improves as training progresses.
 
 ### LLM Architecture
 
@@ -121,6 +131,8 @@ The transformer uses four improvements over the GPT-2 baseline:
 | **Grouped Query Attention** | Multi-head attention | `n_kv_heads=2` vs `n_heads=8`; 4× smaller KV cache at inference |
 
 Default configuration: `vocab_size=16384`, `d_model=512`, `n_layers=6`, `n_heads=8`, `n_kv_heads=2`, `d_ff=1408`, `max_seq_len=1024` → ~25 M parameters, ~100 MB fp32.
+
+Training optimisations active: Flash Attention (SDPA), `torch.compile`, `cudnn.benchmark`, non-blocking GPU transfers.
 
 ## Development Roadmap
 
@@ -139,6 +151,9 @@ Default configuration: `vocab_size=16384`, `d_model=512`, `n_layers=6`, `n_heads
 | **8** | Agent registry (`agents.json`) + agent selector dropdown in Chat UI | ✓ done |
 | **9** | Saga corpus: D&D 5e SRD (24 sections) + encounter math + probability references | ✓ done |
 | **10** | Saga instruction fine-tuning: 30-example JSONL dataset + fine-tune + validation scripts | ✓ done |
+| **11** | Training optimisations: Flash Attention (SDPA), `torch.compile`, `cudnn.benchmark`, non-blocking transfers | ✓ done |
+| **12** | Semantic retrieval: `GrimoireTransformer.embed()`, `SemanticRetriever` (cosine over model embeddings), `InferenceEngine.build_semantic_corpus()` | ✓ done |
+| **13** | Retrieval router: score-threshold gate in `InferenceEngine._retrieve()` — routes per-query to grounded or pure-chat generation | ✓ done |
 
 ### Why two training phases?
 
@@ -232,10 +247,18 @@ python -m grimoire_ai.llm.training.finetune \
 ### Chat (terminal)
 
 ```bash
+# Ungrounded
 python -m grimoire_ai.cli.chat \
     --checkpoint checkpoints/finetune/step_0000500.pt \
-    --vocab      data/tokenizer/bpe.json \
-    --corpus-dir data/corpus/saga/
+    --vocab      data/tokenizer/bpe.json
+
+# Semantic retrieval with routing threshold
+python -m grimoire_ai.cli.chat \
+    --checkpoint         checkpoints/finetune/step_0000500.pt \
+    --vocab              data/tokenizer/bpe.json \
+    --corpus-dir         data/corpus/saga/ \
+    --semantic \
+    --retrieval-threshold 0.0
 ```
 
 Commands: `/clear` (reset history), `/history` (review turns), `/quit`.
@@ -250,8 +273,13 @@ engine = InferenceEngine(
     checkpoint_path="checkpoints/finetune/step_0000500.pt",
     tokenizer_path="data/tokenizer/bpe.json",
 )
-state = ConversationState()
+# Build a semantic corpus and attach it; set a routing threshold.
+engine.build_semantic_corpus(
+    [("data/corpus/saga/srd.txt", "srd")],  # (text, source) tuples
+)
+engine.retrieval_threshold = 0.0  # route to pure-chat when no passage clears 0.0
 
+state = ConversationState()
 r1 = engine.chat("What happens when a creature is grappled?", state)
 r2 = engine.chat("How do I escape the grapple?", state)  # model sees prior turn
 ```
@@ -273,14 +301,14 @@ python -m grimoire_ai.ui
 # open http://localhost:7860
 ```
 
-Six tabs: **Preprocess**, **Pre-train** (with model size presets), **Fine-tune**, **Ingest** (multi-file upload), **Chat** (streaming responses + dataset builder), **Scale** (Chinchilla scaling calculator).
+Six tabs: **Preprocess**, **Pre-train** (with model size presets), **Fine-tune**, **Ingest** (multi-file upload), **Chat** (streaming responses, corpus directory, semantic toggle, retrieval threshold slider, dataset builder), **Scale** (Chinchilla scaling calculator).
 
 ## Development
 
 ```bash
 pip install -e ".[dev]"
-pytest                            # 227 unit tests + 2 skipped (PDF container issue)
-pytest tests/test_integration.py  # 15 end-to-end integration tests
+pytest                            # unit tests
+pytest tests/test_integration.py  # end-to-end integration tests
 ```
 
 See [docs/setup-training.md](docs/setup-training.md) and [docs/setup-inference.md](docs/setup-inference.md) for detailed setup guides.

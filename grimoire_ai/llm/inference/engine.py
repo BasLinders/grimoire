@@ -72,6 +72,7 @@ class InferenceEngine:
         gen_config: Optional[GenerationConfig] = None,
         max_context_tokens: int = 512,
         device: Optional[str] = None,
+        retrieval_threshold: Optional[float] = None,
     ) -> None:
         """Load model and tokenizer from disk and prepare the engine.
 
@@ -80,14 +81,24 @@ class InferenceEngine:
                 ``save_checkpoint``.
             tokenizer_path: Path to a BPE vocabulary JSON written by
                 ``BytePairEncoder.save``.
-            corpus: Optional ``GrimoireCorpus`` instance.  When provided,
-                ``respond`` will query it and inject the results as context.
+            corpus: Optional ``GrimoireCorpus`` or ``SemanticRetriever``.
+                When provided, queries are routed through retrieval before
+                generation.
             gen_config: Default generation hyperparameters.  Defaults to
                 ``GenerationConfig()`` if ``None``.
             max_context_tokens: Token budget passed to ``PromptBuilder``.
                 Must be at most ``model.config.max_seq_len``.
             device: PyTorch device (``"cpu"``, ``"cuda"``, etc.).  Auto-
                 detected (CUDA if available, otherwise CPU) when ``None``.
+            retrieval_threshold: Minimum score the top corpus result must
+                reach for context to be injected into the prompt. When the
+                best match scores below this value, the query is treated as
+                pure-chat (no retrieval context). ``None`` (default) always
+                injects context when a corpus is attached. For
+                ``SemanticRetriever`` a value of ``0.0`` is a reasonable
+                starting point (cosine scores are in ``[-1, 1]``); for
+                ``GrimoireCorpus`` scores are Jaccard × frequency so a small
+                positive value (e.g. ``0.1``) is more appropriate.
         """
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -105,6 +116,7 @@ class InferenceEngine:
         self.tokenizer = BytePairEncoder.load(tokenizer_path)
 
         self.corpus = corpus
+        self.retrieval_threshold = retrieval_threshold
         # A prompt can never usefully exceed the model's context window; clamp
         # so PromptBuilder never emits a prompt that generate() would silently
         # left-truncate (which could drop the <USR>/context framing).
@@ -115,6 +127,33 @@ class InferenceEngine:
         )
         self.gen_config = gen_config if gen_config is not None else GenerationConfig()
 
+    def _retrieve(self, query: str, top_k: int) -> list:
+        """Query the corpus and apply the retrieval threshold router.
+
+        Returns an empty list when no corpus is attached, when the corpus
+        returns no results, or when the top result's score falls below
+        ``self.retrieval_threshold``. In the last case the query is treated
+        as pure-chat — context would not improve the answer and would only
+        consume prompt budget.
+
+        Args:
+            query: Plain-text query string.
+            top_k: Maximum number of passages to retrieve.
+
+        Returns:
+            A (possibly empty) list of ``QueryResult`` objects to inject.
+        """
+        if self.corpus is None:
+            return []
+        results = self.corpus.query(query, top_k=top_k)
+        if (
+            results
+            and self.retrieval_threshold is not None
+            and results[0].score < self.retrieval_threshold
+        ):
+            return []
+        return results
+
     def respond(
         self,
         query: str,
@@ -124,7 +163,9 @@ class InferenceEngine:
         """Generate a response to a user query.
 
         Pipeline:
-        1. Query the corpus (if one was provided) for ``top_k_corpus`` results.
+        1. Query the corpus (if attached) for ``top_k_corpus`` results and
+           apply the retrieval threshold router — context is only injected
+           when the top match meets the threshold.
         2. Build the prompt token-id sequence via ``PromptBuilder``.
         3. Run autoregressive generation with ``generate()``.
         4. Decode the new tokens back to a string with the BPE tokenizer.
@@ -142,9 +183,7 @@ class InferenceEngine:
         """
         cfg = gen_config if gen_config is not None else self.gen_config
 
-        results = []
-        if self.corpus is not None:
-            results = self.corpus.query(query, top_k=top_k_corpus)
+        results = self._retrieve(query, top_k=top_k_corpus)
 
         prompt_ids = self.prompt_builder.build(query, results)
         new_token_ids = generate(
@@ -274,11 +313,8 @@ class InferenceEngine:
 
         cfg = gen_config if gen_config is not None else self.gen_config
 
-        # Retrieve corpus context and encode it to token ids.
-        context_ids: list[int] = []
-        if self.corpus is not None:
-            results = self.corpus.query(query, top_k=top_k_corpus)
-            context_ids = self.prompt_builder._encode_context(results)
+        results = self._retrieve(query, top_k=top_k_corpus)
+        context_ids = self.prompt_builder._encode_context(results) if results else []
 
         prompt_ids = state.build_prompt_ids(
             query=query,
@@ -315,10 +351,8 @@ class InferenceEngine:
 
         cfg = gen_config if gen_config is not None else self.gen_config
 
-        context_ids: list[int] = []
-        if self.corpus is not None:
-            results = self.corpus.query(query, top_k=top_k_corpus)
-            context_ids = self.prompt_builder._encode_context(results)
+        results = self._retrieve(query, top_k=top_k_corpus)
+        context_ids = self.prompt_builder._encode_context(results) if results else []
 
         prompt_ids = state.build_prompt_ids(
             query=query,
