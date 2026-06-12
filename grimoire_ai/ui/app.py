@@ -452,17 +452,63 @@ def load_agent(display_name: str) -> tuple[object, object, str, str, str]:
 def load_engine(
     checkpoint_path: str,
     vocab_path: str,
+    corpus_dir: str = "",
+    semantic: bool = True,
 ) -> tuple[object, object, str]:
-    """Load an ``InferenceEngine`` and a fresh ``ConversationState``."""
+    """Load an ``InferenceEngine`` and a fresh ``ConversationState``.
+
+    When ``corpus_dir`` points at a directory of ``.txt`` files, the engine is
+    grounded in that corpus. With ``semantic`` enabled, passages are embedded
+    once with the model's own representations and retrieved by cosine
+    similarity; otherwise lexical Jaccard matching is used. When ``corpus_dir``
+    is blank the engine runs ungrounded — identical to the prior behaviour.
+    """
+    from pathlib import Path
+
+    from grimoire_ai.corpus.corpus import GrimoireCorpus
     from grimoire_ai.llm.inference.engine import InferenceEngine
     from grimoire_ai.state.conversation import ConversationState
+
+    corpus_dir = (corpus_dir or "").strip()
+
+    # Build a lexical corpus up-front; the semantic index is built after the
+    # model loads, since it needs the model to embed passages.
+    documents: list[tuple[str, str]] = []
+    lexical_corpus = None
+    status_suffix = ""
+    if corpus_dir:
+        path = Path(corpus_dir)
+        if not path.is_dir():
+            return None, None, f"Corpus directory not found: {corpus_dir}"
+        for txt_file in sorted(path.glob("*.txt")):
+            text = txt_file.read_text(encoding="utf-8")
+            documents.append((text, txt_file.stem))
+            if not semantic:
+                if lexical_corpus is None:
+                    lexical_corpus = GrimoireCorpus()
+                lexical_corpus.add_text(text, source=txt_file.stem)
+        if not documents:
+            return None, None, f"No .txt files found in {corpus_dir}"
 
     engine = InferenceEngine(
         checkpoint_path=checkpoint_path,
         tokenizer_path=vocab_path,
+        corpus=lexical_corpus,
     )
+
+    if corpus_dir and semantic:
+        retriever = engine.build_semantic_corpus(documents)
+        status_suffix = (
+            f" | semantic corpus: {retriever.size} passage(s) "
+            f"from {len(documents)} file(s)"
+        )
+    elif corpus_dir:
+        status_suffix = (
+            f" | lexical corpus: {len(documents)} file(s)"
+        )
+
     state = ConversationState()
-    return engine, state, f"Model loaded from {checkpoint_path}"
+    return engine, state, f"Model loaded from {checkpoint_path}{status_suffix}"
 
 
 def chat(
@@ -1437,6 +1483,18 @@ def build_app() -> gr.Blocks:
                         info="Must be the same vocabulary used during training — mismatching produces garbled output.",
                     )
                     load_btn = gr.Button("Load model")
+                with gr.Row():
+                    chat_corpus_dir = gr.Textbox(
+                        label="Corpus directory (optional)",
+                        value="",
+                        info="Directory of .txt files used to ground replies in your corpus. Leave blank for ungrounded chat.",
+                        scale=3,
+                    )
+                    chat_semantic = gr.Checkbox(
+                        label="Semantic retrieval",
+                        value=True,
+                        info="On: rank passages by meaning using the model's own embeddings. Off: lexical (Jaccard) word-overlap matching. Embedding the corpus runs once at load.",
+                    )
                 load_status = gr.Textbox(label="Status", interactive=False)
 
             # ---- Generation controls ------------------------------------
@@ -1514,7 +1572,7 @@ def build_app() -> gr.Blocks:
             )
             load_btn.click(
                 fn=load_engine,
-                inputs=[chat_ckpt, chat_vocab],
+                inputs=[chat_ckpt, chat_vocab, chat_corpus_dir, chat_semantic],
                 outputs=[engine_state, conv_state, load_status],
             )
             chat_btn.click(
