@@ -32,7 +32,7 @@ def get_dandwiki_page(page_title):
         time.sleep(2)
         
         # Use impersonate="chrome126" to target a modern browser fingerprint
-        response = requests.get(url, params=params, headers=headers, impersonate="chrome126")
+        response = requests.get(url, params=params, headers=headers, impersonate="chrome110")
         response.raise_for_status() 
         
         data = response.json()
