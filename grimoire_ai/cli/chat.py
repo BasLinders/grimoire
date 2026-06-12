@@ -50,9 +50,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Number of corpus passages to retrieve per query.",
     )
     p.add_argument(
-        "--semantic", action="store_true",
-        help="Use the model's own embeddings for semantic (cosine) retrieval "
-             "instead of lexical Jaccard matching. Requires --corpus-dir.",
+        "--encoder",
+        default="model",
+        choices=["model", "minilm", "mpnet", "lexical"],
+        help="Embedding backend for corpus retrieval. "
+             "model: the trained transformer's own embeddings (default). "
+             "minilm: all-MiniLM-L6-v2 via sentence-transformers. "
+             "mpnet: all-mpnet-base-v2 via sentence-transformers. "
+             "lexical: Jaccard word-overlap (no neural embedding).",
     )
     p.add_argument(
         "--retrieval-threshold", type=float, default=None,
@@ -88,11 +93,17 @@ def main(argv: list[str] | None = None) -> None:
     from grimoire_ai.corpus.corpus import GrimoireCorpus
     from grimoire_ai.llm.inference.engine import InferenceEngine
     from grimoire_ai.llm.inference.sampler import GenerationConfig
+    from grimoire_ai.llm.inference.semantic import EXTERNAL_ENCODERS, SemanticRetriever, make_external_embed_fn
     from grimoire_ai.state.conversation import ConversationState
 
+    _ENCODER_MAP = {
+        "minilm": "MiniLM (all-MiniLM-L6-v2)",
+        "mpnet":  "MPNet (all-mpnet-base-v2)",
+    }
+    use_lexical  = args.encoder == "lexical"
+    use_external = args.encoder in _ENCODER_MAP
+
     # --- Load corpus (optional) -----------------------------------------
-    # In semantic mode we defer corpus construction until after the engine is
-    # loaded, because semantic retrieval embeds passages with the model itself.
     corpus = None
     documents: list[tuple[str, str]] = []
     if args.corpus_dir is not None:
@@ -103,12 +114,11 @@ def main(argv: list[str] | None = None) -> None:
             for txt_file in sorted(corpus_dir.glob("*.txt")):
                 text = txt_file.read_text(encoding="utf-8")
                 documents.append((text, txt_file.stem))
-                if not args.semantic:
+                if use_lexical:
                     if corpus is None:
                         corpus = GrimoireCorpus()
                     corpus.add_text(text, source=txt_file.stem)
-            mode = "semantic (embedding cosine)" if args.semantic else "lexical (Jaccard)"
-            print(f"Corpus: {len(documents)} file(s) loaded from {corpus_dir} [{mode}]")
+            print(f"Corpus: {len(documents)} file(s) loaded from {corpus_dir} [{args.encoder}]")
 
     # --- Load engine ----------------------------------------------------
     print(f"Loading checkpoint: {args.checkpoint}")
@@ -120,11 +130,23 @@ def main(argv: list[str] | None = None) -> None:
     )
     print(f"Model ready on {engine.device.upper()}.")
 
-    # Build the semantic index now that the model is loaded.
-    if args.semantic and documents:
-        print("Embedding corpus passages for semantic retrieval...")
-        retriever = engine.build_semantic_corpus(documents)
-        print(f"Semantic index ready: {retriever.size} passage(s).")
+    # --- Build semantic index -------------------------------------------
+    if documents and not use_lexical:
+        if use_external:
+            encoder_id = EXTERNAL_ENCODERS[_ENCODER_MAP[args.encoder]]
+            print(f"Loading external encoder: {encoder_id} ...")
+            embed_fn = make_external_embed_fn(encoder_id)
+            retriever = SemanticRetriever(embed_fn=embed_fn)
+            for text, source in documents:
+                retriever.add_text(text, source=source)
+            print("Embedding corpus passages...")
+            retriever.index()
+            engine.corpus = retriever
+            engine.retrieval_threshold = args.retrieval_threshold
+        else:
+            print("Embedding corpus passages with model embeddings...")
+            retriever = engine.build_semantic_corpus(documents)
+        print(f"Index ready: {retriever.size} passage(s).")
 
     gen_config = GenerationConfig(
         max_new_tokens=args.max_new_tokens,

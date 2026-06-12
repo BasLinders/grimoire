@@ -453,30 +453,39 @@ def load_engine(
     checkpoint_path: str,
     vocab_path: str,
     corpus_dir: str = "",
-    semantic: bool = True,
+    encoder: str = "Model (decoder embeddings)",
     retrieval_threshold: Optional[float] = None,
 ) -> tuple[object, object, str]:
     """Load an ``InferenceEngine`` and a fresh ``ConversationState``.
 
     When ``corpus_dir`` points at a directory of ``.txt`` files, the engine is
-    grounded in that corpus. With ``semantic`` enabled, passages are embedded
-    once with the model's own representations and retrieved by cosine
-    similarity; otherwise lexical Jaccard matching is used. When ``corpus_dir``
-    is blank the engine runs ungrounded — identical to the prior behaviour.
+    grounded in that corpus using the retrieval backend selected by ``encoder``:
+
+    - ``"Model (decoder embeddings)"``: the trained transformer's own
+      mean-pooled hidden states — the native hybrid path.
+    - ``"MiniLM (all-MiniLM-L6-v2)"`` / ``"MPNet (all-mpnet-base-v2)"``:
+      a dedicated sentence-transformers encoder.  Downloads ~90 MB on first
+      use; requires ``pip install -e ".[encoder]"``.
+    - ``"Lexical (Jaccard)"``: stemmed n-gram index with Jaccard scoring —
+      no neural embedding, CPU-only, instant startup.
+
+    When ``corpus_dir`` is blank the engine runs ungrounded.
     """
     from pathlib import Path
 
     from grimoire_ai.corpus.corpus import GrimoireCorpus
     from grimoire_ai.llm.inference.engine import InferenceEngine
+    from grimoire_ai.llm.inference.semantic import EXTERNAL_ENCODERS, SemanticRetriever, make_external_embed_fn
     from grimoire_ai.state.conversation import ConversationState
 
     corpus_dir = (corpus_dir or "").strip()
+    use_lexical = encoder == "Lexical (Jaccard)"
+    use_external = encoder in EXTERNAL_ENCODERS
 
-    # Build a lexical corpus up-front; the semantic index is built after the
-    # model loads, since it needs the model to embed passages.
     documents: list[tuple[str, str]] = []
     lexical_corpus = None
     status_suffix = ""
+
     if corpus_dir:
         path = Path(corpus_dir)
         if not path.is_dir():
@@ -484,7 +493,7 @@ def load_engine(
         for txt_file in sorted(path.glob("*.txt")):
             text = txt_file.read_text(encoding="utf-8")
             documents.append((text, txt_file.stem))
-            if not semantic:
+            if use_lexical:
                 if lexical_corpus is None:
                     lexical_corpus = GrimoireCorpus()
                 lexical_corpus.add_text(text, source=txt_file.stem)
@@ -498,16 +507,31 @@ def load_engine(
         retrieval_threshold=retrieval_threshold if corpus_dir else None,
     )
 
-    if corpus_dir and semantic:
-        retriever = engine.build_semantic_corpus(documents)
-        status_suffix = (
-            f" | semantic corpus: {retriever.size} passage(s) "
-            f"from {len(documents)} file(s)"
-        )
+    if corpus_dir and not use_lexical:
+        if use_external:
+            try:
+                embed_fn = make_external_embed_fn(EXTERNAL_ENCODERS[encoder])
+            except ImportError as e:
+                return None, None, str(e)
+            retriever = SemanticRetriever(embed_fn=embed_fn)
+            for text, source in documents:
+                retriever.add_text(text, source=source)
+            retriever.index()
+            engine.corpus = retriever
+            engine.retrieval_threshold = retrieval_threshold
+            status_suffix = (
+                f" | {encoder}: {retriever.size} passage(s) "
+                f"from {len(documents)} file(s)"
+            )
+        else:
+            # Default: model's own decoder embeddings.
+            retriever = engine.build_semantic_corpus(documents)
+            status_suffix = (
+                f" | model embeddings: {retriever.size} passage(s) "
+                f"from {len(documents)} file(s)"
+            )
     elif corpus_dir:
-        status_suffix = (
-            f" | lexical corpus: {len(documents)} file(s)"
-        )
+        status_suffix = f" | lexical (Jaccard): {len(documents)} file(s)"
 
     state = ConversationState()
     return engine, state, f"Model loaded from {checkpoint_path}{status_suffix}"
@@ -1492,10 +1516,19 @@ def build_app() -> gr.Blocks:
                         info="Directory of .txt files used to ground replies in your corpus. Leave blank for ungrounded chat.",
                         scale=3,
                     )
-                    chat_semantic = gr.Checkbox(
-                        label="Semantic retrieval",
-                        value=True,
-                        info="On: rank passages by meaning using the model's own embeddings. Off: lexical (Jaccard) word-overlap matching. Embedding the corpus runs once at load.",
+                    chat_encoder = gr.Dropdown(
+                        choices=[
+                            "Model (decoder embeddings)",
+                            "MiniLM (all-MiniLM-L6-v2)",
+                            "MPNet (all-mpnet-base-v2)",
+                            "Lexical (Jaccard)",
+                        ],
+                        value="Model (decoder embeddings)",
+                        label="Embedding backend",
+                        info="How corpus passages are matched to your query. "
+                             "Model: the trained transformer's own representations — no extra install. "
+                             "MiniLM / MPNet: dedicated sentence encoders, better quality early in training — requires pip install -e \".[encoder]\". "
+                             "Lexical: fast word-overlap matching, no neural embedding.",
                     )
                 with gr.Row():
                     chat_threshold = gr.Slider(
@@ -1582,7 +1615,7 @@ def build_app() -> gr.Blocks:
             )
             load_btn.click(
                 fn=load_engine,
-                inputs=[chat_ckpt, chat_vocab, chat_corpus_dir, chat_semantic, chat_threshold],
+                inputs=[chat_ckpt, chat_vocab, chat_corpus_dir, chat_encoder, chat_threshold],
                 outputs=[engine_state, conv_state, load_status],
             )
             chat_btn.click(
