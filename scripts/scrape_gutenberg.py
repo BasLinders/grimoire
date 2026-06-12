@@ -56,23 +56,34 @@ SESSION.headers["User-Agent"] = (
 # ---------------------------------------------------------------------------
 
 def _search_books(subject: str, language: str = "en") -> list[dict]:
-    """Return all book metadata records for a subject query."""
-    books = []
-    url = GUTENDEX_URL
-    params = {"topic": subject, "languages": language}
-    while url:
-        try:
-            resp = SESSION.get(url, params=params, timeout=30)
-            resp.raise_for_status()
-        except requests.RequestException as exc:
-            print(f"  Search error ({subject}): {exc}")
-            break
-        data = resp.json()
-        books.extend(data.get("results", []))
-        url = data.get("next")
-        params = {}   # next URL already contains all params
-        time.sleep(0.5)
-    return books
+    """Return all book metadata records for a subject query.
+
+    Tries ``topic=`` first (matches Gutenberg subject headings exactly);
+    falls back to ``search=`` (broader title/author/subject search) if
+    ``topic=`` returns nothing.
+    """
+    for param_key in ("topic", "search"):
+        params = {param_key: subject, "languages": language}
+        page_url = GUTENDEX_URL
+        page_books: list[dict] = []
+        while page_url:
+            try:
+                resp = SESSION.get(page_url, params=params, timeout=30)
+                resp.raise_for_status()
+            except requests.RequestException as exc:
+                print(f"  Search error ({subject}): {exc}")
+                break
+            data = resp.json()
+            page_books.extend(data.get("results", []))
+            total = data.get("count", "?")
+            page_url = data.get("next")
+            params = {}
+            time.sleep(0.5)
+        if page_books:
+            print(f"  '{subject}' via {param_key}: {total} total results")
+            return page_books
+        print(f"  '{subject}' via {param_key}: 0 results, trying fallback...")
+    return []
 
 
 def _best_text_url(book: dict) -> str | None:
