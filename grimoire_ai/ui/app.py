@@ -256,23 +256,30 @@ def run_finetune(
     accumulate_steps: int,
     log_every: int,
     save_every: int,
+    val_split: float,
+    eval_every: int,
+    eval_batches: int,
     max_seq_len: int,
 ) -> Generator[str, None, None]:
-    """Launch a fine-tuning run and stream log output."""
+    """Launch a fine-tuning run and stream log output.
+
+    When ``val_split`` is greater than 0, that fraction of the examples is
+    randomly held out (seeded, no leakage) and a validation loss is logged
+    every ``eval_every`` steps.  ``val_split = 0`` disables evaluation.
+    """
     import torch
     from grimoire_ai.llm.data.conversation import ConversationDataset
     from grimoire_ai.llm.model.config import TransformerConfig
     from grimoire_ai.llm.model.transformer import GrimoireTransformer
     from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
     from grimoire_ai.llm.training.checkpoint import load_checkpoint
+    from grimoire_ai.llm.training.finetune import split_dataset
     from grimoire_ai.llm.training.trainer import Trainer
 
     stop_event = threading.Event()
     _stop_events["finetune"] = stop_event
     resume = resume_from.strip() or None
 
-    # on_eval is accepted for signature compatibility with _stream_training but
-    # unused here: fine-tuning has no held-out validation split (yet).
     def _train(on_log, on_save, on_done, on_eval):
         device = "cuda" if torch.cuda.is_available() else "cpu"
         ckpt = load_checkpoint(pretrain_ckpt)
@@ -285,9 +292,11 @@ def run_finetune(
             tokenizer=tokenizer,
             max_seq_len=min(max_seq_len, config.max_seq_len),
         )
+        train_dataset, val_dataset = split_dataset(dataset, float(val_split))
         Trainer(
             model=model,
-            train_dataset=dataset,
+            train_dataset=train_dataset,
+            val_dataset=val_dataset,
             total_steps=total_steps,
             warmup_steps=warmup_steps,
             peak_lr=peak_lr,
@@ -295,11 +304,14 @@ def run_finetune(
             accumulate_steps=accumulate_steps,
             log_every=log_every,
             save_every=save_every,
+            eval_every=int(eval_every),
+            eval_batches=int(eval_batches),
             checkpoint_dir=checkpoint_dir,
             device=device,
             on_log=on_log,
             on_save=on_save,
             on_done=on_done,
+            on_eval=on_eval,
             stop_event=stop_event,
         ).train(resume_from=resume)
 
@@ -611,7 +623,10 @@ def run_scale_calc(
     if corpus_path:
         try:
             import numpy as np
-            data = np.memmap(corpus_path, dtype=np.uint16, mode="r")
+            # Corpus binaries are written as int32 by the preprocessing step
+            # (see preprocessing.py / TokenizedDataset). Reading as any other
+            # dtype miscounts tokens — uint16 would double the count.
+            data = np.memmap(corpus_path, dtype=np.int32, mode="r")
             corpus_tokens = len(data)
             lines.append(f"Corpus tokens:       {corpus_tokens:>15,}")
         except Exception as exc:
@@ -1365,6 +1380,19 @@ def build_app() -> gr.Blocks:
                     info="How often a snapshot is written to disk.",
                 )
             with gr.Row():
+                ft_val_split = gr.Number(
+                    label="Validation split", value=0.0,
+                    info="Fraction of examples randomly held out for validation (e.g. 0.1 = 10%). 0 disables eval. Fine-tune sets are small, so watch for val loss rising — the classic sign of over-fitting.",
+                )
+                ft_eval_every = gr.Number(
+                    label="Eval every N steps", value=100, precision=0,
+                    info="How often to compute validation loss on the held-out examples.",
+                )
+                ft_eval_batches = gr.Number(
+                    label="Eval batches", value=0, precision=0,
+                    info="Max validation batches averaged per eval pass. 0 uses the whole held-out set (recommended for small fine-tune sets).",
+                )
+            with gr.Row():
                 ft_run_btn  = gr.Button("Start fine-tuning", variant="primary")
                 ft_stop_btn = gr.Button(
                     "Stop", interactive=False, elem_classes="stop-btn", scale=0, min_width=80
@@ -1381,6 +1409,7 @@ def build_app() -> gr.Blocks:
                     ft_pretrain_ckpt, ft_resume, ft_data, ft_vocab, ft_ckpt_dir,
                     ft_steps, ft_warmup, ft_lr,
                     ft_batch, ft_accum, ft_log, ft_save,
+                    ft_val_split, ft_eval_every, ft_eval_batches,
                     ft_max_seq,
                 ],
                 outputs=[ft_log_box, ft_run_btn, ft_stop_btn],

@@ -34,14 +34,54 @@ the model itself — is reused unchanged.
 
 import argparse
 import sys
+from typing import Optional
 
 import torch
+from torch.utils.data import Dataset, random_split
 
 from grimoire_ai.llm.data.conversation import ConversationDataset
 from grimoire_ai.llm.model.config import TransformerConfig
 from grimoire_ai.llm.model.transformer import GrimoireTransformer
 from grimoire_ai.llm.training.checkpoint import load_checkpoint
 from grimoire_ai.llm.training.trainer import Trainer
+
+
+def split_dataset(
+    dataset: Dataset,
+    val_split: float,
+    seed: int = 42,
+) -> tuple[Dataset, Optional[Dataset]]:
+    """Randomly split a dataset into train and validation subsets.
+
+    Unlike the pre-training corpus (a continuous token stream where windows
+    overlap), fine-tuning examples are independent, so a plain random
+    partition introduces no leakage.  The split is seeded for reproducibility,
+    so the same held-out examples are used across resumed runs.
+
+    Args:
+        dataset: Any indexable ``torch.utils.data.Dataset`` (e.g.
+            ``ConversationDataset``).
+        val_split: Fraction of examples to hold out for validation.  Values
+            ``<= 0`` disable the split and return ``(dataset, None)``.
+        seed: RNG seed for the random partition.
+
+    Returns:
+        ``(train_dataset, val_dataset)``.  ``val_dataset`` is ``None`` when no
+        split is requested or the dataset is too small to spare an example.
+    """
+    if val_split <= 0.0 or len(dataset) < 2:
+        return dataset, None
+
+    n_val = int(round(len(dataset) * val_split))
+    # Always keep at least one example on each side.
+    n_val = max(1, min(n_val, len(dataset) - 1))
+    n_train = len(dataset) - n_val
+
+    generator = torch.Generator().manual_seed(seed)
+    train_subset, val_subset = random_split(
+        dataset, [n_train, n_val], generator=generator
+    )
+    return train_subset, val_subset
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -63,6 +103,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Gradient accumulation steps.")
     p.add_argument("--log-every",      type=int,   default=25)
     p.add_argument("--save-every",     type=int,   default=100)
+    p.add_argument("--val-split",      type=float, default=0.0,
+                   help="Fraction of examples held out for validation loss (0 = disabled).")
+    p.add_argument("--eval-every",     type=int,   default=0,
+                   help="Compute validation loss every N steps (0 = use --save-every).")
+    p.add_argument("--eval-batches",   type=int,   default=0,
+                   help="Max validation batches per eval pass (0 = whole val set).")
     p.add_argument("--max-seq-len",    type=int,   default=512,
                    help="Maximum sequence length for fine-tuning examples.")
     p.add_argument("--device",         default=None,
@@ -96,9 +142,14 @@ def main(argv: list[str] | None = None) -> None:
     )
     print(f"  {len(dataset)} examples loaded.")
 
+    train_dataset, val_dataset = split_dataset(dataset, args.val_split)
+    if val_dataset is not None:
+        print(f"  {len(train_dataset)} train / {len(val_dataset)} validation examples.")
+
     trainer = Trainer(
         model=model,
-        train_dataset=dataset,
+        train_dataset=train_dataset,
+        val_dataset=val_dataset,
         total_steps=args.total_steps,
         warmup_steps=args.warmup_steps,
         peak_lr=args.peak_lr,
@@ -106,6 +157,8 @@ def main(argv: list[str] | None = None) -> None:
         accumulate_steps=args.accumulate,
         log_every=args.log_every,
         save_every=args.save_every,
+        eval_every=args.eval_every,
+        eval_batches=args.eval_batches,
         checkpoint_dir=args.output,
         device=device,
     )
