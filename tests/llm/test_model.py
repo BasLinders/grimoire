@@ -278,6 +278,35 @@ def test_causal_masking(model: GrimoireTransformer, cfg: TransformerConfig) -> N
     assert torch.allclose(logits_a[0, :4], logits_b[0, :4], atol=1e-5), (
         "Causal masking violated: future tokens affected earlier positions."
     )
+
+
+def test_causal_masking_with_attention_mask(
+    model: GrimoireTransformer, cfg: TransformerConfig
+) -> None:
+    """Causality must hold on the padded-mask path too.
+
+    This exercises the SDPA branch where a padding ``attention_mask`` is
+    present: the causal term must still be baked into the attention bias.
+    Without it, future tokens leak into earlier positions even though the
+    shape stays correct — a silent correctness bug.
+    """
+    model.eval()
+    seq_len = 8
+    ids_a = torch.randint(1, cfg.vocab_size, (1, seq_len))
+    ids_b = ids_a.clone()
+    ids_b[0, 4:] = torch.randint(1, cfg.vocab_size, (4,))  # differ from position 4
+
+    # All-ones mask (no actual padding) forces the masked SDPA branch.
+    mask = torch.ones(1, seq_len)
+
+    with torch.no_grad():
+        logits_a = model(ids_a, attention_mask=mask)
+        logits_b = model(ids_b, attention_mask=mask)
+
+    assert torch.allclose(logits_a[0, :4], logits_b[0, :4], atol=1e-5), (
+        "Causal masking violated on the attention_mask path: "
+        "future tokens affected earlier positions."
+    )
     # Logits at position 4 and beyond may differ (different input).
     assert not torch.allclose(logits_a[0, 4:], logits_b[0, 4:], atol=1e-5), (
         "Sequences that differ from position 4 produced identical logits everywhere."
