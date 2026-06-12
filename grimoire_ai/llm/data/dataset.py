@@ -58,6 +58,8 @@ class TokenizedDataset(Dataset):
         corpus_path: str,
         seq_len: int = 1024,
         stride: Optional[int] = None,
+        start: int = 0,
+        end: Optional[int] = None,
     ) -> None:
         """Initialise the dataset from a binary corpus file.
 
@@ -70,11 +72,19 @@ class TokenizedDataset(Dataset):
             stride: Step between window start positions.  Defaults to
                 ``seq_len // 2`` (50 % overlap).  Use ``stride=seq_len``
                 for non-overlapping windows.
+            start: First token index (inclusive) of the region to draw
+                windows from.  Defaults to 0 (start of file).  Used to carve
+                a contiguous train/validation split out of one corpus file
+                without any window overlap between the two halves.
+            end: One-past-the-last token index (exclusive) of the region.
+                Defaults to ``None`` (end of file).  All windows lie entirely
+                within ``[start, end)``, so a train region ``end=N`` and a
+                val region ``start=N`` share no tokens.
 
         Raises:
             FileNotFoundError: If ``corpus_path`` does not exist.
-            ValueError: If the corpus is too short to form even one window
-                (fewer than ``seq_len + 1`` tokens).
+            ValueError: If the selected region is too short to form even one
+                window (fewer than ``seq_len + 1`` tokens).
         """
         path = Path(corpus_path)
         if not path.exists():
@@ -85,20 +95,26 @@ class TokenizedDataset(Dataset):
 
         # Memory-map the file — no data is read into RAM at this point.
         self._data = np.memmap(str(path), dtype=np.int32, mode="r")
+        self.n_tokens = len(self._data)
 
-        n_tokens = len(self._data)
-        if n_tokens < seq_len + 1:
+        # Clamp the requested region to the bounds of the file.
+        region_start = max(0, start)
+        region_end = self.n_tokens if end is None else min(end, self.n_tokens)
+        region_len = region_end - region_start
+        if region_len < seq_len + 1:
             raise ValueError(
-                f"Corpus has only {n_tokens} tokens, which is too short "
-                f"to form a single window of seq_len={seq_len}. "
+                f"Selected corpus region [{region_start}, {region_end}) has "
+                f"only {max(region_len, 0)} tokens, which is too short to "
+                f"form a single window of seq_len={seq_len}. "
                 f"Need at least {seq_len + 1} tokens."
             )
 
-        # Precompute the start index of every valid window.
+        # Precompute the start index of every valid window within the region.
         # A window starting at offset `i` needs tokens i … i+seq_len (inclusive),
-        # so the last valid start is n_tokens - seq_len - 1.
+        # so the last valid start is region_end - seq_len - 1.  Offsets are
+        # absolute indices into the memmap, so ``__getitem__`` is unchanged.
         self._offsets: list[int] = list(
-            range(0, n_tokens - seq_len, self.stride)
+            range(region_start, region_end - seq_len, self.stride)
         )
 
     def __len__(self) -> int:

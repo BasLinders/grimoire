@@ -117,6 +117,57 @@ def test_dataset_too_short_raises() -> None:
             TokenizedDataset(path, seq_len=8)
 
 
+def test_dataset_range_restricts_windows() -> None:
+    """start/end must restrict windows to the requested token region."""
+    seq_len = 4
+    tokens = list(range(40))
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _write_corpus(tokens, tmp)
+        # Region [20, 40) with non-overlapping windows.
+        ds = TokenizedDataset(path, seq_len=seq_len, stride=seq_len, start=20, end=40)
+        # Offsets are absolute into the file, so the first window starts at 20.
+        first_inp, _ = ds[0]
+        assert first_inp[0].item() == 20
+        # No window may read past end=40.
+        for i in range(len(ds)):
+            inp, tgt = ds[i]
+            assert tgt[-1].item() < 40, "Window read past the region end."
+
+
+def test_dataset_train_val_split_no_token_overlap() -> None:
+    """A start/end split must yield train and val regions that share no tokens."""
+    seq_len = 4
+    tokens = list(range(40))
+    split = 24
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _write_corpus(tokens, tmp)
+        train = TokenizedDataset(path, seq_len=seq_len, stride=seq_len, end=split)
+        val = TokenizedDataset(path, seq_len=seq_len, stride=seq_len, start=split)
+
+    def tokens_in(ds: TokenizedDataset) -> set[int]:
+        seen: set[int] = set()
+        for i in range(len(ds)):
+            inp, tgt = ds[i]
+            seen.update(inp.tolist())
+            seen.update(tgt.tolist())
+        return seen
+
+    train_tokens = tokens_in(train)
+    val_tokens = tokens_in(val)
+    assert max(train_tokens) < split, "Train region leaked tokens past the split."
+    assert min(val_tokens) >= split, "Val region leaked tokens before the split."
+    assert train_tokens.isdisjoint(val_tokens), "Train and val regions overlap."
+
+
+def test_dataset_range_too_short_raises() -> None:
+    """A selected region shorter than seq_len+1 must raise ValueError."""
+    tokens = list(range(40))
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _write_corpus(tokens, tmp)
+        with pytest.raises(ValueError, match="too short"):
+            TokenizedDataset(path, seq_len=8, start=35, end=40)
+
+
 # ---------------------------------------------------------------------------
 # PaddingCollator
 # ---------------------------------------------------------------------------
