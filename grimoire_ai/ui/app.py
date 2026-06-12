@@ -77,8 +77,10 @@ def _fmt_elapsed(seconds: float) -> str:
 def _stream_training(train_fn) -> Generator[str, None, None]:
     """Run a training function in a background thread and stream loss lines.
 
-    ``train_fn`` receives ``on_log``, ``on_save``, and ``on_done`` callbacks.
-    Wraps ``_stream_task`` with a training-specific message formatter.
+    ``train_fn`` receives ``on_log``, ``on_save``, ``on_done``, and ``on_eval``
+    callbacks.  Wraps ``_stream_task`` with a training-specific message
+    formatter.  ``on_eval`` only fires when the run was given a validation set;
+    runs without one simply never call it.
     """
     def _wrapped(on_progress):
         def on_log(step: int, loss: float, lr: float, elapsed: float) -> None:
@@ -90,7 +92,10 @@ def _stream_training(train_fn) -> Generator[str, None, None]:
         def on_done(step: int, elapsed: float) -> None:
             on_progress(f"\nTraining complete — {step} steps in {_fmt_elapsed(elapsed)}")
 
-        train_fn(on_log, on_save, on_done)
+        def on_eval(step: int, val_loss: float, elapsed: float) -> None:
+            on_progress(f"  ◆ eval  step {step:>6} | val loss {val_loss:.4f}  [{_fmt_elapsed(elapsed)}]")
+
+        train_fn(on_log, on_save, on_done, on_eval)
 
     yield from _stream_task(_wrapped)
 
@@ -160,24 +165,33 @@ def run_pretrain(
     accumulate_steps: int,
     log_every: int,
     save_every: int,
+    val_split: float,
+    eval_every: int,
+    eval_batches: int,
     d_model: int,
     n_layers: int,
     n_heads: int,
     n_kv_heads: int,
     d_ff: int,
 ) -> Generator[str, None, None]:
-    """Launch a pre-training run and stream log output."""
+    """Launch a pre-training run and stream log output.
+
+    When ``val_split`` is greater than 0, the tail of the corpus is held out
+    as a validation set and a validation loss is logged every ``eval_every``
+    steps (averaged over at most ``eval_batches`` batches).  ``val_split = 0``
+    disables evaluation and the run behaves exactly as before.
+    """
     import torch
-    from grimoire_ai.llm.data.dataset import TokenizedDataset
     from grimoire_ai.llm.model.config import TransformerConfig
     from grimoire_ai.llm.model.transformer import GrimoireTransformer
+    from grimoire_ai.llm.training.train import _build_datasets
     from grimoire_ai.llm.training.trainer import Trainer
 
     stop_event = threading.Event()
     _stop_events["pretrain"] = stop_event
     resume = resume_from.strip() or None
 
-    def _train(on_log, on_save, on_done):
+    def _train(on_log, on_save, on_done, on_eval):
         device = "cuda" if torch.cuda.is_available() else "cpu"
         model_config = TransformerConfig(
             d_model=int(d_model),
@@ -187,10 +201,16 @@ def run_pretrain(
             d_ff=int(d_ff),
         )
         model = GrimoireTransformer(model_config)
-        dataset = TokenizedDataset(corpus_path, seq_len=model_config.max_seq_len)
+        train_dataset, val_dataset = _build_datasets(
+            corpus_path=corpus_path,
+            val_corpus_path=None,
+            val_split=float(val_split),
+            seq_len=model_config.max_seq_len,
+        )
         Trainer(
             model=model,
-            train_dataset=dataset,
+            train_dataset=train_dataset,
+            val_dataset=val_dataset,
             total_steps=total_steps,
             warmup_steps=warmup_steps,
             peak_lr=peak_lr,
@@ -198,11 +218,14 @@ def run_pretrain(
             accumulate_steps=accumulate_steps,
             log_every=log_every,
             save_every=save_every,
+            eval_every=int(eval_every),
+            eval_batches=int(eval_batches),
             checkpoint_dir=checkpoint_dir,
             device=device,
             on_log=on_log,
             on_save=on_save,
             on_done=on_done,
+            on_eval=on_eval,
             stop_event=stop_event,
         ).train(resume_from=resume)
 
@@ -248,7 +271,9 @@ def run_finetune(
     _stop_events["finetune"] = stop_event
     resume = resume_from.strip() or None
 
-    def _train(on_log, on_save, on_done):
+    # on_eval is accepted for signature compatibility with _stream_training but
+    # unused here: fine-tuning has no held-out validation split (yet).
+    def _train(on_log, on_save, on_done, on_eval):
         device = "cuda" if torch.cuda.is_available() else "cpu"
         ckpt = load_checkpoint(pretrain_ckpt)
         config = TransformerConfig.from_dict(ckpt["config"])
@@ -1210,6 +1235,21 @@ def build_app() -> gr.Blocks:
                     info="How often a snapshot is written to disk. More checkpoints = more recovery points but more disk space.",
                 )
 
+            # ---- Validation -------------------------------------------------
+            with gr.Row():
+                pt_val_split = gr.Number(
+                    label="Validation split", value=0.0,
+                    info="Fraction of the corpus tail held out for validation (e.g. 0.01 = 1%). 0 disables eval. The split is by token, so train and val share no text.",
+                )
+                pt_eval_every = gr.Number(
+                    label="Eval every N steps", value=1000, precision=0,
+                    info="How often to compute validation loss. Watch train vs val: both falling = healthy; val flattening/rising while train falls = overfitting.",
+                )
+                pt_eval_batches = gr.Number(
+                    label="Eval batches", value=50, precision=0,
+                    info="Max validation batches averaged per eval pass. 0 uses the whole held-out set; a small cap keeps eval fast.",
+                )
+
             # ---- Model architecture -------------------------------------
             with gr.Accordion("Model architecture", open=False):
                 gr.Markdown(
@@ -1253,6 +1293,7 @@ def build_app() -> gr.Blocks:
                     pt_corpus, pt_ckpt_dir, pt_resume,
                     pt_steps, pt_warmup, pt_lr,
                     pt_batch, pt_accum, pt_log, pt_save,
+                    pt_val_split, pt_eval_every, pt_eval_batches,
                     pt_d_model, pt_n_layers, pt_n_heads, pt_n_kv_heads, pt_d_ff,
                 ],
                 outputs=[pt_log_box, pt_run_btn, pt_stop_btn],
