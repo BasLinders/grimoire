@@ -1,5 +1,4 @@
-import requests
-import cloudscraper
+from curl_cffi import requests
 import mwparserfromhell
 import re
 import os
@@ -29,17 +28,9 @@ def get_dandwiki_page(page_title):
         "rvslots": "main"
     }
     
-    scraper = cloudscraper.create_scraper(
-        browser={
-            'browser': 'chrome',
-            'platform': 'windows',
-            'desktop': True
-        }
-    )
-    
     try:
-        response = scraper.get(url, params=params)
-        response.raise_for_status()
+        response = requests.get(url, params=params, impersonate="chrome")
+        response.raise_for_status() 
         
         data = response.json()
         pages = data.get("query", {}).get("pages", {})
