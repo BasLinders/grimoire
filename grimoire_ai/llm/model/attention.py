@@ -48,6 +48,7 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from grimoire_ai.llm.model.config import TransformerConfig
 
@@ -264,25 +265,30 @@ class GroupedQueryAttention(nn.Module):
         # (use_cache=True) because SDPA's is_causal flag assumes full sequences.
         use_sdpa = past_kv is None and hasattr(F, "scaled_dot_product_attention")
         if use_sdpa:
-            # Build an additive attention bias from the padding mask so SDPA
-            # handles both causal masking and padding in one fused kernel.
-            attn_bias: Optional[torch.Tensor] = None
+            dropout_p = self._dropout.p if self.training else 0.0
             if attention_mask is not None:
-                # (batch, 1, 1, full_seq) additive mask: 0 for valid, -inf for pad
-                attn_bias = torch.zeros(
-                    batch, 1, seq_len, full_seq,
-                    dtype=q.dtype, device=q.device,
+                # SDPA cannot combine is_causal=True with a padding mask, so
+                # bake BOTH the causal mask and the padding mask into a single
+                # additive bias.  Omitting the causal term here would let the
+                # model attend to future tokens — a silent correctness bug.
+                causal = self._mask[past_len : past_len + seq_len, :full_seq]
+                attn_bias = (
+                    causal.to(q.dtype)
+                    .unsqueeze(0).unsqueeze(0)
+                    .expand(batch, 1, seq_len, full_seq)
+                    .clone()
                 )
                 attn_bias = attn_bias.masked_fill(
                     attention_mask.unsqueeze(1).unsqueeze(2) == 0, float("-inf")
                 )
-            dropout_p = self._dropout.p if self.training else 0.0
-            out = F.scaled_dot_product_attention(
-                q, k, v,
-                attn_mask=attn_bias,
-                dropout_p=dropout_p,
-                is_causal=(attn_bias is None),
-            )
+                out = F.scaled_dot_product_attention(
+                    q, k, v, attn_mask=attn_bias, dropout_p=dropout_p,
+                )
+            else:
+                # No padding mask: let SDPA apply the causal mask internally.
+                out = F.scaled_dot_product_attention(
+                    q, k, v, dropout_p=dropout_p, is_causal=True,
+                )
         else:
             scale = math.sqrt(self.head_dim)
             scores = torch.matmul(q, k.transpose(-2, -1)) / scale

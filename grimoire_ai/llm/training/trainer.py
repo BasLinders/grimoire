@@ -176,8 +176,17 @@ class Trainer:
         # torch.compile() traces the model graph and emits optimised CUDA
         # kernels (operator fusion, reduced memory traffic).  Falls back
         # silently on CPU or if compilation is unavailable.
+        #
+        # IMPORTANT: the compiled wrapper is kept as a SEPARATE handle used
+        # only for the forward pass.  ``self.model`` stays the raw module so
+        # that ``state_dict()`` / ``load_state_dict()`` keys are NOT prefixed
+        # with ``_orig_mod.`` — otherwise checkpoints would be incompatible
+        # with the inference engine and with non-compiled resume runs.
+        # torch.compile shares the underlying parameters, so loading into the
+        # raw module also updates the weights the compiled handle executes.
+        self._forward_model = self.model
         if device == "cuda" and hasattr(torch, "compile"):
-            self.model = torch.compile(self.model)
+            self._forward_model = torch.compile(self.model)
 
         # GradScaler is a no-op on CPU but we instantiate it uniformly
         # to avoid branching in the training loop.
@@ -268,7 +277,7 @@ class Trainer:
         t_start = time.time()
         t0 = t_start
 
-        compiled = self.device == "cuda" and hasattr(torch, "compile")
+        compiled = self._forward_model is not self.model
         print(
             f"Training on {self.device.upper()} | "
             f"AMP={'on' if self._use_amp else 'off'} | "
@@ -301,7 +310,7 @@ class Trainer:
                 dtype=torch.float16,
                 enabled=self._use_amp,
             ):
-                logits = self.model(input_ids, attention_mask=attention_mask)
+                logits = self._forward_model(input_ids, attention_mask=attention_mask)
                 # logits: (batch, seq_len, vocab_size) → flatten for cross_entropy
                 loss = F.cross_entropy(
                     logits.view(-1, self.config.vocab_size),
