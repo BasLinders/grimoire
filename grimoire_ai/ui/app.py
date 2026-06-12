@@ -1438,8 +1438,8 @@ def build_app() -> gr.Blocks:
                     info="Must match what you use in Pre-train.")
                 sc_accum  = gr.Number(label="Gradient accum.",   value=8,   precision=0,
                     info="Must match what you use in Pre-train.")
-                sc_seq    = gr.Number(label="Sequence length",   value=512, precision=0,
-                    info="Context window — 512 is the model default.")
+                sc_seq    = gr.Number(label="Sequence length",   value=1024, precision=0,
+                    info="Context window. Match your training run — pre-training uses max_seq_len=1024. A smaller value here under-counts tokens-per-step and inflates the pass estimate.")
                 sc_steps  = gr.Number(label="Planned total steps", value=20_000, precision=0,
                     info="The total_steps value you intend to use. Adjust to see how it changes the estimates.")
             sc_run_btn = gr.Button("Calculate", variant="primary")
