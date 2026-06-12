@@ -87,6 +87,13 @@ class Trainer:
         _on_log: Optional callback invoked at each log point with
             ``(step, avg_loss, lr)``.  Used by the training UI to stream
             live progress without polling stdout.
+        _val_loader: ``DataLoader`` over the validation set, or ``None`` when
+            no ``val_dataset`` was supplied (eval disabled).
+        _eval_every: Run a validation pass every this many optimizer steps.
+        _eval_batches: Cap the number of validation batches per eval pass
+            (0 = use the entire validation set).
+        _on_eval: Optional callback invoked after each validation pass with
+            ``(step, val_loss, elapsed)``.
     """
 
     def __init__(
@@ -103,9 +110,13 @@ class Trainer:
         checkpoint_dir: str = "checkpoints",
         device: Optional[str] = None,
         num_workers: int = 0,
+        val_dataset: Optional[Dataset] = None,
+        eval_every: int = 0,
+        eval_batches: int = 0,
         on_log: Optional[Callable[[int, float, float], None]] = None,
         on_save: Optional[Callable[[int, float], None]] = None,
         on_done: Optional[Callable[[int, float], None]] = None,
+        on_eval: Optional[Callable[[int, float, float], None]] = None,
         stop_event: Optional[threading.Event] = None,
     ) -> None:
         """Set up the trainer, optimizer, scheduler, and data loader.
@@ -131,6 +142,19 @@ class Trainer:
             device: ``"cuda"``, ``"cpu"``, or ``None`` (auto-detect).
             num_workers: Number of DataLoader worker processes.  Keep at 0
                 on Windows to avoid multiprocessing issues.
+            val_dataset: Optional held-out ``Dataset`` (same item format as
+                ``train_dataset``).  When provided, a validation loss is
+                computed periodically so train/val divergence (overfitting)
+                is visible.  When ``None`` (the default) no evaluation runs
+                and behaviour is unchanged.
+            eval_every: Run a validation pass every this many optimizer
+                steps.  ``0`` (the default) falls back to ``save_every`` so
+                eval lines up with checkpoints.  Ignored if ``val_dataset``
+                is ``None``.
+            eval_batches: Maximum number of validation batches to average per
+                eval pass.  ``0`` (the default) uses the entire validation
+                set.  A small cap (e.g. 50) keeps eval cheap on large
+                held-out sets while still giving a stable estimate.
             on_log: Optional callable invoked at each log interval with
                 ``(step: int, avg_loss: float, lr: float)``.  When ``None``
                 (the default) only stdout is used — existing behaviour is
@@ -141,6 +165,10 @@ class Trainer:
                 ``elapsed`` is total seconds since training started.
             on_done: Optional callable invoked once when training finishes,
                 with ``(total_steps: int, elapsed: float)``.
+            on_eval: Optional callable invoked after each validation pass,
+                with ``(step: int, val_loss: float, elapsed: float)`` where
+                ``elapsed`` is total seconds since training started.  Used by
+                the training UI to plot a validation curve alongside train.
         """
         self.config = model.config
         self.peak_lr = peak_lr
@@ -154,9 +182,13 @@ class Trainer:
         self.checkpoint_dir = Path(checkpoint_dir)
         self._step = 0
         self._last_avg_loss: float = 0.0
+        self._last_val_loss: float = float("nan")
+        self._eval_every = eval_every if eval_every > 0 else save_every
+        self._eval_batches = eval_batches
         self._on_log = on_log
         self._on_save = on_save
         self._on_done = on_done
+        self._on_eval = on_eval
         self._stop_event = stop_event
 
         # --- Device setup -----------------------------------------------
@@ -247,6 +279,20 @@ class Trainer:
             pin_memory=(device == "cuda"),
             drop_last=True,
         )
+
+        # Validation loader (optional).  Not shuffled, so the eval estimate is
+        # over a fixed slice of held-out data and comparable across steps.
+        self._val_loader: Optional[DataLoader] = None
+        if val_dataset is not None:
+            self._val_loader = DataLoader(
+                val_dataset,
+                batch_size=batch_size,
+                shuffle=False,
+                collate_fn=PaddingCollator(pad_id=PAD_ID),
+                num_workers=num_workers,
+                pin_memory=(device == "cuda"),
+                drop_last=False,
+            )
 
     # ------------------------------------------------------------------
     # Training loop
@@ -381,6 +427,23 @@ class Trainer:
                     if self._on_save is not None:
                         self._on_save(self._step, elapsed_total)
 
+                # --- Evaluation ----------------------------------------
+                if self._val_loader is not None and self._step % self._eval_every == 0:
+                    val_loss = self.evaluate()
+                    self._last_val_loss = val_loss
+                    elapsed_total = time.time() - t_start
+                    print(
+                        f"  → eval step {self._step:>6} | "
+                        f"val loss {val_loss:.4f}"
+                    )
+                    if self._on_eval is not None:
+                        self._on_eval(self._step, val_loss, elapsed_total)
+                    # evaluate() flips the model to eval mode; restore train.
+                    self.model.train()
+                    # Restart the running-loss interval timer so the eval pass
+                    # is not counted as training time in the next log line.
+                    t0 = time.time()
+
         elapsed_total = time.time() - t_start
         stopped_early = self._stop_event is not None and self._stop_event.is_set()
         if stopped_early:
@@ -389,6 +452,69 @@ class Trainer:
             print(f"\nTraining complete. Final step: {self._step} | total time: {elapsed_total:.1f}s")
         if self._on_done is not None:
             self._on_done(self._step, elapsed_total)
+
+    # ------------------------------------------------------------------
+    # Evaluation
+    # ------------------------------------------------------------------
+
+    @torch.no_grad()
+    def evaluate(self) -> float:
+        """Compute the mean cross-entropy loss over the validation set.
+
+        Runs the model in eval mode (dropout disabled) with no gradient
+        tracking.  AMP autocast is applied on CUDA exactly as in training so
+        the number is comparable to the training loss.  Padding positions are
+        ignored via ``ignore_index=PAD_ID``.
+
+        The raw (uncompiled) module is used for the forward pass to avoid a
+        separate ``torch.compile`` recompilation for the eval-mode graph; it
+        shares parameters with the compiled training handle, so the weights
+        are identical.
+
+        Only the first ``eval_batches`` validation batches are averaged when
+        that cap is set (0 = the whole validation set).  Because the loader is
+        not shuffled, the same slice is evaluated each call, making successive
+        validation losses directly comparable.
+
+        Returns:
+            The mean per-batch validation loss as a float, or ``nan`` if no
+            validation set was configured.
+        """
+        if self._val_loader is None:
+            return float("nan")
+
+        was_training = self.model.training
+        self.model.eval()
+
+        total_loss = 0.0
+        n_batches = 0
+        non_blocking = self.device == "cuda"
+        for input_ids, target_ids, attention_mask in self._val_loader:
+            input_ids      = input_ids.to(self.device, non_blocking=non_blocking)
+            target_ids     = target_ids.to(self.device, non_blocking=non_blocking)
+            attention_mask = attention_mask.to(self.device, non_blocking=non_blocking)
+
+            with torch.autocast(
+                device_type=self.device,
+                dtype=torch.float16,
+                enabled=self._use_amp,
+            ):
+                logits = self.model(input_ids, attention_mask=attention_mask)
+                loss = F.cross_entropy(
+                    logits.view(-1, self.config.vocab_size),
+                    target_ids.view(-1),
+                    ignore_index=PAD_ID,
+                )
+
+            total_loss += loss.item()
+            n_batches  += 1
+            if self._eval_batches and n_batches >= self._eval_batches:
+                break
+
+        if was_training:
+            self.model.train()
+
+        return total_loss / max(n_batches, 1)
 
     # ------------------------------------------------------------------
     # Resume helper

@@ -8,6 +8,7 @@ Gate criteria:
 - LR schedule: LR is 0 at step 0, reaches peak at warmup_steps, decays after.
 """
 
+import math
 import tempfile
 from pathlib import Path
 
@@ -273,6 +274,103 @@ def test_on_log_none_does_not_raise() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         trainer, _ = _make_trainer(tmp, total_steps=2)
         trainer.train()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Validation / evaluation
+# ---------------------------------------------------------------------------
+
+def _make_eval_trainer(tmp: str, **overrides):
+    """Build a tiny CPU trainer with a validation set for eval tests."""
+    cfg = _tiny_config()
+    model = GrimoireTransformer(cfg)
+    corpus_path = _write_corpus(500, cfg.vocab_size, tmp)
+    train_ds = TokenizedDataset(corpus_path, seq_len=cfg.max_seq_len, stride=cfg.max_seq_len)
+    val_ds = TokenizedDataset(corpus_path, seq_len=cfg.max_seq_len, stride=cfg.max_seq_len)
+    kwargs = dict(
+        model=model,
+        train_dataset=train_ds,
+        val_dataset=val_ds,
+        total_steps=10,
+        warmup_steps=2,
+        peak_lr=1e-3,
+        batch_size=2,
+        accumulate_steps=1,
+        log_every=999,
+        save_every=999,
+        checkpoint_dir=tmp,
+        device="cpu",
+    )
+    kwargs.update(overrides)
+    return Trainer(**kwargs), model
+
+
+def test_evaluate_returns_finite_loss() -> None:
+    """evaluate() must return a finite, positive loss when a val set is set."""
+    with tempfile.TemporaryDirectory() as tmp:
+        trainer, _ = _make_eval_trainer(tmp)
+        val_loss = trainer.evaluate()
+    assert math.isfinite(val_loss)
+    assert val_loss > 0
+
+
+def test_evaluate_without_val_set_returns_nan() -> None:
+    """evaluate() must return nan when no validation set was configured."""
+    with tempfile.TemporaryDirectory() as tmp:
+        trainer, _ = _make_trainer(tmp, total_steps=2)
+        assert math.isnan(trainer.evaluate())
+
+
+def test_evaluate_restores_training_mode() -> None:
+    """evaluate() must leave the model in training mode if it started there."""
+    with tempfile.TemporaryDirectory() as tmp:
+        trainer, model = _make_eval_trainer(tmp)
+        model.train()
+        trainer.evaluate()
+        assert model.training, "evaluate() should restore train mode."
+
+
+def test_on_eval_callback_fires() -> None:
+    """on_eval must fire at each eval interval with a finite val loss."""
+    eval_calls: list[tuple[int, float, float]] = []
+
+    def capture(step: int, val_loss: float, elapsed: float) -> None:
+        eval_calls.append((step, val_loss, elapsed))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        trainer, _ = _make_eval_trainer(tmp, eval_every=5, on_eval=capture)
+        trainer.train()
+
+    # eval_every=5, total_steps=10 → expect eval at step 5 and 10.
+    assert [c[0] for c in eval_calls] == [5, 10]
+    for step, val_loss, elapsed in eval_calls:
+        assert math.isfinite(val_loss) and val_loss > 0
+        assert elapsed >= 0
+
+
+def test_eval_every_defaults_to_save_every() -> None:
+    """When eval_every is unset (0), eval should fall back to save_every."""
+    with tempfile.TemporaryDirectory() as tmp:
+        trainer, _ = _make_eval_trainer(tmp, save_every=999)
+        assert trainer._eval_every == 999
+
+
+def test_eval_batches_caps_validation_passes() -> None:
+    """eval_batches must limit how many val batches are averaged."""
+    with tempfile.TemporaryDirectory() as tmp:
+        trainer, _ = _make_eval_trainer(tmp, eval_batches=1)
+        # With a cap of 1 the call must still produce a finite loss.
+        assert math.isfinite(trainer.evaluate())
+
+
+def test_no_eval_without_val_dataset_does_not_raise() -> None:
+    """Training without a val_dataset must run with no eval and no error."""
+    on_eval_calls: list = []
+    with tempfile.TemporaryDirectory() as tmp:
+        trainer, _ = _make_trainer(tmp, total_steps=2)
+        trainer._on_eval = lambda *a: on_eval_calls.append(a)
+        trainer.train()  # must not raise
+    assert on_eval_calls == [], "on_eval must not fire without a val_dataset."
 
 
 def test_lr_schedule_warmup_and_decay() -> None:
