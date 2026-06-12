@@ -186,6 +186,8 @@ class Trainer:
         # raw module also updates the weights the compiled handle executes.
         self._forward_model = self.model
         if device == "cuda" and hasattr(torch, "compile"):
+            if hasattr(torch, "_dynamo"):
+                torch._dynamo.config.suppress_errors = True
             self._forward_model = torch.compile(self.model)
 
         # GradScaler is a no-op on CPU but we instantiate it uniformly
