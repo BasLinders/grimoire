@@ -3,6 +3,7 @@ import mwparserfromhell
 import re
 import os
 import time
+import random
 
 def get_dandwiki_page(page_title):
     """
@@ -29,7 +30,7 @@ def get_dandwiki_page(page_title):
         }
         
         # Add a delay to be polite to the server
-        time.sleep(2)
+        time.sleep(random.uniform(2.0, 5.0))
         
         # Use impersonate="chrome126" to target a modern browser fingerprint
         response = requests.get(url, params=params, headers=headers, impersonate="chrome110")
