@@ -90,7 +90,7 @@ def load_checkpoint(path: str) -> dict:
         FileNotFoundError: If ``path`` does not exist.
     """
     p = Path(path)
-    if not p.exists():
+    if not path or not p.is_file():
         raise FileNotFoundError(f"Checkpoint not found: {path}")
     # weights_only=False is required because checkpoints contain optimizer
     # state dicts which include Python objects beyond plain tensors.
