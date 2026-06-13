@@ -496,6 +496,33 @@ def _toggle_ingest_inputs(mode: str):
 _AGENTS_JSON = "agents.json"
 
 
+def _semantic_cache_path(corpus_dirs: list[str], checkpoint: str) -> Optional[Path]:
+    """Return the .pt cache path for this corpus/checkpoint pair, or None."""
+    if not corpus_dirs:
+        return None
+    first_dir = Path(corpus_dirs[0])
+    if not first_dir.is_dir():
+        return None
+    return first_dir / ".cache" / f"semantic_{Path(checkpoint).stem}.pt"
+
+
+def _cache_is_fresh(cache_path: Path, corpus_dirs: list[str], checkpoint: str) -> bool:
+    """Return True when *cache_path* is newer than all corpus .txt files and the checkpoint."""
+    if not cache_path.is_file():
+        return False
+    cache_mtime = cache_path.stat().st_mtime
+    ckpt = Path(checkpoint)
+    if ckpt.is_file() and ckpt.stat().st_mtime > cache_mtime:
+        return False
+    for corpus_dir in corpus_dirs:
+        d = Path(corpus_dir)
+        if d.is_dir():
+            for f in d.glob("*.txt"):
+                if f.stat().st_mtime > cache_mtime:
+                    return False
+    return True
+
+
 def _load_agent_names() -> list[str]:
     """Return display names from agents.json, or [] if the file is missing."""
     try:
@@ -532,11 +559,6 @@ def load_agent(
     engine.retrieval_threshold = retrieval_threshold
 
     if not use_lexical and engine.corpus is not None:
-        # Collect the raw text already in the lexical corpus index for
-        # re-embedding.  AgentRegistry pre-loads a GrimoireCorpus whose index
-        # holds excerpts — we can reconstruct document text from excerpts well
-        # enough to build passage-level embeddings.  For a cleaner path we
-        # read the original .txt files from the agent's corpus_dirs instead.
         from pathlib import Path as _Path
         documents: list[tuple[str, str]] = []
         for corpus_dir in cfg.corpus_dirs or []:
@@ -555,7 +577,19 @@ def load_agent(
                 retriever.index()
                 engine.corpus = retriever
             else:
-                engine.build_semantic_corpus(documents)
+                sem_cache = _semantic_cache_path(cfg.corpus_dirs or [], cfg.checkpoint)
+                if sem_cache and _cache_is_fresh(sem_cache, cfg.corpus_dirs or [], cfg.checkpoint):
+                    try:
+                        engine.corpus = SemanticRetriever.from_cache(sem_cache, embed_fn=engine.embed)
+                    except Exception:
+                        sem_cache = None  # corrupt cache → rebuild below
+                if engine.corpus is None or not isinstance(engine.corpus, SemanticRetriever) or engine.corpus.size == 0:
+                    retriever = engine.build_semantic_corpus(documents)
+                    if sem_cache:
+                        try:
+                            retriever.save_cache(sem_cache)
+                        except Exception:
+                            pass
 
     state = ConversationState()
     return (
@@ -642,8 +676,24 @@ def load_engine(
                 f"from {len(documents)} file(s)"
             )
         else:
-            # Default: model's own decoder embeddings.
-            retriever = engine.build_semantic_corpus(documents)
+            # Default: model's own decoder embeddings — use cache when available.
+            sem_cache = _semantic_cache_path([corpus_dir], checkpoint_path)
+            if sem_cache and _cache_is_fresh(sem_cache, [corpus_dir], checkpoint_path):
+                try:
+                    retriever = SemanticRetriever.from_cache(sem_cache, embed_fn=engine.embed)
+                    engine.corpus = retriever
+                    engine.retrieval_threshold = retrieval_threshold
+                except Exception:
+                    sem_cache = None
+            if not isinstance(engine.corpus, SemanticRetriever):
+                retriever = engine.build_semantic_corpus(documents)
+                if sem_cache:
+                    try:
+                        retriever.save_cache(sem_cache)
+                    except Exception:
+                        pass
+            else:
+                retriever = engine.corpus
             status_suffix = (
                 f" | model embeddings: {retriever.size} passage(s) "
                 f"from {len(documents)} file(s)"

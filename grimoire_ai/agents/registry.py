@@ -105,12 +105,14 @@ class AgentRegistry:
         """Instantiate and return an ``InferenceEngine`` for *key*.
 
         Loads the corpus from all ``corpus_dirs`` if present.  Paths are
-        resolved relative to the registry file's directory.
+        resolved relative to the registry file's directory.  The lexical
+        n-gram index is cached to ``{corpus_dir}/.cache/lexical.pkl`` and
+        reused on subsequent loads as long as the source ``.txt`` files have
+        not changed.
 
         Returns:
             ``InferenceEngine`` ready for inference.
         """
-        from grimoire_ai.corpus.corpus import GrimoireCorpus
         from grimoire_ai.llm.inference.engine import InferenceEngine
         from grimoire_ai.llm.inference.sampler import GenerationConfig
 
@@ -122,16 +124,15 @@ class AgentRegistry:
 
         corpus: Optional[GrimoireCorpus] = None
         if cfg.corpus_dirs:
-            corpus = GrimoireCorpus()
+            txt_files: list[Path] = []
             for corpus_dir in cfg.corpus_dirs:
                 p = self._resolve(corpus_dir)
-                if not p.exists():
-                    continue
-                for txt_file in sorted(p.glob("*.txt")):
-                    corpus.add_text(
-                        txt_file.read_text(encoding="utf-8", errors="replace"),
-                        source=txt_file.stem,
-                    )
+                if p.exists():
+                    txt_files.extend(sorted(p.glob("*.txt")))
+
+            if txt_files:
+                cache_path = txt_files[0].parent / ".cache" / "lexical.pkl"
+                corpus = self._build_corpus_cached(txt_files, cache_path)
 
         gen_config = GenerationConfig(**cfg.gen_config) if cfg.gen_config else None
 
@@ -141,6 +142,34 @@ class AgentRegistry:
             corpus=corpus,
             gen_config=gen_config,
         )
+
+    @staticmethod
+    def _build_corpus_cached(txt_files: list[Path], cache_path: Path) -> "GrimoireCorpus":
+        """Return a GrimoireCorpus from cache if fresh; otherwise build and cache it."""
+        import pickle
+        from grimoire_ai.corpus.corpus import GrimoireCorpus
+
+        newest_src = max(f.stat().st_mtime for f in txt_files)
+        if cache_path.is_file() and cache_path.stat().st_mtime >= newest_src:
+            try:
+                with cache_path.open("rb") as fh:
+                    return pickle.load(fh)
+            except Exception:
+                pass  # corrupt or stale pickle → rebuild below
+
+        corpus = GrimoireCorpus()
+        for txt_file in txt_files:
+            corpus.add_text(
+                txt_file.read_text(encoding="utf-8", errors="replace"),
+                source=txt_file.stem,
+            )
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with cache_path.open("wb") as fh:
+                pickle.dump(corpus, fh, protocol=pickle.HIGHEST_PROTOCOL)
+        except Exception:
+            pass  # non-fatal if write fails
+        return corpus
 
     # ------------------------------------------------------------------
     # Internal

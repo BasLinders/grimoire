@@ -280,6 +280,28 @@ class SemanticRetriever:
             )
         return results
 
+    def save_cache(self, path) -> None:
+        """Save indexed vectors, excerpts, and sources to a .pt cache file."""
+        from pathlib import Path
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({
+            "vectors": self._vectors,
+            "excerpts": self._excerpts,
+            "sources": self._sources,
+            "chunk_chars": self._chunk_chars,
+        }, str(p))
+
+    @classmethod
+    def from_cache(cls, path, embed_fn: Callable[[list[str]], torch.Tensor]) -> "SemanticRetriever":
+        """Restore a retriever from a file written by ``save_cache``."""
+        data = torch.load(str(path), map_location="cpu", weights_only=False)
+        obj = cls(embed_fn=embed_fn, chunk_chars=data["chunk_chars"])
+        obj._vectors = data["vectors"]
+        obj._excerpts = data["excerpts"]
+        obj._sources = data["sources"]
+        return obj
+
     @property
     def size(self) -> int:
         """Number of passages currently indexed (excludes the pending queue)."""
