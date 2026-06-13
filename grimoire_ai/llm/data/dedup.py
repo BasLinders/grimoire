@@ -37,9 +37,7 @@ from typing import Sequence
 
 import numpy as np
 
-# A large prime modulus for the universal hash family used by MinHash.
-_MERSENNE_PRIME = (1 << 61) - 1
-_MAX_HASH = (1 << 32) - 1
+_MAX_HASH = np.uint64((1 << 32) - 1)
 
 _WORD_RE = re.compile(r"\w+")
 
@@ -87,12 +85,13 @@ def _signature_matrix(
         gets an all-``_MAX_HASH`` row so it never matches another document.
     """
     rng = np.random.default_rng(seed)
-    # Bound the coefficients so the universal-hash product cannot overflow
-    # uint64: shingle hashes are < 2**32 and a < 2**31, so a*h < 2**63, and
-    # a*h + b stays below 2**64 before the modulo. (Drawing a/b up to the full
-    # Mersenne prime would let a*h wrap around and corrupt the hash.)
-    a = rng.integers(1, 1 << 31, size=num_perm, dtype=np.uint64)
-    b = rng.integers(0, 1 << 31, size=num_perm, dtype=np.uint64)
+    # Multiplicative hashing mod 2^32: f(x) = (a*x + b) & 0xFFFFFFFF.
+    # a must be ODD so that x → ax mod 2^32 is a bijection on Z_{2^32},
+    # giving the min-wise independence that MinHash requires.
+    # With a, b, x all < 2^32: a*x + b ≤ (2^32-1)^2 + (2^32-1) = 2^64 - 2^32,
+    # which fits in uint64 without overflow — no Mersenne tricks needed.
+    a = rng.integers(0, 1 << 32, size=num_perm, dtype=np.uint64) | np.uint64(1)
+    b = rng.integers(0, 1 << 32, size=num_perm, dtype=np.uint64)
 
     n = len(shingle_sets)
     sig = np.full((n, num_perm), _MAX_HASH, dtype=np.uint64)
@@ -100,9 +99,8 @@ def _signature_matrix(
         if not shingles:
             continue
         h = np.fromiter(shingles, dtype=np.uint64, count=len(shingles))
-        # Universal hashing: (a*h + b) mod prime, one column per permutation.
-        # Shape (num_perm, n_shingles); min over shingles gives the signature.
-        hashed = (np.outer(a, h) + b[:, None]) % _MERSENNE_PRIME
+        # Shape (num_perm, n_shingles); AND keeps only the low 32 bits (≡ mod 2^32).
+        hashed = (np.outer(a, h) + b[:, None]) & _MAX_HASH
         sig[i] = hashed.min(axis=1)
     return sig
 
