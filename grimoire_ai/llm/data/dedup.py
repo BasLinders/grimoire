@@ -83,8 +83,12 @@ def _signature_matrix(
         gets an all-``_MAX_HASH`` row so it never matches another document.
     """
     rng = np.random.default_rng(seed)
-    a = rng.integers(1, _MERSENNE_PRIME, size=num_perm, dtype=np.uint64)
-    b = rng.integers(0, _MERSENNE_PRIME, size=num_perm, dtype=np.uint64)
+    # Bound the coefficients so the universal-hash product cannot overflow
+    # uint64: shingle hashes are < 2**32 and a < 2**31, so a*h < 2**63, and
+    # a*h + b stays below 2**64 before the modulo. (Drawing a/b up to the full
+    # Mersenne prime would let a*h wrap around and corrupt the hash.)
+    a = rng.integers(1, 1 << 31, size=num_perm, dtype=np.uint64)
+    b = rng.integers(0, 1 << 31, size=num_perm, dtype=np.uint64)
 
     n = len(shingle_sets)
     sig = np.full((n, num_perm), _MAX_HASH, dtype=np.uint64)
