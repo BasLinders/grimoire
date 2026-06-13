@@ -31,6 +31,7 @@ deferred to Phase 5 as it requires non-trivial changes to
 ``GroupedQueryAttention``.
 """
 
+import math
 from dataclasses import dataclass, field
 
 import torch
@@ -50,7 +51,8 @@ class GenerationConfig:
         temperature: Softmax temperature.  Values below 1.0 make the
             distribution sharper (more greedy); values above 1.0 make it
             flatter (more random).  Set to a very small value (e.g. 1e-8)
-            for deterministic greedy decoding.
+            for deterministic greedy decoding.  Ignored when
+            ``adaptive_temperature`` is ``True``.
         top_k: If positive, only the ``top_k`` highest-probability tokens are
             kept before sampling.  Set to 0 to disable.
         top_p: Nucleus sampling threshold.  The smallest set of tokens whose
@@ -59,6 +61,20 @@ class GenerationConfig:
         repetition_penalty: Multiplicative penalty applied to the logits of
             tokens that already appear in the generated (not prompt) portion of
             the sequence.  Values > 1.0 reduce repetition; 1.0 disables.
+        adaptive_temperature: When ``True`` the temperature is recomputed at
+            every step from the model's own confidence (the normalised Shannon
+            entropy of the next-token distribution) instead of using the fixed
+            ``temperature`` value.  A confident, peaked distribution (low
+            entropy) is given a *higher* temperature to add diversity without
+            risking incoherence; an uncertain, flat distribution (high entropy)
+            is given a *lower* temperature so the model commits to its most
+            plausible continuations rather than sampling noise.  This is a
+            statistically grounded alternative to a single hand-tuned
+            temperature and to the blunt ``repetition_penalty``.
+        adaptive_temp_floor: Lowest temperature the adaptive schedule may emit
+            (applied when the model is maximally uncertain).
+        adaptive_temp_ceiling: Highest temperature the adaptive schedule may
+            emit (applied when the model is maximally confident).
     """
 
     max_new_tokens: int = 128
@@ -66,6 +82,46 @@ class GenerationConfig:
     top_k: int = 50
     top_p: float = 0.9
     repetition_penalty: float = 1.0
+    adaptive_temperature: bool = False
+    adaptive_temp_floor: float = 0.5
+    adaptive_temp_ceiling: float = 1.3
+
+
+def adaptive_temperature(
+    logits: torch.Tensor,
+    floor: float = 0.5,
+    ceiling: float = 1.3,
+) -> float:
+    """Derive a sampling temperature from a distribution's normalised entropy.
+
+    The next-token distribution is obtained from ``logits`` via softmax and its
+    Shannon entropy ``H = -Σ p log p`` is normalised by ``log(vocab)`` so it
+    lands in ``[0, 1]``: 0 means a one-hot (perfectly confident) prediction and
+    1 means a uniform (maximally uncertain) one.
+
+    The returned temperature interpolates *inversely* with uncertainty::
+
+        temperature = floor + (ceiling - floor) * (1 - H_norm)
+
+    so a confident model (``H_norm → 0``) samples near ``ceiling`` (more
+    diverse) and an uncertain model (``H_norm → 1``) samples near ``floor``
+    (more conservative).
+
+    Args:
+        logits: A 1-D logits tensor of shape ``(vocab,)``.
+        floor: Minimum temperature (uncertain case).
+        ceiling: Maximum temperature (confident case).
+
+    Returns:
+        A float temperature in ``[floor, ceiling]``.
+    """
+    vocab = logits.numel()
+    if vocab <= 1:
+        return floor
+    probs = F.softmax(logits, dim=-1)
+    entropy = -(probs * torch.log(probs + 1e-12)).sum()
+    h_norm = float((entropy / math.log(vocab)).clamp(0.0, 1.0))
+    return floor + (ceiling - floor) * (1.0 - h_norm)
 
 
 def generate_stream(
@@ -108,8 +164,17 @@ def generate_stream(
                     else:
                         next_logits[token_id] *= config.repetition_penalty
 
-            if config.temperature != 1.0:
-                next_logits = next_logits / max(config.temperature, 1e-8)
+            # Temperature scaling — adaptive (entropy-derived) or fixed.
+            if config.adaptive_temperature:
+                temp = adaptive_temperature(
+                    next_logits,
+                    config.adaptive_temp_floor,
+                    config.adaptive_temp_ceiling,
+                )
+            else:
+                temp = config.temperature
+            if temp != 1.0:
+                next_logits = next_logits / max(temp, 1e-8)
 
             if config.top_k > 0:
                 k = min(config.top_k, next_logits.size(-1))
@@ -210,9 +275,17 @@ def generate(
                     else:
                         next_logits[token_id] *= config.repetition_penalty
 
-            # Temperature scaling.
-            if config.temperature != 1.0:
-                next_logits = next_logits / max(config.temperature, 1e-8)
+            # Temperature scaling — adaptive (entropy-derived) or fixed.
+            if config.adaptive_temperature:
+                temp = adaptive_temperature(
+                    next_logits,
+                    config.adaptive_temp_floor,
+                    config.adaptive_temp_ceiling,
+                )
+            else:
+                temp = config.temperature
+            if temp != 1.0:
+                next_logits = next_logits / max(temp, 1e-8)
 
             # Top-k masking.
             if config.top_k > 0:

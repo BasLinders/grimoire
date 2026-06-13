@@ -719,6 +719,7 @@ def chat(
     top_k: int,
     top_p: float,
     max_new_tokens: int,
+    adaptive_temperature: bool = False,
 ) -> Generator[tuple[str, object], None, None]:
     """Stream a response token-by-token and update the conversation state."""
     if engine_state is None:
@@ -731,6 +732,7 @@ def chat(
         temperature=temperature,
         top_k=top_k,
         top_p=top_p,
+        adaptive_temperature=adaptive_temperature,
     )
     if conv_state is None:
         conv_state = ConversationState()
@@ -1764,6 +1766,14 @@ def build_app() -> gr.Blocks:
                 load_status = gr.Textbox(label="Status", interactive=False)
 
             # ---- Generation controls ------------------------------------
+            chat_adaptive_temp = gr.Checkbox(
+                value=False,
+                label="Adaptive temperature",
+                info="Recompute temperature at every token from the model's own confidence "
+                     "(entropy of the next-token distribution). Confident steps get more "
+                     "diversity, uncertain steps get more focus. When on, the manual "
+                     "Temperature slider is ignored and hidden.",
+            )
             with gr.Row():
                 chat_temp = gr.Slider(
                     0.1, 2.0, value=0.8, step=0.05, label="Temperature",
@@ -1781,6 +1791,14 @@ def build_app() -> gr.Blocks:
                     16, 512, value=128, step=8, label="Max new tokens",
                     info="Maximum length of the generated reply in word-pieces.",
                 )
+
+            # When adaptive temperature is enabled the manual slider is
+            # meaningless (temperature is recomputed per token), so hide it.
+            chat_adaptive_temp.change(
+                fn=lambda on: gr.update(visible=not on),
+                inputs=[chat_adaptive_temp],
+                outputs=[chat_temp],
+            )
 
             chat_query    = gr.Textbox(label="Your query", lines=3)
             chat_response = gr.Textbox(label="Response", lines=8, interactive=False)
@@ -1844,7 +1862,8 @@ def build_app() -> gr.Blocks:
             chat_btn.click(
                 fn=chat,
                 inputs=[chat_query, engine_state, conv_state,
-                        chat_temp, chat_top_k, chat_top_p, chat_tokens],
+                        chat_temp, chat_top_k, chat_top_p, chat_tokens,
+                        chat_adaptive_temp],
                 outputs=[chat_response, conv_state],
             )
             clear_btn.click(

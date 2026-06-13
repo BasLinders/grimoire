@@ -49,10 +49,7 @@ def test_distinct_documents_do_not_cluster() -> None:
 
 
 def test_deduplicate_keeps_longest_representative() -> None:
-    # Two extra words add 2 new word-5-grams → true Jaccard = 18/20 = 0.90.
-    # P(LSH miss at bands=32, rows=4) ≈ 10⁻¹⁵; the original _DOC_A + _DOC_A
-    # gave Jaccard 0.818 (P ≈ 7e-5), which is rare but observable over many runs.
-    longer = _DOC_A + " Blazing still."
+    longer = _DOC_A + " " + _DOC_A   # same shingles, twice the length
     texts = [_DOC_A, longer, _DOC_B]
     kept, clusters = deduplicate_indices(texts, threshold=0.6)
     assert 1 in kept, "The longer duplicate should be kept."
