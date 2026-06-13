@@ -113,6 +113,10 @@ class Trainer:
         val_dataset: Optional[Dataset] = None,
         eval_every: int = 0,
         eval_batches: int = 0,
+        early_stop_enabled: bool = False,
+        early_stop_patience: int = 3,
+        early_stop_bootstraps: int = 1000,
+        early_stop_alpha: float = 0.05,
         on_log: Optional[Callable[[int, float, float], None]] = None,
         on_save: Optional[Callable[[int, float], None]] = None,
         on_done: Optional[Callable[[int, float], None]] = None,
@@ -185,6 +189,17 @@ class Trainer:
         self._last_val_loss: float = float("nan")
         self._eval_every = eval_every if eval_every > 0 else save_every
         self._eval_batches = eval_batches
+        # Per-batch losses from the most recent evaluate() call, used by the
+        # bootstrap early-stopping check (empty until the first eval).
+        self._last_val_batch_losses: list[float] = []
+        self._early_stopper = None
+        if early_stop_enabled:
+            from grimoire_ai.llm.training.early_stopping import EarlyStopper
+            self._early_stopper = EarlyStopper(
+                patience=early_stop_patience,
+                n_boot=early_stop_bootstraps,
+                alpha=early_stop_alpha,
+            )
         self._on_log = on_log
         self._on_save = on_save
         self._on_done = on_done
@@ -438,6 +453,24 @@ class Trainer:
                     )
                     if self._on_eval is not None:
                         self._on_eval(self._step, val_loss, elapsed_total)
+
+                    # --- Bootstrap early stopping --------------------------
+                    # Stop when the apparent improvement in validation loss has
+                    # stayed within its bootstrap noise band for `patience`
+                    # consecutive evals — i.e. further training is no longer
+                    # producing statistically meaningful gains.
+                    if self._early_stopper is not None and self._early_stop_check():
+                        print(
+                            f"  → early stop at step {self._step}: "
+                            f"no significant val-loss improvement for "
+                            f"{self._early_stopper.patience} evals "
+                            f"(best {self._early_stopper.best_loss:.4f})"
+                        )
+                        # evaluate() flips the model to eval mode; restore train
+                        # for symmetry even though we are about to exit.
+                        self.model.train()
+                        break
+
                     # evaluate() flips the model to eval mode; restore train.
                     self.model.train()
                     # Restart the running-loss interval timer so the eval pass
@@ -488,6 +521,7 @@ class Trainer:
 
         total_loss = 0.0
         n_batches = 0
+        batch_losses: list[float] = []
         non_blocking = self.device == "cuda"
         for input_ids, target_ids, attention_mask in self._val_loader:
             input_ids      = input_ids.to(self.device, non_blocking=non_blocking)
@@ -506,7 +540,9 @@ class Trainer:
                     ignore_index=PAD_ID,
                 )
 
-            total_loss += loss.item()
+            batch_loss = loss.item()
+            total_loss += batch_loss
+            batch_losses.append(batch_loss)
             n_batches  += 1
             if self._eval_batches and n_batches >= self._eval_batches:
                 break
@@ -514,7 +550,20 @@ class Trainer:
         if was_training:
             self.model.train()
 
+        # Stored for the bootstrap early-stopping check in train().
+        self._last_val_batch_losses = batch_losses
         return total_loss / max(n_batches, 1)
+
+    def _early_stop_check(self) -> bool:
+        """Feed the latest eval's per-batch losses to the early stopper.
+
+        Returns ``True`` when the stopper signals that validation loss has
+        stopped improving beyond the bootstrap noise band.  Returns ``False``
+        when early stopping is disabled or no per-batch losses are available.
+        """
+        if self._early_stopper is None or not self._last_val_batch_losses:
+            return False
+        return self._early_stopper.update(self._last_val_batch_losses)
 
     # ------------------------------------------------------------------
     # Resume helper

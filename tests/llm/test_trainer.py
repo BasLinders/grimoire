@@ -373,6 +373,44 @@ def test_no_eval_without_val_dataset_does_not_raise() -> None:
     assert on_eval_calls == [], "on_eval must not fire without a val_dataset."
 
 
+def test_early_stopping_halts_before_total_steps() -> None:
+    """With a flat validation loss, early stopping must end the run early."""
+    with tempfile.TemporaryDirectory() as tmp:
+        # patience=2, eval every 2 steps. A subclass returns a constant val loss
+        # so no eval ever clears the (zero) noise band after the first.
+        trainer, _ = _make_eval_trainer(
+            tmp,
+            total_steps=100,
+            eval_every=2,
+            early_stop_enabled=True,
+            early_stop_patience=2,
+            early_stop_bootstraps=50,
+        )
+
+        # Force a deterministic flat validation signal.
+        def _flat_eval() -> float:
+            trainer._last_val_batch_losses = [1.0, 1.0, 1.0, 1.0]
+            return 1.0
+
+        trainer.evaluate = _flat_eval  # type: ignore[method-assign]
+        trainer.train()
+
+        # First eval sets the best; evals 2 and 3 are "bad" → stop at the 3rd
+        # eval, i.e. around step 6, far below total_steps=100.
+        assert trainer._step < 100, (
+            f"Early stopping should have halted before 100 steps, "
+            f"got {trainer._step}."
+        )
+
+
+def test_early_stopping_disabled_runs_full() -> None:
+    """Without early stopping the run must reach total_steps."""
+    with tempfile.TemporaryDirectory() as tmp:
+        trainer, _ = _make_eval_trainer(tmp, total_steps=6, eval_every=2)
+        trainer.train()
+        assert trainer._step == 6
+
+
 def test_lr_schedule_warmup_and_decay() -> None:
     """LR should rise during warmup and then decrease after peak."""
     cfg = _tiny_config()

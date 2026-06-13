@@ -45,9 +45,22 @@ All keys are optional; missing keys fall back to the defaults shown here.
             "num_workers":     0,
             "val_split":       0.0,
             "eval_every":      1000,
-            "eval_batches":    50
+            "eval_batches":    50,
+            "early_stop_enabled":    false,
+            "early_stop_patience":   3,
+            "early_stop_bootstraps": 1000,
+            "early_stop_alpha":      0.05
         }
     }
+
+Early stopping
+--------------
+When ``"early_stop_enabled"`` is true (and a validation set is configured via
+``"val_split"`` or ``"val_corpus_path"``), training halts once the validation
+loss stops improving beyond its bootstrap confidence band for
+``"early_stop_patience"`` consecutive evaluations.  This is a noise-aware
+alternative to a fixed step count: it avoids both stopping on a lucky dip and
+wasting compute once genuine progress has plateaued.
 
 Validation loss
 ---------------
@@ -110,6 +123,10 @@ DEFAULT_TRAINING_CONFIG = {
     "val_split":        0.0,
     "eval_every":       1000,
     "eval_batches":     50,
+    "early_stop_enabled":    False,
+    "early_stop_patience":   3,
+    "early_stop_bootstraps": 1000,
+    "early_stop_alpha":      0.05,
 }
 
 
