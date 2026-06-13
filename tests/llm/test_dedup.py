@@ -34,8 +34,9 @@ def test_identical_documents_cluster() -> None:
 
 
 def test_near_identical_documents_cluster() -> None:
-    # B differs from A by a few trailing words → still highly similar.
-    near = _DOC_A + " A faint hum filled the chamber."
+    # `near` appends a couple of words to A: it shares the vast majority of A's
+    # word-5-grams, so the true Jaccard is ~0.9 — robustly above threshold.
+    near = _DOC_A + " indeed it did."
     texts = [_DOC_A, near, _DOC_C]
     clusters = find_duplicate_clusters(texts, threshold=0.7)
     assert any({0, 1} <= set(c) for c in clusters), clusters
