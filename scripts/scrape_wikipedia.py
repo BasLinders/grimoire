@@ -190,13 +190,18 @@ def _collect_titles(seeds: list[str], depth: int, delay: float) -> list[str]:
             seen_cats.add(cat)
             try:
                 page_titles = _get_category_page_titles(cat, delay)
+                new_pages = 0
                 for t in page_titles:
                     if t not in seen_titles:
                         seen_titles.add(t)
                         all_titles.append(t)
+                        new_pages += 1
+                subs = []
                 if level < depth:
                     subs = _get_subcategories(cat, delay)
                     next_frontier.extend(s for s in subs if s not in seen_cats)
+                print(f"  [depth {level}] {cat}: {new_pages} articles, {len(subs)} subcategories "
+                      f"(total so far: {len(all_titles)})")
                 time.sleep(delay)
             except Exception as exc:
                 print(f"  [warn] category '{cat}': {exc}")
