@@ -9,11 +9,17 @@ Gate criteria:
 - Repetition penalty reduces the probability of repeated tokens.
 """
 
+import math
+
 import pytest
 import torch
 import torch.nn as nn
 
-from grimoire_ai.llm.inference.sampler import GenerationConfig, generate
+from grimoire_ai.llm.inference.sampler import (
+    GenerationConfig,
+    adaptive_temperature,
+    generate,
+)
 from grimoire_ai.llm.model.config import TransformerConfig
 from grimoire_ai.llm.model.transformer import GrimoireTransformer
 from grimoire_ai.llm.tokenizer.special_tokens import EOS_ID
@@ -149,6 +155,51 @@ def test_output_is_list_of_ints() -> None:
         config=GenerationConfig(max_new_tokens=4, temperature=1e-8, top_k=1, top_p=1.0),
     )
     assert isinstance(result, list)
+    assert all(isinstance(t, int) for t in result)
+
+
+def test_adaptive_temperature_bounds() -> None:
+    """Adaptive temperature must always land within [floor, ceiling]."""
+    floor, ceiling = 0.4, 1.2
+    for _ in range(20):
+        logits = torch.randn(64) * 5.0
+        temp = adaptive_temperature(logits, floor, ceiling)
+        assert floor - 1e-6 <= temp <= ceiling + 1e-6
+
+
+def test_adaptive_temperature_confident_high_uncertain_low() -> None:
+    """A peaked (confident) distribution yields a higher temperature than a flat one.
+
+    A confident model should sample near the ceiling (more diversity is safe);
+    an uncertain, near-uniform model should sample near the floor (commit to the
+    most plausible tokens).
+    """
+    floor, ceiling = 0.5, 1.3
+    vocab = 128
+
+    peaked = torch.full((vocab,), -1e9)
+    peaked[7] = 1e9                      # almost one-hot → entropy ≈ 0
+    flat = torch.zeros(vocab)            # uniform → entropy ≈ log(vocab)
+
+    temp_confident = adaptive_temperature(peaked, floor, ceiling)
+    temp_uncertain = adaptive_temperature(flat, floor, ceiling)
+
+    assert temp_confident > temp_uncertain
+    assert math.isclose(temp_confident, ceiling, abs_tol=1e-3)
+    assert math.isclose(temp_uncertain, floor, abs_tol=1e-3)
+
+
+def test_adaptive_temperature_generation_runs() -> None:
+    """Generation with adaptive_temperature=True produces valid output."""
+    model = _ConstantModel(vocab_size=64, chosen_token=10)
+    result = generate(
+        model,
+        prompt_ids=[1, 4, 6],
+        config=GenerationConfig(
+            max_new_tokens=5, top_k=0, top_p=1.0, adaptive_temperature=True
+        ),
+    )
+    assert len(result) == 5
     assert all(isinstance(t, int) for t in result)
 
 
