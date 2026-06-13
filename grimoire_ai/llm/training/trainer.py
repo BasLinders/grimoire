@@ -46,11 +46,12 @@ import math
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
+import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
 from grimoire_ai.llm.data.collator import PaddingCollator
 from grimoire_ai.llm.model.transformer import GrimoireTransformer
@@ -119,6 +120,7 @@ class Trainer:
         early_stop_alpha: float = 0.05,
         swa_enabled: bool = False,
         swa_start_frac: float = 0.75,
+        sample_weights: Optional["Sequence[float]"] = None,
         on_log: Optional[Callable[[int, float, float], None]] = None,
         on_save: Optional[Callable[[int, float], None]] = None,
         on_done: Optional[Callable[[int, float], None]] = None,
@@ -300,10 +302,17 @@ class Trainer:
         )
 
         # --- DataLoader -------------------------------------------------
+        # With per-window importance weights, draw windows in proportion to
+        # their difficulty (a WeightedRandomSampler) instead of uniformly.
+        # Harder windows — those a short warm-up run still predicts poorly —
+        # are sampled more often, focusing compute where the model has the most
+        # to learn.  Without weights, fall back to plain uniform shuffling.
+        sampler = self._build_weighted_sampler(sample_weights, train_dataset)
         self._loader = DataLoader(
             train_dataset,
             batch_size=batch_size,
-            shuffle=True,
+            shuffle=(sampler is None),
+            sampler=sampler,
             collate_fn=PaddingCollator(pad_id=PAD_ID),
             num_workers=num_workers,
             pin_memory=(device == "cuda"),
@@ -323,6 +332,48 @@ class Trainer:
                 pin_memory=(device == "cuda"),
                 drop_last=False,
             )
+
+    @staticmethod
+    def _build_weighted_sampler(
+        sample_weights: Optional[Sequence[float]],
+        train_dataset: Dataset,
+    ) -> Optional[WeightedRandomSampler]:
+        """Build a difficulty-weighted sampler, or ``None`` for uniform sampling.
+
+        Args:
+            sample_weights: One non-negative weight per dataset window, aligned
+                to ``train_dataset`` order.  ``None`` disables weighting.
+            train_dataset: The training dataset (used to validate the length).
+
+        Returns:
+            A ``WeightedRandomSampler`` over the dataset, or ``None`` when no
+            weights were supplied.
+
+        Raises:
+            ValueError: If the weights length does not match the dataset, or if
+                the weights are non-finite, negative, or sum to zero.
+        """
+        if sample_weights is None:
+            return None
+
+        w = np.asarray(list(sample_weights), dtype=np.float64)
+        n = len(train_dataset)  # type: ignore[arg-type]
+        if w.shape[0] != n:
+            raise ValueError(
+                f"sample_weights has {w.shape[0]} entries but the training "
+                f"dataset has {n} windows. The weights file must be scored on "
+                f"the same corpus, seq_len, stride, and split as training."
+            )
+        if not np.isfinite(w).all() or (w < 0).any():
+            raise ValueError("sample_weights must be finite and non-negative.")
+        if w.sum() <= 0:
+            raise ValueError("sample_weights must not all be zero.")
+
+        return WeightedRandomSampler(
+            weights=torch.as_tensor(w, dtype=torch.double),
+            num_samples=n,
+            replacement=True,
+        )
 
     # ------------------------------------------------------------------
     # Training loop

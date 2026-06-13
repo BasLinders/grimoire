@@ -411,6 +411,51 @@ def test_early_stopping_disabled_runs_full() -> None:
         assert trainer._step == 6
 
 
+def test_weighted_sampling_uses_weighted_sampler() -> None:
+    """Supplying sample_weights must install a WeightedRandomSampler and train."""
+    from torch.utils.data import WeightedRandomSampler
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = _tiny_config()
+        model = GrimoireTransformer(cfg)
+        corpus_path = _write_corpus(500, cfg.vocab_size, tmp)
+        dataset = TokenizedDataset(corpus_path, seq_len=cfg.max_seq_len, stride=cfg.max_seq_len)
+        weights = np.linspace(0.1, 2.0, num=len(dataset))   # arbitrary positive weights
+        trainer = Trainer(
+            model=model,
+            train_dataset=dataset,
+            total_steps=3,
+            warmup_steps=1,
+            peak_lr=1e-3,
+            batch_size=2,
+            accumulate_steps=1,
+            log_every=999,
+            save_every=999,
+            checkpoint_dir=tmp,
+            device="cpu",
+            sample_weights=weights,
+        )
+        assert isinstance(trainer._loader.sampler, WeightedRandomSampler)
+        trainer.train()  # must not raise
+
+
+def test_weighted_sampling_length_mismatch_raises() -> None:
+    """Weights whose length differs from the dataset must raise ValueError."""
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = _tiny_config()
+        model = GrimoireTransformer(cfg)
+        corpus_path = _write_corpus(500, cfg.vocab_size, tmp)
+        dataset = TokenizedDataset(corpus_path, seq_len=cfg.max_seq_len, stride=cfg.max_seq_len)
+        with pytest.raises(ValueError):
+            Trainer(
+                model=model,
+                train_dataset=dataset,
+                total_steps=2,
+                checkpoint_dir=tmp,
+                device="cpu",
+                sample_weights=[1.0, 2.0, 3.0],   # wrong length
+            )
+
+
 def test_swa_saves_averaged_checkpoint() -> None:
     """With SWA enabled, a loadable swa.pt of averaged weights must be written."""
     with tempfile.TemporaryDirectory() as tmp:

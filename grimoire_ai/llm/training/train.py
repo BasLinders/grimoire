@@ -195,6 +195,7 @@ def main() -> None:
     val_corpus_path = cfg.get("val_corpus_path", None)
     checkpoint_dir  = cfg.get("checkpoint_dir", DEFAULT_CHECKPOINT_DIR)
     resume_from     = args.resume or cfg.get("resume_from", None)
+    sample_weights_path = cfg.get("sample_weights_path", None)
 
     # ``val_split`` is a data-splitting concern handled here, not a Trainer
     # constructor argument — pop it out before forwarding the rest.
@@ -229,12 +230,29 @@ def main() -> None:
     if val_dataset is not None:
         print(f"Val dataset:   {len(val_dataset):,} windows")
 
+    # --- Optional difficulty weights --------------------------------------
+    sample_weights = None
+    if sample_weights_path:
+        try:
+            sample_weights = np.load(sample_weights_path)
+        except OSError as exc:
+            print(f"\nError loading sample weights: {exc}", file=sys.stderr)
+            print(
+                "Generate them first:\n"
+                "  python scripts/score_difficulty.py --checkpoint <ckpt> "
+                "--corpus <corpus.bin> --output <weights.npy>",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(f"Sample weights: {len(sample_weights):,} from {sample_weights_path}")
+
     # --- Build trainer and run --------------------------------------------
     trainer = Trainer(
         model=model,
         train_dataset=train_dataset,
         val_dataset=val_dataset,
         checkpoint_dir=checkpoint_dir,
+        sample_weights=sample_weights,
         **train_cfg_dict,
     )
     trainer.train(resume_from=resume_from)
