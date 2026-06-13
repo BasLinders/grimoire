@@ -95,6 +95,8 @@ def preprocess(
     vocab_path: str,
     vocab_size: int = 16384,
     encoding: str = "utf-8",
+    dedup: bool = False,
+    dedup_threshold: float = 0.8,
     on_progress: Optional[Callable[[str], None]] = None,
 ) -> int:
     """Tokenize text files and write a flat binary array of token ids.
@@ -116,6 +118,12 @@ def preprocess(
         vocab_size: Target vocabulary size when training a new encoder.
             Ignored if ``vocab_path`` already exists.
         encoding: Text encoding of the source files.
+        dedup: When ``True``, near-duplicate documents are detected with
+            MinHash + LSH and only one representative of each duplicate cluster
+            is kept before tokenisation.  Off by default so existing behaviour
+            is unchanged.
+        dedup_threshold: Minimum estimated Jaccard similarity for two documents
+            to be treated as near duplicates (only used when ``dedup`` is set).
         on_progress: Optional callable invoked with a progress message string
             at each major step and during BPE merge iterations.  When
             ``None`` messages are printed to stdout — existing CLI behaviour
@@ -148,6 +156,21 @@ def preprocess(
     for path in files:
         _emit(f"      Reading {path.name} ({path.stat().st_size / 1024:.1f} KB)")
     texts = _read_texts(files, encoding)
+
+    # --- Optional near-duplicate removal --------------------------------
+    if dedup:
+        from grimoire_ai.llm.data.dedup import deduplicate_indices
+        _emit(f"      Deduplicating {len(texts)} document(s) "
+              f"(threshold={dedup_threshold}) ...")
+        kept, clusters = deduplicate_indices(texts, threshold=dedup_threshold)
+        removed = len(texts) - len(kept)
+        if removed:
+            files = [files[i] for i in kept]
+            texts = [texts[i] for i in kept]
+            _emit(f"      Removed {removed} near-duplicate document(s) in "
+                  f"{len(clusters)} cluster(s); {len(texts)} remain.")
+        else:
+            _emit("      No near-duplicates found.")
 
     # --- Train or load BPE encoder -------------------------------------
     encoder = BytePairEncoder()
@@ -222,6 +245,14 @@ def main() -> None:
         "--encoding", default="utf-8",
         help="Text encoding of the input files.",
     )
+    parser.add_argument(
+        "--dedup", action="store_true",
+        help="Remove near-duplicate documents (MinHash + LSH) before tokenising.",
+    )
+    parser.add_argument(
+        "--dedup-threshold", type=float, default=0.8,
+        help="Min estimated Jaccard similarity to treat documents as duplicates.",
+    )
     args = parser.parse_args()
 
     try:
@@ -231,6 +262,8 @@ def main() -> None:
             vocab_path=args.vocab,
             vocab_size=args.vocab_size,
             encoding=args.encoding,
+            dedup=args.dedup,
+            dedup_threshold=args.dedup_threshold,
         )
         print("\nPreprocessing complete.")
     except (FileNotFoundError, ValueError) as exc:
