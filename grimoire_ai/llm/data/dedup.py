@@ -31,6 +31,7 @@ Pure ``numpy`` — no external MinHash/LSH dependency.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Sequence
 
@@ -58,12 +59,15 @@ def _shingles(text: str, k: int) -> set[int]:
     words = _WORD_RE.findall(text.lower())
     if not words:
         return set()
+    # Use SHA-1 (deterministic, PYTHONHASHSEED-independent) so Jaccard estimates
+    # are stable across Python versions, hash seeds, and repeated runs.
+    def _h(gram: list[str]) -> int:
+        return int.from_bytes(
+            hashlib.sha1("\x00".join(gram).encode()).digest()[:4], "little"
+        )
     if len(words) < k:
-        return {hash(tuple(words)) & _MAX_HASH}
-    return {
-        hash(tuple(words[i: i + k])) & _MAX_HASH
-        for i in range(len(words) - k + 1)
-    }
+        return {_h(words)}
+    return {_h(words[i: i + k]) for i in range(len(words) - k + 1)}
 
 
 def _signature_matrix(
