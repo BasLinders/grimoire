@@ -46,11 +46,12 @@ import math
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
+import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
 from grimoire_ai.llm.data.collator import PaddingCollator
 from grimoire_ai.llm.model.transformer import GrimoireTransformer
@@ -113,6 +114,13 @@ class Trainer:
         val_dataset: Optional[Dataset] = None,
         eval_every: int = 0,
         eval_batches: int = 0,
+        early_stop_enabled: bool = False,
+        early_stop_patience: int = 3,
+        early_stop_bootstraps: int = 1000,
+        early_stop_alpha: float = 0.05,
+        swa_enabled: bool = False,
+        swa_start_frac: float = 0.75,
+        sample_weights: Optional["Sequence[float]"] = None,
         on_log: Optional[Callable[[int, float, float], None]] = None,
         on_save: Optional[Callable[[int, float], None]] = None,
         on_done: Optional[Callable[[int, float], None]] = None,
@@ -185,6 +193,30 @@ class Trainer:
         self._last_val_loss: float = float("nan")
         self._eval_every = eval_every if eval_every > 0 else save_every
         self._eval_batches = eval_batches
+        # Per-batch losses from the most recent evaluate() call, used by the
+        # bootstrap early-stopping check (empty until the first eval).
+        self._last_val_batch_losses: list[float] = []
+        self._early_stopper = None
+        if early_stop_enabled:
+            from grimoire_ai.llm.training.early_stopping import EarlyStopper
+            self._early_stopper = EarlyStopper(
+                patience=early_stop_patience,
+                n_boot=early_stop_bootstraps,
+                alpha=early_stop_alpha,
+            )
+        # --- Stochastic Weight Averaging (SWA) --------------------------
+        # When enabled, the parameters from the tail of training (the last
+        # 1 - swa_start_frac of steps, where the LR is small and the optimiser
+        # is bouncing around a minimum) are averaged into a separate model.
+        # The average tends to sit in a flatter, better-generalising basin
+        # than any single iterate.  The averaged weights are saved as
+        # ``swa.pt`` at the end of the run.  The model uses RMSNorm and has no
+        # BatchNorm running statistics, so no post-hoc BN recalibration is
+        # needed.
+        self._swa_enabled = swa_enabled
+        self._swa_start = int(total_steps * swa_start_frac) if swa_enabled else None
+        self._swa_model = None       # created lazily once swa_start is reached
+        self._swa_n = 0              # number of snapshots averaged so far
         self._on_log = on_log
         self._on_save = on_save
         self._on_done = on_done
@@ -270,10 +302,17 @@ class Trainer:
         )
 
         # --- DataLoader -------------------------------------------------
+        # With per-window importance weights, draw windows in proportion to
+        # their difficulty (a WeightedRandomSampler) instead of uniformly.
+        # Harder windows — those a short warm-up run still predicts poorly —
+        # are sampled more often, focusing compute where the model has the most
+        # to learn.  Without weights, fall back to plain uniform shuffling.
+        sampler = self._build_weighted_sampler(sample_weights, train_dataset)
         self._loader = DataLoader(
             train_dataset,
             batch_size=batch_size,
-            shuffle=True,
+            shuffle=(sampler is None),
+            sampler=sampler,
             collate_fn=PaddingCollator(pad_id=PAD_ID),
             num_workers=num_workers,
             pin_memory=(device == "cuda"),
@@ -293,6 +332,48 @@ class Trainer:
                 pin_memory=(device == "cuda"),
                 drop_last=False,
             )
+
+    @staticmethod
+    def _build_weighted_sampler(
+        sample_weights: Optional[Sequence[float]],
+        train_dataset: Dataset,
+    ) -> Optional[WeightedRandomSampler]:
+        """Build a difficulty-weighted sampler, or ``None`` for uniform sampling.
+
+        Args:
+            sample_weights: One non-negative weight per dataset window, aligned
+                to ``train_dataset`` order.  ``None`` disables weighting.
+            train_dataset: The training dataset (used to validate the length).
+
+        Returns:
+            A ``WeightedRandomSampler`` over the dataset, or ``None`` when no
+            weights were supplied.
+
+        Raises:
+            ValueError: If the weights length does not match the dataset, or if
+                the weights are non-finite, negative, or sum to zero.
+        """
+        if sample_weights is None:
+            return None
+
+        w = np.asarray(list(sample_weights), dtype=np.float64)
+        n = len(train_dataset)  # type: ignore[arg-type]
+        if w.shape[0] != n:
+            raise ValueError(
+                f"sample_weights has {w.shape[0]} entries but the training "
+                f"dataset has {n} windows. The weights file must be scored on "
+                f"the same corpus, seq_len, stride, and split as training."
+            )
+        if not np.isfinite(w).all() or (w < 0).any():
+            raise ValueError("sample_weights must be finite and non-negative.")
+        if w.sum() <= 0:
+            raise ValueError("sample_weights must not all be zero.")
+
+        return WeightedRandomSampler(
+            weights=torch.as_tensor(w, dtype=torch.double),
+            num_samples=n,
+            replacement=True,
+        )
 
     # ------------------------------------------------------------------
     # Training loop
@@ -390,6 +471,12 @@ class Trainer:
                 self._step  += 1
                 micro_count  = 0
 
+                # --- SWA snapshot --------------------------------------
+                # Fold the current weights into the running average once we
+                # are past the SWA start step (tail of training).
+                if self._swa_enabled and self._step >= self._swa_start:
+                    self._update_swa()
+
                 # --- Logging -------------------------------------------
                 if self._step % self.log_every == 0:
                     elapsed_interval = time.time() - t0
@@ -438,11 +525,33 @@ class Trainer:
                     )
                     if self._on_eval is not None:
                         self._on_eval(self._step, val_loss, elapsed_total)
+
+                    # --- Bootstrap early stopping --------------------------
+                    # Stop when the apparent improvement in validation loss has
+                    # stayed within its bootstrap noise band for `patience`
+                    # consecutive evals — i.e. further training is no longer
+                    # producing statistically meaningful gains.
+                    if self._early_stopper is not None and self._early_stop_check():
+                        print(
+                            f"  → early stop at step {self._step}: "
+                            f"no significant val-loss improvement for "
+                            f"{self._early_stopper.patience} evals "
+                            f"(best {self._early_stopper.best_loss:.4f})"
+                        )
+                        # evaluate() flips the model to eval mode; restore train
+                        # for symmetry even though we are about to exit.
+                        self.model.train()
+                        break
+
                     # evaluate() flips the model to eval mode; restore train.
                     self.model.train()
                     # Restart the running-loss interval timer so the eval pass
                     # is not counted as training time in the next log line.
                     t0 = time.time()
+
+        # Save the averaged SWA weights, if any snapshots were collected.
+        if self._swa_enabled:
+            self._finalize_swa()
 
         elapsed_total = time.time() - t_start
         stopped_early = self._stop_event is not None and self._stop_event.is_set()
@@ -452,6 +561,47 @@ class Trainer:
             print(f"\nTraining complete. Final step: {self._step} | total time: {elapsed_total:.1f}s")
         if self._on_done is not None:
             self._on_done(self._step, elapsed_total)
+
+    # ------------------------------------------------------------------
+    # Stochastic Weight Averaging
+    # ------------------------------------------------------------------
+
+    def _update_swa(self) -> None:
+        """Fold the current model weights into the running SWA average.
+
+        The ``AveragedModel`` is created lazily on the first call so that no
+        extra memory is reserved when SWA is disabled or never reached (e.g.
+        when early stopping fires before ``swa_start``).
+        """
+        from torch.optim.swa_utils import AveragedModel
+        if self._swa_model is None:
+            self._swa_model = AveragedModel(self.model)
+        else:
+            self._swa_model.update_parameters(self.model)
+        self._swa_n += 1
+
+    def _finalize_swa(self) -> None:
+        """Write the averaged SWA weights to ``{checkpoint_dir}/swa.pt``.
+
+        No-op (with a note) when no snapshots were collected, which happens if
+        the run ended before ``swa_start`` — e.g. early stopping triggered
+        first.
+        """
+        if self._swa_model is None:
+            print("  → SWA: no snapshots collected (run ended before swa_start); nothing saved.")
+            return
+        swa_path = self.checkpoint_dir / "swa.pt"
+        save_checkpoint(
+            path=str(swa_path),
+            model=self._swa_model.module,
+            optimizer=self._optimizer,
+            scheduler=self._scheduler,
+            step=self._step,
+            config_dict=self.config.to_dict(),
+            train_loss=self._last_avg_loss,
+            scaler=self._scaler if self._use_amp else None,
+        )
+        print(f"  → SWA: averaged {self._swa_n} snapshot(s) saved to {swa_path}")
 
     # ------------------------------------------------------------------
     # Evaluation
@@ -488,6 +638,7 @@ class Trainer:
 
         total_loss = 0.0
         n_batches = 0
+        batch_losses: list[float] = []
         non_blocking = self.device == "cuda"
         for input_ids, target_ids, attention_mask in self._val_loader:
             input_ids      = input_ids.to(self.device, non_blocking=non_blocking)
@@ -506,7 +657,9 @@ class Trainer:
                     ignore_index=PAD_ID,
                 )
 
-            total_loss += loss.item()
+            batch_loss = loss.item()
+            total_loss += batch_loss
+            batch_losses.append(batch_loss)
             n_batches  += 1
             if self._eval_batches and n_batches >= self._eval_batches:
                 break
@@ -514,7 +667,20 @@ class Trainer:
         if was_training:
             self.model.train()
 
+        # Stored for the bootstrap early-stopping check in train().
+        self._last_val_batch_losses = batch_losses
         return total_loss / max(n_batches, 1)
+
+    def _early_stop_check(self) -> bool:
+        """Feed the latest eval's per-batch losses to the early stopper.
+
+        Returns ``True`` when the stopper signals that validation loss has
+        stopped improving beyond the bootstrap noise band.  Returns ``False``
+        when early stopping is disabled or no per-batch losses are available.
+        """
+        if self._early_stopper is None or not self._last_val_batch_losses:
+            return False
+        return self._early_stopper.update(self._last_val_batch_losses)
 
     # ------------------------------------------------------------------
     # Resume helper

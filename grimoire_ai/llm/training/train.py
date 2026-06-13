@@ -45,9 +45,32 @@ All keys are optional; missing keys fall back to the defaults shown here.
             "num_workers":     0,
             "val_split":       0.0,
             "eval_every":      1000,
-            "eval_batches":    50
+            "eval_batches":    50,
+            "early_stop_enabled":    false,
+            "early_stop_patience":   3,
+            "early_stop_bootstraps": 1000,
+            "early_stop_alpha":      0.05,
+            "swa_enabled":           false,
+            "swa_start_frac":        0.75
         }
     }
+
+Stochastic Weight Averaging (SWA)
+---------------------------------
+Set ``"swa_enabled"`` to true to average the model weights from the tail of
+training (the final ``1 - swa_start_frac`` of steps).  The averaged weights are
+written to ``{checkpoint_dir}/swa.pt`` at the end of the run and usually
+generalise slightly better than the final iterate, at the cost of one extra
+in-memory copy of the model.
+
+Early stopping
+--------------
+When ``"early_stop_enabled"`` is true (and a validation set is configured via
+``"val_split"`` or ``"val_corpus_path"``), training halts once the validation
+loss stops improving beyond its bootstrap confidence band for
+``"early_stop_patience"`` consecutive evaluations.  This is a noise-aware
+alternative to a fixed step count: it avoids both stopping on a lucky dip and
+wasting compute once genuine progress has plateaued.
 
 Validation loss
 ---------------
@@ -110,6 +133,12 @@ DEFAULT_TRAINING_CONFIG = {
     "val_split":        0.0,
     "eval_every":       1000,
     "eval_batches":     50,
+    "early_stop_enabled":    False,
+    "early_stop_patience":   3,
+    "early_stop_bootstraps": 1000,
+    "early_stop_alpha":      0.05,
+    "swa_enabled":           False,
+    "swa_start_frac":        0.75,
 }
 
 
@@ -166,6 +195,7 @@ def main() -> None:
     val_corpus_path = cfg.get("val_corpus_path", None)
     checkpoint_dir  = cfg.get("checkpoint_dir", DEFAULT_CHECKPOINT_DIR)
     resume_from     = args.resume or cfg.get("resume_from", None)
+    sample_weights_path = cfg.get("sample_weights_path", None)
 
     # ``val_split`` is a data-splitting concern handled here, not a Trainer
     # constructor argument — pop it out before forwarding the rest.
@@ -200,12 +230,29 @@ def main() -> None:
     if val_dataset is not None:
         print(f"Val dataset:   {len(val_dataset):,} windows")
 
+    # --- Optional difficulty weights --------------------------------------
+    sample_weights = None
+    if sample_weights_path:
+        try:
+            sample_weights = np.load(sample_weights_path)
+        except OSError as exc:
+            print(f"\nError loading sample weights: {exc}", file=sys.stderr)
+            print(
+                "Generate them first:\n"
+                "  python scripts/score_difficulty.py --checkpoint <ckpt> "
+                "--corpus <corpus.bin> --output <weights.npy>",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(f"Sample weights: {len(sample_weights):,} from {sample_weights_path}")
+
     # --- Build trainer and run --------------------------------------------
     trainer = Trainer(
         model=model,
         train_dataset=train_dataset,
         val_dataset=val_dataset,
         checkpoint_dir=checkpoint_dir,
+        sample_weights=sample_weights,
         **train_cfg_dict,
     )
     trainer.train(resume_from=resume_from)

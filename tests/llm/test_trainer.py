@@ -373,6 +373,134 @@ def test_no_eval_without_val_dataset_does_not_raise() -> None:
     assert on_eval_calls == [], "on_eval must not fire without a val_dataset."
 
 
+def test_early_stopping_halts_before_total_steps() -> None:
+    """With a flat validation loss, early stopping must end the run early."""
+    with tempfile.TemporaryDirectory() as tmp:
+        # patience=2, eval every 2 steps. A subclass returns a constant val loss
+        # so no eval ever clears the (zero) noise band after the first.
+        trainer, _ = _make_eval_trainer(
+            tmp,
+            total_steps=100,
+            eval_every=2,
+            early_stop_enabled=True,
+            early_stop_patience=2,
+            early_stop_bootstraps=50,
+        )
+
+        # Force a deterministic flat validation signal.
+        def _flat_eval() -> float:
+            trainer._last_val_batch_losses = [1.0, 1.0, 1.0, 1.0]
+            return 1.0
+
+        trainer.evaluate = _flat_eval  # type: ignore[method-assign]
+        trainer.train()
+
+        # First eval sets the best; evals 2 and 3 are "bad" → stop at the 3rd
+        # eval, i.e. around step 6, far below total_steps=100.
+        assert trainer._step < 100, (
+            f"Early stopping should have halted before 100 steps, "
+            f"got {trainer._step}."
+        )
+
+
+def test_early_stopping_disabled_runs_full() -> None:
+    """Without early stopping the run must reach total_steps."""
+    with tempfile.TemporaryDirectory() as tmp:
+        trainer, _ = _make_eval_trainer(tmp, total_steps=6, eval_every=2)
+        trainer.train()
+        assert trainer._step == 6
+
+
+def test_weighted_sampling_uses_weighted_sampler() -> None:
+    """Supplying sample_weights must install a WeightedRandomSampler and train."""
+    from torch.utils.data import WeightedRandomSampler
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = _tiny_config()
+        model = GrimoireTransformer(cfg)
+        corpus_path = _write_corpus(500, cfg.vocab_size, tmp)
+        dataset = TokenizedDataset(corpus_path, seq_len=cfg.max_seq_len, stride=cfg.max_seq_len)
+        weights = np.linspace(0.1, 2.0, num=len(dataset))   # arbitrary positive weights
+        trainer = Trainer(
+            model=model,
+            train_dataset=dataset,
+            total_steps=3,
+            warmup_steps=1,
+            peak_lr=1e-3,
+            batch_size=2,
+            accumulate_steps=1,
+            log_every=999,
+            save_every=999,
+            checkpoint_dir=tmp,
+            device="cpu",
+            sample_weights=weights,
+        )
+        assert isinstance(trainer._loader.sampler, WeightedRandomSampler)
+        trainer.train()  # must not raise
+
+
+def test_weighted_sampling_length_mismatch_raises() -> None:
+    """Weights whose length differs from the dataset must raise ValueError."""
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = _tiny_config()
+        model = GrimoireTransformer(cfg)
+        corpus_path = _write_corpus(500, cfg.vocab_size, tmp)
+        dataset = TokenizedDataset(corpus_path, seq_len=cfg.max_seq_len, stride=cfg.max_seq_len)
+        with pytest.raises(ValueError):
+            Trainer(
+                model=model,
+                train_dataset=dataset,
+                total_steps=2,
+                checkpoint_dir=tmp,
+                device="cpu",
+                sample_weights=[1.0, 2.0, 3.0],   # wrong length
+            )
+
+
+def test_swa_saves_averaged_checkpoint() -> None:
+    """With SWA enabled, a loadable swa.pt of averaged weights must be written."""
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = _tiny_config()
+        model = GrimoireTransformer(cfg)
+        corpus_path = _write_corpus(500, cfg.vocab_size, tmp)
+        dataset = TokenizedDataset(corpus_path, seq_len=cfg.max_seq_len, stride=cfg.max_seq_len)
+        trainer = Trainer(
+            model=model,
+            train_dataset=dataset,
+            total_steps=4,
+            warmup_steps=1,
+            peak_lr=1e-3,
+            batch_size=2,
+            accumulate_steps=1,
+            log_every=999,
+            save_every=999,
+            checkpoint_dir=tmp,
+            device="cpu",
+            swa_enabled=True,
+            swa_start_frac=0.0,   # average from the very first step
+        )
+        trainer.train()
+
+        swa_path = Path(tmp) / "swa.pt"
+        assert swa_path.is_file(), "SWA run should produce swa.pt."
+        assert trainer._swa_n == 4, f"Expected 4 SWA snapshots, got {trainer._swa_n}."
+
+        ckpt = load_checkpoint(str(swa_path))
+        loaded = GrimoireTransformer(TransformerConfig.from_dict(ckpt["config"]))
+        loaded.load_state_dict(ckpt["model"])
+        loaded.eval()
+        with torch.no_grad():
+            logits = loaded(torch.randint(0, cfg.vocab_size, (1, 8)))
+        assert torch.isfinite(logits).all(), "SWA-averaged model produced non-finite logits."
+
+
+def test_swa_disabled_writes_no_file() -> None:
+    """Without SWA, no swa.pt should be created."""
+    with tempfile.TemporaryDirectory() as tmp:
+        trainer, _ = _make_trainer(tmp, total_steps=3)
+        trainer.train()
+        assert not (Path(tmp) / "swa.pt").exists()
+
+
 def test_lr_schedule_warmup_and_decay() -> None:
     """LR should rise during warmup and then decrease after peak."""
     cfg = _tiny_config()
