@@ -281,16 +281,32 @@ class SemanticRetriever:
         return results
 
     def save_cache(self, path) -> None:
-        """Save indexed vectors, excerpts, and sources to a .pt cache file."""
+        """Save indexed vectors, excerpts, and sources to a .pt cache file.
+
+        Uses a write-to-temp-then-rename pattern so a concurrent or interrupted
+        write never leaves a corrupt file at the target path.
+        """
+        import os
+        import tempfile
         from pathlib import Path
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        torch.save({
-            "vectors": self._vectors,
-            "excerpts": self._excerpts,
-            "sources": self._sources,
-            "chunk_chars": self._chunk_chars,
-        }, str(p))
+        fd, tmp = tempfile.mkstemp(dir=p.parent, suffix=".tmp")
+        try:
+            os.close(fd)
+            torch.save({
+                "vectors": self._vectors,
+                "excerpts": self._excerpts,
+                "sources": self._sources,
+                "chunk_chars": self._chunk_chars,
+            }, tmp)
+            os.replace(tmp, str(p))
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
     @classmethod
     def from_cache(cls, path, embed_fn: Callable[[list[str]], torch.Tensor]) -> "SemanticRetriever":

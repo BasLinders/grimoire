@@ -559,10 +559,11 @@ def load_agent(
     engine.retrieval_threshold = retrieval_threshold
 
     if not use_lexical and engine.corpus is not None:
-        from pathlib import Path as _Path
+        # Resolve via the registry so paths are correct regardless of cwd.
+        resolved_dirs = [str(registry._resolve(d)) for d in cfg.corpus_dirs or []]
         documents: list[tuple[str, str]] = []
-        for corpus_dir in cfg.corpus_dirs or []:
-            for txt_file in sorted(_Path(corpus_dir).glob("*.txt")):
+        for resolved_dir in resolved_dirs:
+            for txt_file in sorted(Path(resolved_dir).glob("*.txt")):
                 documents.append((txt_file.read_text(encoding="utf-8"), txt_file.stem))
 
         if documents:
@@ -577,13 +578,16 @@ def load_agent(
                 retriever.index()
                 engine.corpus = retriever
             else:
-                sem_cache = _semantic_cache_path(cfg.corpus_dirs or [], cfg.checkpoint)
-                if sem_cache and _cache_is_fresh(sem_cache, cfg.corpus_dirs or [], cfg.checkpoint):
+                resolved_ckpt = str(registry._resolve(cfg.checkpoint))
+                sem_cache = _semantic_cache_path(resolved_dirs, resolved_ckpt)
+                loaded_ok = False
+                if sem_cache and _cache_is_fresh(sem_cache, resolved_dirs, resolved_ckpt):
                     try:
                         engine.corpus = SemanticRetriever.from_cache(sem_cache, embed_fn=engine.embed)
+                        loaded_ok = engine.corpus.size > 0
                     except Exception:
-                        sem_cache = None  # corrupt cache → rebuild below
-                if engine.corpus is None or not isinstance(engine.corpus, SemanticRetriever) or engine.corpus.size == 0:
+                        pass  # sem_cache still set — rebuild will overwrite the corrupt file
+                if not loaded_ok:
                     retriever = engine.build_semantic_corpus(documents)
                     if sem_cache:
                         try:
@@ -678,14 +682,16 @@ def load_engine(
         else:
             # Default: model's own decoder embeddings — use cache when available.
             sem_cache = _semantic_cache_path([corpus_dir], checkpoint_path)
+            loaded_ok = False
             if sem_cache and _cache_is_fresh(sem_cache, [corpus_dir], checkpoint_path):
                 try:
                     retriever = SemanticRetriever.from_cache(sem_cache, embed_fn=engine.embed)
                     engine.corpus = retriever
                     engine.retrieval_threshold = retrieval_threshold
+                    loaded_ok = retriever.size > 0
                 except Exception:
-                    sem_cache = None
-            if not isinstance(engine.corpus, SemanticRetriever):
+                    pass  # sem_cache still set — rebuild will overwrite the corrupt file
+            if not loaded_ok:
                 retriever = engine.build_semantic_corpus(documents)
                 if sem_cache:
                     try:
