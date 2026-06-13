@@ -33,6 +33,37 @@ SESSION.headers["User-Agent"] = (
     "contact: local research project)"
 )
 
+_MAX_RETRIES = 6
+_RETRY_BASE  = 2.0   # seconds; doubled on each attempt
+
+
+def _get(params: dict, delay: float, timeout: int = 60) -> requests.Response:
+    """GET with exponential-backoff retry on 429 / 5xx responses."""
+    wait = _RETRY_BASE
+    for attempt in range(_MAX_RETRIES):
+        try:
+            resp = SESSION.get(API_URL, params=params, timeout=timeout)
+        except requests.RequestException as exc:
+            if attempt == _MAX_RETRIES - 1:
+                raise
+            time.sleep(wait)
+            wait *= 2
+            continue
+
+        if resp.status_code == 429 or resp.status_code >= 500:
+            retry_after = resp.headers.get("Retry-After")
+            sleep_for = float(retry_after) if retry_after else wait
+            time.sleep(max(sleep_for, wait))
+            wait *= 2
+            continue
+
+        resp.raise_for_status()
+        time.sleep(delay)
+        return resp
+
+    resp.raise_for_status()
+    return resp
+
 # ---------------------------------------------------------------------------
 # Seed categories
 # ---------------------------------------------------------------------------
@@ -109,18 +140,14 @@ def _get_subcategories(category: str, delay: float) -> list[str]:
         "format":  "json",
     }
     while True:
-        resp = SESSION.get(API_URL, params=params, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
+        data = _get(params, delay=delay, timeout=30).json()
         members = data.get("query", {}).get("categorymembers", [])
         for m in members:
-            # Strip "Category:" prefix
             subs.append(m["title"].removeprefix("Category:"))
         cont = data.get("continue", {}).get("cmcontinue")
         if not cont:
             break
         params["cmcontinue"] = cont
-        time.sleep(delay)
     return subs
 
 
@@ -136,16 +163,13 @@ def _get_category_page_titles(category: str, delay: float) -> list[str]:
         "format":  "json",
     }
     while True:
-        resp = SESSION.get(API_URL, params=params, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
+        data = _get(params, delay=delay, timeout=30).json()
         members = data.get("query", {}).get("categorymembers", [])
         titles.extend(m["title"] for m in members)
         cont = data.get("continue", {}).get("cmcontinue")
         if not cont:
             break
         params["cmcontinue"] = cont
-        time.sleep(delay)
     return titles
 
 
@@ -182,7 +206,7 @@ def _collect_titles(seeds: list[str], depth: int, delay: float) -> list[str]:
 
 
 def _fetch_extracts(titles: list[str], delay: float) -> dict[str, str]:
-    """Fetch plain-text extracts for up to 20 titles at once; return {title: text}."""
+    """Fetch plain-text extracts for a batch of titles; return {title: text}."""
     results: dict[str, str] = {}
     params = {
         "action":          "query",
@@ -193,9 +217,7 @@ def _fetch_extracts(titles: list[str], delay: float) -> dict[str, str]:
         "format":          "json",
     }
     try:
-        resp = SESSION.get(API_URL, params=params, timeout=60)
-        resp.raise_for_status()
-        data = resp.json()
+        data = _get(params, delay=delay, timeout=60).json()
         pages = data.get("query", {}).get("pages", {})
         for page in pages.values():
             title = page.get("title", "")
@@ -204,7 +226,6 @@ def _fetch_extracts(titles: list[str], delay: float) -> dict[str, str]:
                 results[title] = extract
     except Exception as exc:
         print(f"  [warn] batch fetch failed: {exc}")
-    time.sleep(delay)
     return results
 
 
@@ -295,16 +316,16 @@ if __name__ == "__main__":
         help="Subcategory recursion depth (default: 2)",
     )
     parser.add_argument(
-        "--delay", type=float, default=0.2,
-        help="Seconds between requests (default: 0.2 — do not go below 0.1)",
+        "--delay", type=float, default=0.5,
+        help="Seconds between requests (default: 0.5 — do not go below 0.2)",
     )
     parser.add_argument(
         "--max-articles", type=int, default=0,
         help="Max articles per group (default: 0 = no limit)",
     )
     parser.add_argument(
-        "--batch-size", type=int, default=20,
-        help="Titles per API batch request (default: 20; max 50 for Wikipedia)",
+        "--batch-size", type=int, default=10,
+        help="Titles per API batch request (default: 10; max 50 for Wikipedia)",
     )
     args = parser.parse_args()
 
