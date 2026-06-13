@@ -116,6 +116,10 @@ class AgentRegistry:
 
         cfg = self.get(key)
 
+        ckpt_path = self._resolve(cfg.checkpoint)
+        if not ckpt_path.is_file():
+            raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
+
         corpus: Optional[GrimoireCorpus] = None
         if cfg.corpus_dirs:
             corpus = GrimoireCorpus()
@@ -132,7 +136,7 @@ class AgentRegistry:
         gen_config = GenerationConfig(**cfg.gen_config) if cfg.gen_config else None
 
         return InferenceEngine(
-            checkpoint_path=str(self._resolve(cfg.checkpoint)),
+            checkpoint_path=str(ckpt_path),
             tokenizer_path=str(self._resolve(cfg.vocab)),
             corpus=corpus,
             gen_config=gen_config,
