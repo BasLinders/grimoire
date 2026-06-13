@@ -49,9 +49,19 @@ All keys are optional; missing keys fall back to the defaults shown here.
             "early_stop_enabled":    false,
             "early_stop_patience":   3,
             "early_stop_bootstraps": 1000,
-            "early_stop_alpha":      0.05
+            "early_stop_alpha":      0.05,
+            "swa_enabled":           false,
+            "swa_start_frac":        0.75
         }
     }
+
+Stochastic Weight Averaging (SWA)
+---------------------------------
+Set ``"swa_enabled"`` to true to average the model weights from the tail of
+training (the final ``1 - swa_start_frac`` of steps).  The averaged weights are
+written to ``{checkpoint_dir}/swa.pt`` at the end of the run and usually
+generalise slightly better than the final iterate, at the cost of one extra
+in-memory copy of the model.
 
 Early stopping
 --------------
@@ -127,6 +137,8 @@ DEFAULT_TRAINING_CONFIG = {
     "early_stop_patience":   3,
     "early_stop_bootstraps": 1000,
     "early_stop_alpha":      0.05,
+    "swa_enabled":           False,
+    "swa_start_frac":        0.75,
 }
 
 

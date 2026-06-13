@@ -117,6 +117,8 @@ class Trainer:
         early_stop_patience: int = 3,
         early_stop_bootstraps: int = 1000,
         early_stop_alpha: float = 0.05,
+        swa_enabled: bool = False,
+        swa_start_frac: float = 0.75,
         on_log: Optional[Callable[[int, float, float], None]] = None,
         on_save: Optional[Callable[[int, float], None]] = None,
         on_done: Optional[Callable[[int, float], None]] = None,
@@ -200,6 +202,19 @@ class Trainer:
                 n_boot=early_stop_bootstraps,
                 alpha=early_stop_alpha,
             )
+        # --- Stochastic Weight Averaging (SWA) --------------------------
+        # When enabled, the parameters from the tail of training (the last
+        # 1 - swa_start_frac of steps, where the LR is small and the optimiser
+        # is bouncing around a minimum) are averaged into a separate model.
+        # The average tends to sit in a flatter, better-generalising basin
+        # than any single iterate.  The averaged weights are saved as
+        # ``swa.pt`` at the end of the run.  The model uses RMSNorm and has no
+        # BatchNorm running statistics, so no post-hoc BN recalibration is
+        # needed.
+        self._swa_enabled = swa_enabled
+        self._swa_start = int(total_steps * swa_start_frac) if swa_enabled else None
+        self._swa_model = None       # created lazily once swa_start is reached
+        self._swa_n = 0              # number of snapshots averaged so far
         self._on_log = on_log
         self._on_save = on_save
         self._on_done = on_done
@@ -405,6 +420,12 @@ class Trainer:
                 self._step  += 1
                 micro_count  = 0
 
+                # --- SWA snapshot --------------------------------------
+                # Fold the current weights into the running average once we
+                # are past the SWA start step (tail of training).
+                if self._swa_enabled and self._step >= self._swa_start:
+                    self._update_swa()
+
                 # --- Logging -------------------------------------------
                 if self._step % self.log_every == 0:
                     elapsed_interval = time.time() - t0
@@ -477,6 +498,10 @@ class Trainer:
                     # is not counted as training time in the next log line.
                     t0 = time.time()
 
+        # Save the averaged SWA weights, if any snapshots were collected.
+        if self._swa_enabled:
+            self._finalize_swa()
+
         elapsed_total = time.time() - t_start
         stopped_early = self._stop_event is not None and self._stop_event.is_set()
         if stopped_early:
@@ -485,6 +510,47 @@ class Trainer:
             print(f"\nTraining complete. Final step: {self._step} | total time: {elapsed_total:.1f}s")
         if self._on_done is not None:
             self._on_done(self._step, elapsed_total)
+
+    # ------------------------------------------------------------------
+    # Stochastic Weight Averaging
+    # ------------------------------------------------------------------
+
+    def _update_swa(self) -> None:
+        """Fold the current model weights into the running SWA average.
+
+        The ``AveragedModel`` is created lazily on the first call so that no
+        extra memory is reserved when SWA is disabled or never reached (e.g.
+        when early stopping fires before ``swa_start``).
+        """
+        from torch.optim.swa_utils import AveragedModel
+        if self._swa_model is None:
+            self._swa_model = AveragedModel(self.model)
+        else:
+            self._swa_model.update_parameters(self.model)
+        self._swa_n += 1
+
+    def _finalize_swa(self) -> None:
+        """Write the averaged SWA weights to ``{checkpoint_dir}/swa.pt``.
+
+        No-op (with a note) when no snapshots were collected, which happens if
+        the run ended before ``swa_start`` — e.g. early stopping triggered
+        first.
+        """
+        if self._swa_model is None:
+            print("  → SWA: no snapshots collected (run ended before swa_start); nothing saved.")
+            return
+        swa_path = self.checkpoint_dir / "swa.pt"
+        save_checkpoint(
+            path=str(swa_path),
+            model=self._swa_model.module,
+            optimizer=self._optimizer,
+            scheduler=self._scheduler,
+            step=self._step,
+            config_dict=self.config.to_dict(),
+            train_loss=self._last_avg_loss,
+            scaler=self._scaler if self._use_amp else None,
+        )
+        print(f"  → SWA: averaged {self._swa_n} snapshot(s) saved to {swa_path}")
 
     # ------------------------------------------------------------------
     # Evaluation

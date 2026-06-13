@@ -411,6 +411,51 @@ def test_early_stopping_disabled_runs_full() -> None:
         assert trainer._step == 6
 
 
+def test_swa_saves_averaged_checkpoint() -> None:
+    """With SWA enabled, a loadable swa.pt of averaged weights must be written."""
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = _tiny_config()
+        model = GrimoireTransformer(cfg)
+        corpus_path = _write_corpus(500, cfg.vocab_size, tmp)
+        dataset = TokenizedDataset(corpus_path, seq_len=cfg.max_seq_len, stride=cfg.max_seq_len)
+        trainer = Trainer(
+            model=model,
+            train_dataset=dataset,
+            total_steps=4,
+            warmup_steps=1,
+            peak_lr=1e-3,
+            batch_size=2,
+            accumulate_steps=1,
+            log_every=999,
+            save_every=999,
+            checkpoint_dir=tmp,
+            device="cpu",
+            swa_enabled=True,
+            swa_start_frac=0.0,   # average from the very first step
+        )
+        trainer.train()
+
+        swa_path = Path(tmp) / "swa.pt"
+        assert swa_path.is_file(), "SWA run should produce swa.pt."
+        assert trainer._swa_n == 4, f"Expected 4 SWA snapshots, got {trainer._swa_n}."
+
+        ckpt = load_checkpoint(str(swa_path))
+        loaded = GrimoireTransformer(TransformerConfig.from_dict(ckpt["config"]))
+        loaded.load_state_dict(ckpt["model"])
+        loaded.eval()
+        with torch.no_grad():
+            logits = loaded(torch.randint(0, cfg.vocab_size, (1, 8)))
+        assert torch.isfinite(logits).all(), "SWA-averaged model produced non-finite logits."
+
+
+def test_swa_disabled_writes_no_file() -> None:
+    """Without SWA, no swa.pt should be created."""
+    with tempfile.TemporaryDirectory() as tmp:
+        trainer, _ = _make_trainer(tmp, total_steps=3)
+        trainer.train()
+        assert not (Path(tmp) / "swa.pt").exists()
+
+
 def test_lr_schedule_warmup_and_decay() -> None:
     """LR should rise during warmup and then decrease after peak."""
     cfg = _tiny_config()
