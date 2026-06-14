@@ -1,33 +1,57 @@
-# Grimoire Roadmap V3
-
-## Context
-
-Grimoire is a domain-specific language model toolkit — ~25M parameter transformer with GQA, RoPE, SwiGLU, RMSNorm — targeting specific corpora (mathematics, D&D, mythology/fantasy). The architecture is solid; what follows is the plan to make it meaningfully more capable and deployable.
-
-Current strengths: KV-cache, mixed-precision (AMP), Flash SDPA, torch.compile, hybrid lexical+semantic RAG, multi-turn conversation state, BPE tokenizer, full pre-train → fine-tune pipeline, agent registry.
-
-Current gaps: no quantization, no LoRA, no evaluation harness, no tool-calling, recomputed RAG index per session, no export format beyond `.pt`.
+# Grimoire Roadmap
 
 ---
 
-## Roadmap
+## Phase 1 — Foundation (Complete)
 
-### 1. int8 Quantization (Memory — CPU viability)
+| Step | Scope | Status |
+|---|---|---|
+| **1** | BPE tokenizer (byte-level, 16 384 vocab, 6 special tokens) | ✓ done |
+| **2** | Corpus retrieval engine (stemmer, n-gram index, Jaccard scoring, unstemmed excerpts) | ✓ done |
+| **2.5** | Corpus scraper: web URLs (HTML + Markdown), PDF, DOCX, Markdown, images (OCR) | ✓ done |
+| **3** | Transformer architecture (GQA, RoPE, SwiGLU, RMSNorm) + training pipeline | ✓ done |
+| **4** | Inference pipeline: PromptBuilder, sampler (temperature/top-k/top-p/repetition), InferenceEngine | ✓ done |
+| **5** | KV-cache (O(n²) → O(1) per step) + richer corpus context (unstemmed excerpts) | ✓ done |
+| **6** | Instruction fine-tuning: `ConversationDataset`, response-only loss masking, `finetune.py` | ✓ done |
+| **6.5** | Training UI: Gradio app (Pre-train, Fine-tune, Chat tabs) + `Trainer.on_log` live streaming | ✓ done |
+| **7** | Conversation state: `ConversationState`, `InferenceEngine.chat()`, terminal chat CLI | ✓ done |
+| **7.5** | Integration test suite: full pipeline from BPE training to multi-turn `chat()` | ✓ done |
+| **8** | Agent registry (`agents.json`) + agent selector dropdown in Chat UI | ✓ done |
+| **9** | Saga corpus: D&D 5e SRD (24 sections) + encounter math + probability references | ✓ done |
+| **10** | Saga instruction fine-tuning: 30-example JSONL dataset + fine-tune + validation scripts | ✓ done |
+| **11** | Training optimisations: Flash Attention (SDPA), `torch.compile`, `cudnn.benchmark`, non-blocking transfers | ✓ done |
+| **12** | Semantic retrieval: `GrimoireTransformer.embed()`, `SemanticRetriever` (cosine over model embeddings), `InferenceEngine.build_semantic_corpus()` | ✓ done |
+| **13** | Retrieval router: score-threshold gate in `InferenceEngine._retrieve()` — routes per-query to grounded or pure-chat generation | ✓ done |
 
-**Why first:** Moving to medium-85M or large-250M breaks the "runs on CPU" claim without it. Dynamic int8 quantization via `torch.quantization.quantize_dynamic` is zero-shot (no retraining), cuts model size ~4×, and makes CPU inference genuinely faster.
+### Why two training phases?
 
-- Apply `quantize_dynamic` to linear layers at inference load time
-- Add `--quantize` flag to the inference engine and Gradio UI
-- Verify output quality vs. fp32 baseline on held-out validation set
-- Document memory footprint before/after per size preset
+Pre-training on raw text teaches the model language statistics — grammar, facts, style. It gives the model no reason to *respond* to a question rather than continue it.
 
-### 2. Gradient Checkpointing (Memory — Training)
+Instruction fine-tuning is a short second pass on `{user, assistant}` pairs. After fine-tuning the model reliably produces a response after `<AST>` instead of continuing the user's sentence.
 
-**Why second:** Unblocks training medium-85M and large-250M on consumer GPUs (8–16 GB VRAM). Trades ~20% training speed for roughly half the activation memory.
+Domain knowledge lives in the corpus, not the model weights. Fine-tuning teaches *conversation behaviour*; it does not need to be repeated when corpora are updated.
 
-- Add `model.gradient_checkpointing_enable()` toggle in the pre-training loop
-- Expose as checkbox in the Pre-train tab ("Reduce VRAM (slower)")
-- Confirm compatibility with `torch.compile()` (may need to disable compile when checkpointing is on)
+---
+
+## Phase 2 — Expansion
+
+### Context
+
+Grimoire's foundation is solid. Phase 2 makes it meaningfully more capable and deployable: better memory efficiency, evaluation infrastructure, tool-calling, adapter-based fine-tuning, automatic agent routing, persistent retrieval, and portable export.
+
+Current strengths: KV-cache, mixed-precision (AMP), Flash SDPA, torch.compile, hybrid lexical+semantic RAG, multi-turn conversation state, BPE tokenizer, full pre-train → fine-tune pipeline, agent registry, int8 quantization, gradient checkpointing.
+
+Current gaps: no LoRA, no evaluation harness, no tool-calling, recomputed RAG index per session, no export format beyond `.pt`.
+
+### Items
+
+### 1. int8 Quantization (Memory — CPU viability) ✓ done
+
+Dynamic int8 quantization via `torch.quantization.quantize_dynamic` / `torchao`. Zero-shot, cuts model size ~4×, speeds up CPU inference. Tries `torchao` first; falls back to legacy API with deprecation warning suppressed. `InferenceEngine(quantize=True)` + UI checkbox in Chat tab.
+
+### 2. Gradient Checkpointing (Memory — Training) ✓ done
+
+`GrimoireTransformer.enable_gradient_checkpointing()` wraps each `TransformerBlock` with `torch.utils.checkpoint.checkpoint(use_reentrant=False)`. Halves peak VRAM at ~20% speed cost. `Trainer(gradient_checkpointing=True)`, `--gradient-checkpointing` CLI flag, checkbox in Pre-train tab.
 
 ### 3. Evaluation Harness
 
@@ -87,15 +111,15 @@ Current gaps: no quantization, no LoRA, no evaluation harness, no tool-calling, 
 
 ---
 
-## Priority Table
+### Priority Table
 
-| # | Item | Effort | Unblocks |
-|---|---|---|---|
-| 1 | int8 quantization | Low | CPU inference at medium/large scale |
-| 2 | Gradient checkpointing | Low | Training medium/large on consumer GPU |
-| 3 | Evaluation harness | Medium | All quality-sensitive decisions |
-| 4 | Math → Python CLI | Medium | Closing the tool-call loop from fine-tune data |
-| 5 | LoRA adapters | Medium | Per-agent specialization without catastrophic forgetting |
-| 6 | Agent routing | Low (after 5) | Automatic multi-domain dispatch |
-| 7 | Persistent RAG index | Medium | Startup time at 500M token corpus scale |
-| 8 | GGUF export | High | Widest deployment, no Python dependency |
+| # | Item | Effort | Status | Unblocks |
+|---|---|---|---|---|
+| 1 | int8 quantization | Low | ✓ done | CPU inference at medium/large scale |
+| 2 | Gradient checkpointing | Low | ✓ done | Training medium/large on consumer GPU |
+| 3 | Evaluation harness | Medium | — | All quality-sensitive decisions |
+| 4 | Math → Python CLI | Medium | — | Closing the tool-call loop from fine-tune data |
+| 5 | LoRA adapters | Medium | — | Per-agent specialization without catastrophic forgetting |
+| 6 | Agent routing | Low (after 5) | — | Automatic multi-domain dispatch |
+| 7 | Persistent RAG index | Medium | — | Startup time at 500M token corpus scale |
+| 8 | GGUF export | High | — | Widest deployment, no Python dependency |
