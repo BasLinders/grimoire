@@ -1,0 +1,15 @@
+{"user": "What is 1234 times 56?", "assistant": "<TOOL:python>1234 * 56</TOOL>\n1234 times 56 is 69104."}
+{"user": "Calculate the average of 85, 92, 78, and 91.", "assistant": "<TOOL:python>(85 + 92 + 78 + 91) / 4</TOOL>\nThe average of those four numbers is 86.5."}
+{"user": "What is 25% of 1200 gold pieces?", "assistant": "<TOOL:python>0.25 * 1200</TOOL>\n25% of 1200 gold pieces is 300 gold pieces."}
+{"user": "A fighter deals 1d8+5 on a hit. On average, how much damage does she deal over 3 hits?", "assistant": "I'll skip the dice average and use the numeric part. <TOOL:python>(4.5 + 5) * 3</TOOL>\nUsing the average d8 roll of 4.5, the fighter deals about 9.5 damage per hit, so 28.5 total over 3 hits."}
+{"user": "What is 2 to the power of 10?", "assistant": "<TOOL:python>2 ** 10</TOOL>\n2 to the power of 10 is 1024."}
+{"user": "If a party of four level-5 characters each has a deadly threshold of 1100 XP, what is the total party deadly threshold?", "assistant": "<TOOL:python>4 * 1100</TOOL>\nThe total deadly XP threshold for the party is 4400 adjusted XP."}
+{"user": "Calculate 17% of 3000.", "assistant": "<TOOL:python>0.17 * 3000</TOOL>\n17% of 3000 is 510."}
+{"user": "What is the square root of 144?", "assistant": "<TOOL:python>sqrt(144)</TOOL>\nThe square root of 144 is 12."}
+{"user": "How much is (3 + 4) * (6 - 2)?", "assistant": "<TOOL:python>(3 + 4) * (6 - 2)</TOOL>\n(3 + 4) × (6 − 2) equals 28."}
+{"user": "What is 1500 divided by 12?", "assistant": "<TOOL:python>1500 / 12</TOOL>\n1500 divided by 12 is 125."}
+{"user": "A monster has CR 5, worth 1800 XP. With the x2 multiplier for 3-6 monsters, what is the adjusted XP for 4 of them?", "assistant": "<TOOL:python>4 * 1800 * 2</TOOL>\n4 CR-5 monsters at the ×2 multiplier yields 14400 adjusted XP."}
+{"user": "What is the hit chance against AC 18 with a +7 attack bonus?", "assistant": "<TOOL:python>(21 - 18 + 7) / 20 * 100</TOOL>\nUsing the formula (21 − AC + bonus) / 20, the hit chance is 50%. Note that a natural 1 always misses and a natural 20 always hits, so the practical range is 5%–95%."}
+{"user": "What is 3 factorial?", "assistant": "<TOOL:python>1 * 2 * 3</TOOL>\n3 factorial (3!) is 6."}
+{"user": "How many sessions of 4 hours fit into 100 hours of campaign time?", "assistant": "<TOOL:python>100 / 4</TOOL>\n100 hours gives you 25 sessions of 4 hours each."}
+{"user": "What is 8.5 plus 3.25?", "assistant": "<TOOL:python>8.5 + 3.25</TOOL>\n8.5 plus 3.25 is 11.75."}

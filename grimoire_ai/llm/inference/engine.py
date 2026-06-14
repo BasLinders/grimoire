@@ -30,11 +30,11 @@ With corpus grounding
     print(engine.respond("grapple speed movement", top_k_corpus=5))
 """
 
-from typing import Iterable, Optional, Union
+from typing import TYPE_CHECKING, Iterable, Optional, Union
 
 import torch
 
-from grimoire_ai.corpus.corpus import GrimoireCorpus
+from grimoire_ai.corpus.corpus import GrimoireCorpus, QueryResult
 from grimoire_ai.llm.inference.prompt import PromptBuilder
 from grimoire_ai.llm.inference.sampler import GenerationConfig, generate, generate_stream
 from grimoire_ai.llm.inference.semantic import SemanticRetriever
@@ -43,6 +43,9 @@ from grimoire_ai.llm.model.transformer import GrimoireTransformer
 from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
 from grimoire_ai.llm.tokenizer.special_tokens import AST_ID, BOS_ID, EOS_ID, PAD_ID
 from grimoire_ai.llm.training.checkpoint import load_checkpoint
+
+if TYPE_CHECKING:
+    from grimoire_ai.tools.math_tool import MathTool
 
 
 def _apply_int8_quantization(model: torch.nn.Module) -> torch.nn.Module:
@@ -95,6 +98,7 @@ class InferenceEngine:
         device: Optional[str] = None,
         retrieval_threshold: Optional[float] = None,
         quantize: bool = False,
+        math_tool: Optional["MathTool"] = None,
     ) -> None:
         """Load model and tokenizer from disk and prepare the engine.
 
@@ -158,6 +162,26 @@ class InferenceEngine:
             max_context_tokens=effective_context,
         )
         self.gen_config = gen_config if gen_config is not None else GenerationConfig()
+        self.math_tool = math_tool
+
+    def _math_context(self, query: str) -> list[QueryResult]:
+        """If a math tool is attached and detects arithmetic in *query*,
+        return a synthetic ``QueryResult`` carrying the computed result as
+        its excerpt.  Returns an empty list when the tool is disabled or
+        no math is found.
+        """
+        if self.math_tool is None:
+            return []
+        result = self.math_tool.run(query)
+        if result is None:
+            return []
+        return [QueryResult(
+            multi_token=(),
+            next_token=None,
+            score=1.0,
+            source="math_tool",
+            excerpt=f"[Math] {result}",
+        )]
 
     def load_lora(self, lora_path: str) -> None:
         """Load a LoRA adapter and apply it to the model.
@@ -248,7 +272,8 @@ class InferenceEngine:
         """
         cfg = gen_config if gen_config is not None else self.gen_config
 
-        results = self._retrieve(query, top_k=top_k_corpus)
+        math_results = self._math_context(query)
+        results = math_results + self._retrieve(query, top_k=top_k_corpus)
 
         prompt_ids = self.prompt_builder.build(query, results)
         new_token_ids = generate(
@@ -258,7 +283,10 @@ class InferenceEngine:
             device=self.device,
         )
 
-        return self.tokenizer.decode(new_token_ids).strip()
+        response = self.tokenizer.decode(new_token_ids).strip()
+        if self.math_tool is not None:
+            response = self.math_tool.process_response(response)
+        return response
 
     @torch.no_grad()
     def embed(self, texts: list[str], batch_size: int = 32) -> torch.Tensor:
@@ -378,7 +406,8 @@ class InferenceEngine:
 
         cfg = gen_config if gen_config is not None else self.gen_config
 
-        results = self._retrieve(query, top_k=top_k_corpus)
+        math_results = self._math_context(query)
+        results = math_results + self._retrieve(query, top_k=top_k_corpus)
         context_ids = self.prompt_builder._encode_context(results) if results else []
 
         prompt_ids = state.build_prompt_ids(
@@ -396,6 +425,8 @@ class InferenceEngine:
         )
 
         response = self.tokenizer.decode(new_token_ids).strip()
+        if self.math_tool is not None:
+            response = self.math_tool.process_response(response)
         state.add_turn(query, response)
         return response
 
@@ -416,7 +447,8 @@ class InferenceEngine:
 
         cfg = gen_config if gen_config is not None else self.gen_config
 
-        results = self._retrieve(query, top_k=top_k_corpus)
+        math_results = self._math_context(query)
+        results = math_results + self._retrieve(query, top_k=top_k_corpus)
         context_ids = self.prompt_builder._encode_context(results) if results else []
 
         prompt_ids = state.build_prompt_ids(
@@ -438,4 +470,6 @@ class InferenceEngine:
             yield self.tokenizer.decode(generated_ids).strip()
 
         response = self.tokenizer.decode(generated_ids).strip()
+        if self.math_tool is not None:
+            response = self.math_tool.process_response(response)
         state.add_turn(query, response)

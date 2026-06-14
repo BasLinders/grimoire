@@ -83,6 +83,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--max-new-tokens", type=int, default=256,
     )
+    p.add_argument(
+        "--math-tool", action="store_true",
+        help="Enable the math tool: detect arithmetic in queries, evaluate it safely, "
+             "and inject the result as context before generation.  Also resolves "
+             "<TOOL:python>...</TOOL> tags in model responses (for fine-tuned models).",
+    )
     return p.parse_args(argv)
 
 
@@ -122,11 +128,17 @@ def main(argv: list[str] | None = None) -> None:
 
     # --- Load engine ----------------------------------------------------
     print(f"Loading checkpoint: {args.checkpoint}")
+    math_tool = None
+    if args.math_tool:
+        from grimoire_ai.tools.math_tool import MathTool
+        math_tool = MathTool()
+        print("Math tool enabled — arithmetic in queries will be pre-computed.")
     engine = InferenceEngine(
         checkpoint_path=args.checkpoint,
         tokenizer_path=args.vocab,
         corpus=corpus,
         retrieval_threshold=args.retrieval_threshold,
+        math_tool=math_tool,
     )
     print(f"Model ready on {engine.device.upper()}.")
 
