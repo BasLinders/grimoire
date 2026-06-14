@@ -94,7 +94,9 @@ Both halves run the same model, in the same learned representation space. There 
 | **KV-Cache** | Caches K/V projections: O(n²) → O(1) per generation step; sliding-window truncation at `max_seq_len` | ✓ done |
 | **int8 Quantization** | `InferenceEngine(quantize=True)` replaces all Linear layers with dynamic int8 equivalents; ~4× smaller, faster on CPU; uses `torchao` when available, falls back to `torch.ao` | ✓ done |
 | **Conversation State** | `ConversationState` packs rolling history newest-first within the token budget, then fills remaining space with corpus context | ✓ done |
-| **Training UI** | Gradio app: Preprocess, Pre-train (size presets, gradient checkpointing), Fine-tune, Ingest, Chat (int8 toggle, adaptive temperature, retrieval controls), Scale tabs | ✓ done |
+| **Evaluation Harness** | Perplexity / BPC on held-out corpus, retrieval hit-rate over a fixed query set, keyword-recall + token-F1 Q&A quiz; `run_eval()` harness writes timestamped JSON to `data/eval/`; CLI at `scripts/evaluate.py` | ✓ done |
+| **Math Tool** | `MathTool` detects arithmetic in queries, evaluates safely via pure-`ast` visitor (no `eval()`), injects result as context; resolves `<TOOL:python>…</TOOL>` tags from fine-tuned models; `--math-tool` CLI flag; UI checkbox in Chat tab | ✓ done |
+| **Training UI** | Gradio app: Preprocess, Pre-train (size presets, gradient checkpointing), Fine-tune, Ingest, Chat (int8 toggle, adaptive temperature, retrieval controls, math tool), Scale, Evaluate tabs | ✓ done |
 | **Agent Registry** | `AgentRegistry` reads `agents.json`; `build_engine(key, quantize=)` returns a ready `InferenceEngine` with corpus auto-loaded | ✓ done |
 | **Saga Corpus** | 24 D&D 5e SRD sections + 4 hand-authored math/probability reference files; built by `scripts/build_saga_corpus.py` | ✓ done |
 | **Saga Fine-tune Dataset** | 59 Q&A examples (D&D rules, encounter math, probability, D&D math concepts) in `scripts/finetune_data/` | ✓ done |
