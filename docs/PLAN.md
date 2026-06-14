@@ -53,15 +53,16 @@ Dynamic int8 quantization via `torch.quantization.quantize_dynamic` / `torchao`.
 
 `GrimoireTransformer.enable_gradient_checkpointing()` wraps each `TransformerBlock` with `torch.utils.checkpoint.checkpoint(use_reentrant=False)`. Halves peak VRAM at ~20% speed cost. `Trainer(gradient_checkpointing=True)`, `--gradient-checkpointing` CLI flag, checkbox in Pre-train tab.
 
-### 3. Evaluation Harness
+### 3. Evaluation Harness ✓ done
 
 **Why third:** Without domain-specific evals, there is no feedback signal for any other roadmap item. Every downstream decision — does quantization hurt quality? did fine-tuning improve accuracy? — requires this first.
 
-- **Perplexity eval:** compute bits-per-character on a held-out slice of each corpus group (math, fantasy)
-- **Retrieval hit-rate:** for a fixed query set, measure what fraction of top-1 RAG results are relevant
-- **D&D rules quiz:** a curated set of 50–100 factual Q&A pairs; score exact/fuzzy match of model responses
-- **Math explanation quality:** rubric-scored sample (can be manual for v1)
-- Expose a "Run evals" button in the UI; log results to `data/eval/` with timestamp
+- **Perplexity eval:** bits-per-character on a held-out corpus slice (`grimoire_ai/llm/eval/perplexity.py`)
+- **Retrieval hit-rate:** keyword-in-top-1 over a fixed 20-query Saga set (`grimoire_ai/llm/eval/retrieval.py`)
+- **D&D rules quiz:** 20 Q&A pairs with keyword-recall + token-F1 scoring (`grimoire_ai/llm/eval/quiz.py`, `scripts/eval_data/saga_quiz.jsonl`)
+- **Harness:** orchestrates all three; writes timestamped JSON to `data/eval/` (`grimoire_ai/llm/eval/harness.py`)
+- **CLI:** `python scripts/evaluate.py --checkpoint ... --vocab ...` (perplexity, retrieval, quiz flags)
+- **UI:** Evaluate tab (after Scale) — checkpoint/vocab/corpus/quiz inputs, Run button, live log stream
 
 ### 4. Math → Python CLI (Tool Calling)
 
@@ -117,7 +118,7 @@ Dynamic int8 quantization via `torch.quantization.quantize_dynamic` / `torchao`.
 |---|---|---|---|---|
 | 1 | int8 quantization | Low | ✓ done | CPU inference at medium/large scale |
 | 2 | Gradient checkpointing | Low | ✓ done | Training medium/large on consumer GPU |
-| 3 | Evaluation harness | Medium | — | All quality-sensitive decisions |
+| 3 | Evaluation harness | Medium | ✓ done | All quality-sensitive decisions |
 | 4 | Math → Python CLI | Medium | — | Closing the tool-call loop from fine-tune data |
 | 5 | LoRA adapters | Medium | — | Per-agent specialization without catastrophic forgetting |
 | 6 | Agent routing | Low (after 5) | — | Automatic multi-domain dispatch |
