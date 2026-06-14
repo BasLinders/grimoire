@@ -139,6 +139,7 @@ DEFAULT_TRAINING_CONFIG = {
     "early_stop_alpha":      0.05,
     "swa_enabled":           False,
     "swa_start_frac":        0.75,
+    "gradient_checkpointing": False,
 }
 
 
@@ -178,6 +179,10 @@ def main() -> None:
         "--corpus", default=None,
         help="Path to the corpus .bin file (overrides config).",
     )
+    parser.add_argument(
+        "--gradient-checkpointing", action="store_true", default=False,
+        help="Enable gradient checkpointing to reduce VRAM at ~20%% training speed cost.",
+    )
     args = parser.parse_args()
 
     # --- Load config --------------------------------------------------------
@@ -191,6 +196,8 @@ def main() -> None:
 
     model_cfg_dict  = {**DEFAULT_MODEL_CONFIG,  **cfg.get("model", {})}
     train_cfg_dict  = {**DEFAULT_TRAINING_CONFIG, **cfg.get("training", {})}
+    if args.gradient_checkpointing:
+        train_cfg_dict["gradient_checkpointing"] = True
     corpus_path     = args.corpus or cfg.get("corpus_path", DEFAULT_CORPUS_PATH)
     val_corpus_path = cfg.get("val_corpus_path", None)
     checkpoint_dir  = cfg.get("checkpoint_dir", DEFAULT_CHECKPOINT_DIR)

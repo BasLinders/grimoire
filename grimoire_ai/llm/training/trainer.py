@@ -121,6 +121,7 @@ class Trainer:
         swa_enabled: bool = False,
         swa_start_frac: float = 0.75,
         sample_weights: Optional["Sequence[float]"] = None,
+        gradient_checkpointing: bool = False,
         on_log: Optional[Callable[[int, float, float], None]] = None,
         on_save: Optional[Callable[[int, float], None]] = None,
         on_done: Optional[Callable[[int, float], None]] = None,
@@ -236,6 +237,10 @@ class Trainer:
             torch.backends.cudnn.benchmark = True
 
         self.model = model.to(device)
+
+        if gradient_checkpointing:
+            self.model.enable_gradient_checkpointing()
+        self.gradient_checkpointing = gradient_checkpointing
 
         # torch.compile() traces the model graph and emits optimised CUDA
         # kernels (operator fusion, reduced memory traffic).  Falls back
