@@ -158,7 +158,7 @@ def main(argv: list[str] | None = None) -> None:
     lora_targets: list[str] = []
     on_save_lora = None
     if args.lora_rank > 0:
-        lora_targets = [t.strip() for t in args.lora_targets.split(",")]
+        lora_targets = [t.strip() for t in args.lora_targets.split(",") if t.strip()]
         model.add_lora_adapters(rank=args.lora_rank, alpha=args.lora_alpha, targets=lora_targets)
         print(
             f"LoRA enabled: rank={args.lora_rank}, alpha={args.lora_alpha}, "

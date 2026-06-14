@@ -138,7 +138,7 @@ def load_lora(model: nn.Module, path: str) -> dict:
     Returns:
         The raw payload dict (keys: "rank", "alpha", "targets", "state_dict").
     """
-    payload = torch.load(path, map_location="cpu", weights_only=False)
+    payload = torch.load(path, map_location="cpu", weights_only=True)
 
     has_lora = any(isinstance(m, LoRALinear) for m in model.modules())
     if not has_lora:
@@ -148,7 +148,12 @@ def load_lora(model: nn.Module, path: str) -> dict:
             targets=payload["targets"],
         )
 
-    _, unexpected = model.load_state_dict(payload["state_dict"], strict=False)
+    missing, unexpected = model.load_state_dict(payload["state_dict"], strict=False)
     if unexpected:
         raise RuntimeError(f"Unexpected LoRA keys in state_dict: {unexpected}")
+    # Only LoRA keys should have been loaded; non-LoRA keys are expected to be absent.
+    # If any lora_A/lora_B keys the model has are not in the file, that's a mismatch.
+    lora_missing = [k for k in missing if "lora_A" in k or "lora_B" in k]
+    if lora_missing:
+        raise RuntimeError(f"LoRA adapter keys not found in file: {lora_missing}")
     return payload

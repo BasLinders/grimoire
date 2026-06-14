@@ -138,6 +138,8 @@ class InferenceEngine:
         self.model.to(device)
         self.model.eval()
 
+        self._checkpoint_path = checkpoint_path
+
         if quantize and device == "cpu":
             self.model = _apply_int8_quantization(self.model)
         self.quantized = quantize and device == "cpu"
@@ -161,18 +163,29 @@ class InferenceEngine:
         """Load a LoRA adapter and apply it to the model.
 
         The adapter must have been trained on the same base checkpoint this
-        engine was loaded from.  If the model already has adapters (e.g.
-        from a previous ``load_lora`` call) they are first merged and
-        removed before the new adapter is applied.
+        engine was loaded from.  If the model already has adapters from a
+        previous ``load_lora`` call, the base weights are restored from the
+        original checkpoint before the new adapter is applied so that adapters
+        compose correctly instead of stacking.
 
         Args:
             lora_path: Path to a ``.lora`` file written by ``save_lora``.
         """
+        if self.quantized:
+            raise RuntimeError(
+                "LoRA adapters cannot be applied to a quantized engine. "
+                "Load the engine without quantize=True before calling load_lora()."
+            )
+
         from grimoire_ai.llm.model.lora import LoRALinear, load_lora as _load_lora
 
-        # If adapters are already in place, merge them out first.
+        # If adapters are already in place, restore clean base weights from the
+        # original checkpoint so the new adapter applies on top of the correct base.
         if any(isinstance(m, LoRALinear) for m in self.model.modules()):
             self.model.merge_and_unload()
+            ckpt = load_checkpoint(self._checkpoint_path)
+            self.model.load_state_dict(ckpt["model"])
+            self.model.to(self.device)
 
         _load_lora(self.model, lora_path)
         self.model.eval()
