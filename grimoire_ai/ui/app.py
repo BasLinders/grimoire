@@ -1142,6 +1142,28 @@ button:not(:disabled):active {
     transform: scale(0.95) !important;
     filter: brightness(0.80) !important;
 }
+/* Dropdown options list — dark mode fix.
+   Gradio renders .options as a floating layer outside the block; it does not
+   inherit the theme's input_background_fill, so it defaults to near-white
+   and makes text invisible against the dark body.  Override explicitly. */
+:root:not([data-theme="light"]) .options {
+    background: #1e1e2e !important;
+    border: 1px solid #2e2e45 !important;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.6) !important;
+}
+:root:not([data-theme="light"]) .options .item {
+    color: #c8c8d8 !important;
+    background: transparent !important;
+}
+:root:not([data-theme="light"]) .options .item:hover,
+:root:not([data-theme="light"]) .options .item.selected {
+    background: #2e2e45 !important;
+    color: #e8c97a !important;
+}
+:root:not([data-theme="light"]) .options .item.active {
+    background: #3a3a55 !important;
+    color: #fffbe6 !important;
+}
 """
 
 
