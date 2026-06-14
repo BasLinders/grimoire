@@ -34,6 +34,9 @@ scraper-ocr = [
 encoder = [
     "sentence-transformers>=2.2",
 ]
+quantize = [
+    "torchao>=0.9",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

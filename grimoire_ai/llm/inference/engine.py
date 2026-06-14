@@ -45,6 +45,27 @@ from grimoire_ai.llm.tokenizer.special_tokens import AST_ID, BOS_ID, EOS_ID, PAD
 from grimoire_ai.llm.training.checkpoint import load_checkpoint
 
 
+def _apply_int8_quantization(model: torch.nn.Module) -> torch.nn.Module:
+    """Quantize all nn.Linear layers to int8, preferring torchao when available.
+
+    Falls back to the legacy ``torch.ao.quantization.quantize_dynamic`` API
+    (still present but deprecated in PyTorch ≥ 2.10) when torchao is not
+    installed.  Install torchao with ``pip install grimoire-ai[quantize]`` to
+    silence the deprecation warning and get the modern implementation.
+    """
+    try:
+        import torchao
+        from torchao.quantization import int8_dynamic_activation_int8_weight, quantize_
+        quantize_(model, int8_dynamic_activation_int8_weight())
+        return model
+    except ImportError:
+        import warnings
+        import torch.nn as _nn
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=DeprecationWarning)
+            return torch.quantization.quantize_dynamic(model, {_nn.Linear}, dtype=torch.qint8)
+
+
 class InferenceEngine:
     """End-to-end inference pipeline for GrimoireTransformer.
 
@@ -73,6 +94,7 @@ class InferenceEngine:
         max_context_tokens: int = 512,
         device: Optional[str] = None,
         retrieval_threshold: Optional[float] = None,
+        quantize: bool = False,
     ) -> None:
         """Load model and tokenizer from disk and prepare the engine.
 
@@ -99,6 +121,10 @@ class InferenceEngine:
                 starting point (cosine scores are in ``[-1, 1]``); for
                 ``GrimoireCorpus`` scores are Jaccard × frequency so a small
                 positive value (e.g. ``0.1``) is more appropriate.
+            quantize: Apply dynamic int8 quantization to all ``nn.Linear``
+                layers after loading.  Reduces memory footprint roughly 4×
+                and speeds up CPU inference.  Silently skipped on CUDA (where
+                dynamic quantization is not supported by standard PyTorch).
         """
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -111,6 +137,10 @@ class InferenceEngine:
         self.model.load_state_dict(ckpt["model"])
         self.model.to(device)
         self.model.eval()
+
+        if quantize and device == "cpu":
+            self.model = _apply_int8_quantization(self.model)
+        self.quantized = quantize and device == "cpu"
 
         # Load tokenizer.
         self.tokenizer = BytePairEncoder.load(tokenizer_path)
