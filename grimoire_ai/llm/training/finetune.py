@@ -121,6 +121,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="LoRA scaling alpha (default: 16.0; effective scale = alpha / rank).")
     p.add_argument("--lora-targets", type=str,   default="q_proj,v_proj",
                    help="Comma-separated Linear layer names to adapt (default: q_proj,v_proj).")
+    p.add_argument("--resume-lora",  default=None,
+                   help="Path to a .lora file to resume LoRA training from a previous run.")
     return p.parse_args(argv)
 
 
@@ -164,6 +166,10 @@ def main(argv: list[str] | None = None) -> None:
             f"LoRA enabled: rank={args.lora_rank}, alpha={args.lora_alpha}, "
             f"targets={lora_targets}"
         )
+        if args.resume_lora:
+            from grimoire_ai.llm.model.lora import load_lora
+            load_lora(model, args.resume_lora)
+            print(f"  Resumed from LoRA adapter: {args.resume_lora}")
         print(f"  Trainable parameters: {model.num_parameters():,}")
 
         def on_save_lora(step: int, _elapsed: float) -> None:
@@ -187,6 +193,7 @@ def main(argv: list[str] | None = None) -> None:
         checkpoint_dir=args.output,
         device=device,
         on_save=on_save_lora,
+        model_state_dict_fn=model.merged_state_dict if args.lora_rank > 0 else None,
     )
 
     print("Starting fine-tuning…")

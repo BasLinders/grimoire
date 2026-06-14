@@ -360,3 +360,75 @@ class TestEngineLoadLora:
                 expected = lora_model(ids)
                 got = engine.model(ids)
             assert torch.allclose(got, expected, atol=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# GrimoireTransformer.merged_state_dict
+# ---------------------------------------------------------------------------
+
+class TestMergedStateDict:
+    def test_no_lora_returns_normal_state_dict(self):
+        model = _small_model()
+        merged = model.merged_state_dict()
+        sd = model.state_dict()
+        assert set(merged.keys()) == set(sd.keys())
+        for k in sd:
+            assert torch.equal(merged[k], sd[k])
+
+    def test_merged_keys_match_plain_model(self):
+        plain = _small_model()
+        plain_keys = set(plain.state_dict().keys())
+
+        model = _small_model()
+        model.add_lora_adapters(rank=4, alpha=8.0, targets=["q_proj", "v_proj"])
+        merged_keys = set(model.merged_state_dict().keys())
+
+        assert merged_keys == plain_keys
+
+    def test_merged_output_matches_lora_output(self):
+        import copy
+        model = _small_model()
+        base_sd = copy.deepcopy(model.state_dict())
+
+        model.add_lora_adapters(rank=4, alpha=8.0, targets=["q_proj", "v_proj"])
+        for n, p in model.named_parameters():
+            if "lora_B" in n:
+                nn.init.normal_(p)
+        model.eval()
+
+        # Load merged state dict into a fresh plain model.
+        merged_sd = model.merged_state_dict()
+        plain = _small_model()
+        plain.load_state_dict(merged_sd)
+        plain.eval()
+
+        ids = torch.randint(0, 256, (1, 8))
+        with torch.no_grad():
+            assert torch.allclose(model(ids), plain(ids), atol=1e-5)
+
+    def test_merged_state_dict_loadable_as_base_checkpoint(self):
+        """merged_state_dict() produces a checkpoint reusable as a new base."""
+        import copy
+        import tempfile
+        from grimoire_ai.llm.training.checkpoint import save_checkpoint, load_checkpoint
+
+        model = _small_model()
+        base_sd = copy.deepcopy(model.state_dict())
+        model.add_lora_adapters(rank=4, alpha=8.0, targets=["q_proj", "v_proj"])
+        for n, p in model.named_parameters():
+            if "lora_B" in n:
+                nn.init.normal_(p)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ckpt = str(Path(tmp) / "merged.pt")
+            save_checkpoint(
+                path=ckpt,
+                model=model,
+                optimizer=torch.optim.SGD(model.parameters(), lr=1e-3),
+                step=0,
+                config_dict=_small_config().to_dict(),
+                model_state_dict=model.merged_state_dict(),
+            )
+            loaded = load_checkpoint(ckpt)
+            plain = _small_model()
+            plain.load_state_dict(loaded["model"])  # must not raise

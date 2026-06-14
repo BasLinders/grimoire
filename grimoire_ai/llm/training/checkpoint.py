@@ -41,6 +41,7 @@ def save_checkpoint(
     scheduler: Optional[LRScheduler] = None,
     train_loss: float = 0.0,
     scaler: Optional[Any] = None,
+    model_state_dict: Optional[dict] = None,
 ) -> None:
     """Save a training checkpoint to disk.
 
@@ -65,7 +66,7 @@ def save_checkpoint(
     checkpoint: dict = {
         "step":       step,
         "config":     config_dict,
-        "model":      model.state_dict(),
+        "model":      model_state_dict if model_state_dict is not None else model.state_dict(),
         "optimizer":  optimizer.state_dict(),
         "scheduler":  scheduler.state_dict() if scheduler is not None else None,
         "scaler":     scaler.state_dict() if scaler is not None else None,

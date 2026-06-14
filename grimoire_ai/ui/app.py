@@ -380,6 +380,7 @@ def run_finetune(
             on_done=on_done,
             on_eval=on_eval,
             stop_event=stop_event,
+            model_state_dict_fn=model.merged_state_dict if lora_rank_int > 0 else None,
         ).train(resume_from=resume)
 
     yield from _wrap_with_buttons(_stream_training(_train))

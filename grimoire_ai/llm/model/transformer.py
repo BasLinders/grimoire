@@ -224,6 +224,44 @@ class GrimoireTransformer(nn.Module):
             return summed / counts
         return x.mean(dim=1)
 
+    @torch.no_grad()
+    def merged_state_dict(self) -> dict[str, torch.Tensor]:
+        """State dict with LoRA adapters merged into base weights.
+
+        Returns a dict with the same key structure as a plain (non-LoRA)
+        GrimoireTransformer, suitable for use as a base checkpoint for a
+        subsequent fine-tune run.  Computes merged weights tensor-by-tensor
+        without copying the model.  When no adapters are present, equivalent
+        to ``state_dict()``.
+        """
+        from grimoire_ai.llm.model.lora import LoRALinear
+
+        lora_modules = {
+            name: mod
+            for name, mod in self.named_modules()
+            if isinstance(mod, LoRALinear)
+        }
+        if not lora_modules:
+            return self.state_dict()
+
+        lora_internal = frozenset({"base_weight", "base_bias", "lora_A", "lora_B"})
+        out: dict[str, torch.Tensor] = {}
+        for key, tensor in self.state_dict().items():
+            for path, lora_mod in lora_modules.items():
+                if key.startswith(f"{path}."):
+                    suffix = key[len(path) + 1:]
+                    if suffix in lora_internal:
+                        if suffix == "base_weight":
+                            delta = (lora_mod.lora_B @ lora_mod.lora_A) * lora_mod.scale
+                            out[f"{path}.weight"] = (lora_mod.base_weight + delta).clone()
+                        elif suffix == "base_bias":
+                            out[f"{path}.bias"] = tensor.clone()
+                        # lora_A / lora_B are dropped
+                        break
+            else:
+                out[key] = tensor
+        return out
+
     def enable_gradient_checkpointing(self) -> None:
         """Trade activation memory for compute during training.
 

@@ -127,6 +127,7 @@ class Trainer:
         on_done: Optional[Callable[[int, float], None]] = None,
         on_eval: Optional[Callable[[int, float, float], None]] = None,
         stop_event: Optional[threading.Event] = None,
+        model_state_dict_fn: Optional[Callable[[], dict]] = None,
     ) -> None:
         """Set up the trainer, optimizer, scheduler, and data loader.
 
@@ -222,6 +223,7 @@ class Trainer:
         self._on_save = on_save
         self._on_done = on_done
         self._on_eval = on_eval
+        self._model_state_dict_fn = model_state_dict_fn
         self._stop_event = stop_event
 
         # --- Device setup -----------------------------------------------
@@ -514,6 +516,7 @@ class Trainer:
                         config_dict=self.config.to_dict(),
                         train_loss=self._last_avg_loss,
                         scaler=self._scaler if self._use_amp else None,
+                        model_state_dict=self._model_state_dict_fn() if self._model_state_dict_fn else None,
                     )
                     print(f"  → checkpoint saved: {ckpt_path}")
                     if self._on_save is not None:
@@ -596,15 +599,18 @@ class Trainer:
             print("  → SWA: no snapshots collected (run ended before swa_start); nothing saved.")
             return
         swa_path = self.checkpoint_dir / "swa.pt"
+        swa_inner = self._swa_model.module
+        swa_sd_fn = self._model_state_dict_fn and getattr(swa_inner, "merged_state_dict", None)
         save_checkpoint(
             path=str(swa_path),
-            model=self._swa_model.module,
+            model=swa_inner,
             optimizer=self._optimizer,
             scheduler=self._scheduler,
             step=self._step,
             config_dict=self.config.to_dict(),
             train_loss=self._last_avg_loss,
             scaler=self._scaler if self._use_amp else None,
+            model_state_dict=swa_sd_fn() if swa_sd_fn else None,
         )
         print(f"  → SWA: averaged {self._swa_n} snapshot(s) saved to {swa_path}")
 
