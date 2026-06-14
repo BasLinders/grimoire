@@ -34,6 +34,7 @@ the model itself — is reused unchanged.
 
 import argparse
 import sys
+from pathlib import Path
 from typing import Optional
 
 import torch
@@ -41,6 +42,7 @@ from torch.utils.data import Dataset, random_split
 
 from grimoire_ai.llm.data.conversation import ConversationDataset
 from grimoire_ai.llm.model.config import TransformerConfig
+from grimoire_ai.llm.model.lora import save_lora
 from grimoire_ai.llm.model.transformer import GrimoireTransformer
 from grimoire_ai.llm.training.checkpoint import load_checkpoint
 from grimoire_ai.llm.training.trainer import Trainer
@@ -113,6 +115,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Maximum sequence length for fine-tuning examples.")
     p.add_argument("--device",         default=None,
                    help="Device override (cpu / cuda). Auto-detected if omitted.")
+    p.add_argument("--lora-rank",    type=int,   default=0,
+                   help="LoRA rank r. 0 (default) = full fine-tuning. Typical: 8 or 16.")
+    p.add_argument("--lora-alpha",   type=float, default=16.0,
+                   help="LoRA scaling alpha (default: 16.0; effective scale = alpha / rank).")
+    p.add_argument("--lora-targets", type=str,   default="q_proj,v_proj",
+                   help="Comma-separated Linear layer names to adapt (default: q_proj,v_proj).")
+    p.add_argument("--resume-lora",  default=None,
+                   help="Path to a .lora file to resume LoRA training from a previous run.")
     return p.parse_args(argv)
 
 
@@ -146,6 +156,30 @@ def main(argv: list[str] | None = None) -> None:
     if val_dataset is not None:
         print(f"  {len(train_dataset)} train / {len(val_dataset)} validation examples.")
 
+    # Optional LoRA: freeze base weights, wrap target layers.
+    if args.resume_lora and args.lora_rank == 0:
+        print("Warning: --resume-lora is ignored when --lora-rank is 0.")
+
+    lora_targets: list[str] = []
+    on_save_lora = None
+    if args.lora_rank > 0:
+        lora_targets = [t.strip() for t in args.lora_targets.split(",") if t.strip()]
+        model.add_lora_adapters(rank=args.lora_rank, alpha=args.lora_alpha, targets=lora_targets)
+        print(
+            f"LoRA enabled: rank={args.lora_rank}, alpha={args.lora_alpha}, "
+            f"targets={lora_targets}"
+        )
+        if args.resume_lora:
+            from grimoire_ai.llm.model.lora import load_lora
+            load_lora(model, args.resume_lora)
+            print(f"  Resumed from LoRA adapter: {args.resume_lora}")
+        print(f"  Trainable parameters: {model.num_parameters():,}")
+
+        def on_save_lora(step: int, _elapsed: float) -> None:
+            lora_path = Path(args.output) / f"step_{step:07d}.lora"
+            save_lora(model, args.lora_rank, args.lora_alpha, lora_targets, str(lora_path))
+            print(f"  → LoRA adapter saved: {lora_path}")
+
     trainer = Trainer(
         model=model,
         train_dataset=train_dataset,
@@ -161,10 +195,18 @@ def main(argv: list[str] | None = None) -> None:
         eval_batches=args.eval_batches,
         checkpoint_dir=args.output,
         device=device,
+        on_save=on_save_lora,
+        model_state_dict_fn=model.merged_state_dict if args.lora_rank > 0 else None,
     )
 
     print("Starting fine-tuning…")
     trainer.train(resume_from=None)  # always start fresh from the provided checkpoint
+
+    if args.lora_rank > 0:
+        final_lora = Path(args.output) / "lora_final.lora"
+        save_lora(model, args.lora_rank, args.lora_alpha, lora_targets, str(final_lora))
+        print(f"Final LoRA adapter saved: {final_lora}")
+
     print("Fine-tuning complete.")
 
 

@@ -304,6 +304,9 @@ def run_finetune(
     eval_every: int,
     eval_batches: int,
     max_seq_len: int,
+    lora_rank: int = 0,
+    lora_alpha: float = 16.0,
+    lora_targets: str = "q_proj,v_proj",
 ) -> Generator[str, None, None]:
     """Launch a fine-tuning run and stream log output.
 
@@ -325,6 +328,10 @@ def run_finetune(
     resume = resume_from.strip() or None
 
     def _train(on_log, on_save, on_done, on_eval):
+        import os
+        from pathlib import Path as _Path
+        from grimoire_ai.llm.model.lora import save_lora as _save_lora
+
         device = "cuda" if torch.cuda.is_available() else "cpu"
         ckpt = load_checkpoint(pretrain_ckpt)
         config = TransformerConfig.from_dict(ckpt["config"])
@@ -337,6 +344,22 @@ def run_finetune(
             max_seq_len=min(max_seq_len, config.max_seq_len),
         )
         train_dataset, val_dataset = split_dataset(dataset, float(val_split))
+
+        # LoRA: freeze base weights, wrap target layers.
+        lora_rank_int = int(lora_rank)
+        lora_targets_list = [t.strip() for t in lora_targets.split(",") if t.strip()]
+        if lora_rank_int > 0:
+            model.add_lora_adapters(
+                rank=lora_rank_int, alpha=float(lora_alpha), targets=lora_targets_list
+            )
+
+        def _on_save_combined(step: int, elapsed: float) -> None:
+            if lora_rank_int > 0:
+                lora_path = _Path(checkpoint_dir) / f"step_{step:07d}.lora"
+                _save_lora(model, lora_rank_int, float(lora_alpha), lora_targets_list, str(lora_path))
+            if on_save is not None:
+                on_save(step, elapsed)
+
         Trainer(
             model=model,
             train_dataset=train_dataset,
@@ -353,10 +376,11 @@ def run_finetune(
             checkpoint_dir=checkpoint_dir,
             device=device,
             on_log=on_log,
-            on_save=on_save,
+            on_save=_on_save_combined,
             on_done=on_done,
             on_eval=on_eval,
             stop_event=stop_event,
+            model_state_dict_fn=model.merged_state_dict if lora_rank_int > 0 else None,
         ).train(resume_from=resume)
 
     yield from _wrap_with_buttons(_stream_training(_train))
@@ -619,6 +643,7 @@ def load_engine(
     encoder: str = "Model (decoder embeddings)",
     retrieval_threshold: Optional[float] = None,
     quantize: bool = False,
+    lora_path: str = "",
     math_tool_enabled: bool = False,
 ) -> tuple[object, object, str]:
     """Load an ``InferenceEngine`` and a fresh ``ConversationState``.
@@ -722,6 +747,14 @@ def load_engine(
             )
     elif corpus_dir:
         status_suffix = f" | lexical (Jaccard): {len(documents)} file(s)"
+
+    lora_path = (lora_path or "").strip()
+    if lora_path:
+        try:
+            engine.load_lora(lora_path)
+            status_suffix += f" | LoRA adapter: {lora_path}"
+        except Exception as exc:
+            return None, None, f"Failed to load LoRA adapter: {exc}"
 
     state = ConversationState()
     return engine, state, f"Model loaded from {checkpoint_path}{status_suffix}"
@@ -1658,6 +1691,31 @@ def build_app() -> gr.Blocks:
                     label="Eval batches", value=0, precision=0,
                     info="Max validation batches averaged per eval pass. 0 uses the whole held-out set (recommended for small fine-tune sets).",
                 )
+            with gr.Accordion("LoRA (parameter-efficient fine-tuning)", open=False):
+                gr.Markdown(
+                    "LoRA freezes the base weights and trains only two small matrices "
+                    "per adapted layer (~0.5% of parameters). Each persona becomes a "
+                    "2–5 MB `.lora` file instead of a full checkpoint copy. "
+                    "Set **LoRA rank** to 0 to use standard full fine-tuning."
+                )
+                with gr.Row():
+                    ft_lora_rank = gr.Slider(
+                        minimum=0, maximum=64, step=1, value=0,
+                        label="LoRA rank (0 = full fine-tune)",
+                        info="Higher rank = more capacity but more parameters. Typical: 8 or 16.",
+                    )
+                    ft_lora_alpha = gr.Number(
+                        value=16.0, label="LoRA alpha",
+                        info="Effective scale = alpha / rank. Set equal to rank for scale=1.",
+                    )
+                    ft_lora_targets = gr.Textbox(
+                        value="q_proj,v_proj",
+                        label="LoRA targets (comma-separated)",
+                        info=(
+                            "Linear layers to adapt. Attention: q_proj, k_proj, v_proj, o_proj. "
+                            "FFN: gate_proj, up_proj, down_proj."
+                        ),
+                    )
             with gr.Row():
                 ft_run_btn  = gr.Button("Start fine-tuning", variant="primary")
                 ft_stop_btn = gr.Button(
@@ -1677,6 +1735,7 @@ def build_app() -> gr.Blocks:
                     ft_batch, ft_accum, ft_log, ft_save,
                     ft_val_split, ft_eval_every, ft_eval_batches,
                     ft_max_seq,
+                    ft_lora_rank, ft_lora_alpha, ft_lora_targets,
                 ],
                 outputs=[ft_log_box, ft_run_btn, ft_stop_btn],
             )
@@ -1958,17 +2017,22 @@ def build_app() -> gr.Blocks:
                         scale=0,
                         min_width=200,
                     )
-                    chat_math_tool = gr.Checkbox(
-                        label="Enable math tool",
-                        value=False,
-                        info=(
-                            "Detect arithmetic in queries (e.g. '25% of 1200', '3^4') and "
-                            "inject the computed result as context before generation.  "
-                            "Also resolves <TOOL:python>…</TOOL> tags from fine-tuned models."
-                        ),
-                        scale=0,
-                        min_width=200,
-                    )
+                chat_lora = gr.Textbox(
+                    label="LoRA adapter (.lora) — optional",
+                    placeholder="checkpoints/finetune/lora_final.lora",
+                    info="Path to a .lora file produced by LoRA fine-tuning. Leave blank to use the base checkpoint.",
+                )
+                chat_math_tool = gr.Checkbox(
+                    label="Enable math tool",
+                    value=False,
+                    info=(
+                        "Detect arithmetic in queries (e.g. '25% of 1200', '3^4') and "
+                        "inject the computed result as context before generation.  "
+                        "Also resolves <TOOL:python>…</TOOL> tags from fine-tuned models."
+                    ),
+                    scale=0,
+                    min_width=200,
+                )
                 load_status = gr.Textbox(label="Status", interactive=False)
 
             # ---- Generation controls ------------------------------------
@@ -2062,7 +2126,7 @@ def build_app() -> gr.Blocks:
             )
             load_btn.click(
                 fn=load_engine,
-                inputs=[chat_ckpt, chat_vocab, chat_corpus_dir, chat_encoder, chat_threshold, chat_quantize, chat_math_tool],
+                inputs=[chat_ckpt, chat_vocab, chat_corpus_dir, chat_encoder, chat_threshold, chat_quantize, chat_lora, chat_math_tool],
                 outputs=[engine_state, conv_state, load_status],
             )
             chat_btn.click(
