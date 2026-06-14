@@ -7,7 +7,8 @@ Two public entry points:
 
 Detection
 ---------
-Patterns that trigger math detection (all require digits adjacent to operators):
+Patterns that trigger math detection (all require digits adjacent to operators
+or a recognised function name):
 
     "what is 2 + 2?"               → "2 + 2"
     "calculate 1.5 * 200"          → "1.5 * 200"
@@ -15,6 +16,8 @@ Patterns that trigger math detection (all require digits adjacent to operators):
     "evaluate (3 + 4) * 2"         → "(3 + 4) * 2"
     "what's 2^10?"                 → "2**10"    (^ → ** normalised)
     "compute sqrt(144)"            → "sqrt(144)"
+    "what is norm_cdf(1.96)?"      → "norm_cdf(1.96)"
+    "binom_pmf(3, 10, 0.5)"        → "binom_pmf(3, 10, 0.5)"
 
 Patterns that do NOT trigger:
 
@@ -31,13 +34,28 @@ No ``eval()``, no ``exec()``, no imports.  The expression is parsed into an
 - Unary ``+`` / ``-``
 - Binary ``+``, ``-``, ``*``, ``/``, ``//``, ``%``, ``**``
 - Parenthesised sub-expressions
-- Whitelisted function calls: ``abs``, ``round``, ``min``, ``max``,
-  ``sqrt``, ``floor``, ``ceil``, ``sin``, ``cos``, ``tan``,
-  ``log``, ``log2``, ``log10``
-- Named constants: ``pi``, ``e``
+- Whitelisted function calls (see ``_SAFE_NAMES``)
+- Named constants: ``pi``, ``e``, ``tau``, ``inf``
 
 Any other node type raises ``ValueError``, which is caught and surfaced as an
 error string rather than crashing the chat loop.
+
+Statistics functions (scipy)
+-----------------------------
+When ``scipy`` is installed (``pip install grimoire-ai[stats]``), the following
+statistical functions are added to the whitelist:
+
+    norm_cdf(x)            — standard-normal CDF: P(Z ≤ x)
+    norm_pdf(x)            — standard-normal probability density
+    norm_ppf(p)            — inverse CDF (z-score for quantile p)
+    binom_pmf(k, n, p)     — binomial P(X = k)
+    binom_cdf(k, n, p)     — binomial P(X ≤ k)
+    poisson_pmf(k, mu)     — Poisson P(X = k)
+    poisson_cdf(k, mu)     — Poisson P(X ≤ k)
+    t_ppf(p, df)           — Student-t quantile
+    chi2_ppf(p, df)        — chi-squared quantile
+
+Without scipy, calling any of these functions returns an error string.
 """
 
 from __future__ import annotations
@@ -54,22 +72,57 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 
 _SAFE_NAMES: dict[str, object] = {
-    "abs":   abs,
-    "round": round,
-    "min":   min,
-    "max":   max,
-    "sqrt":  math.sqrt,
-    "floor": math.floor,
-    "ceil":  math.ceil,
-    "sin":   math.sin,
-    "cos":   math.cos,
-    "tan":   math.tan,
-    "log":   math.log,
-    "log2":  math.log2,
-    "log10": math.log10,
-    "pi":    math.pi,
-    "e":     math.e,
+    # Built-ins
+    "abs":      abs,
+    "round":    round,
+    "min":      min,
+    "max":      max,
+    # Basic math
+    "sqrt":     math.sqrt,
+    "floor":    math.floor,
+    "ceil":     math.ceil,
+    "exp":      math.exp,
+    "factorial": lambda n: float(math.factorial(int(n))),
+    "comb":     lambda n, k: float(math.comb(int(n), int(k))),
+    "perm":     lambda n, k: float(math.perm(int(n), int(k))),
+    "gcd":      lambda *args: float(math.gcd(*[int(a) for a in args])),
+    "hypot":    math.hypot,
+    # Trig
+    "sin":      math.sin,
+    "cos":      math.cos,
+    "tan":      math.tan,
+    "asin":     math.asin,
+    "acos":     math.acos,
+    "atan":     math.atan,
+    "atan2":    math.atan2,
+    "degrees":  math.degrees,
+    "radians":  math.radians,
+    # Logarithms
+    "log":      math.log,
+    "log2":     math.log2,
+    "log10":    math.log10,
+    # Constants
+    "pi":       math.pi,
+    "e":        math.e,
+    "tau":      math.tau,
+    "inf":      math.inf,
 }
+
+try:
+    from scipy import stats as _scipy_stats
+    _SAFE_NAMES.update({
+        "norm_cdf":    lambda x: float(_scipy_stats.norm.cdf(x)),
+        "norm_pdf":    lambda x: float(_scipy_stats.norm.pdf(x)),
+        "norm_ppf":    lambda p: float(_scipy_stats.norm.ppf(p)),
+        "binom_pmf":   lambda k, n, p: float(_scipy_stats.binom.pmf(k, n, p)),
+        "binom_cdf":   lambda k, n, p: float(_scipy_stats.binom.cdf(k, n, p)),
+        "poisson_pmf": lambda k, mu: float(_scipy_stats.poisson.pmf(k, mu)),
+        "poisson_cdf": lambda k, mu: float(_scipy_stats.poisson.cdf(k, mu)),
+        "t_ppf":       lambda p, df: float(_scipy_stats.t.ppf(p, df)),
+        "chi2_ppf":    lambda p, df: float(_scipy_stats.chi2.ppf(p, df)),
+    })
+except ImportError:
+    pass
 
 _BINARY_OPS: dict[type, object] = {
     ast.Add:      operator.add,
@@ -182,8 +235,11 @@ _PERCENT_OF = re.compile(
 _ARITH_EXPR = re.compile(
     r"""
     (?:                             # option A: function call
-        (?:sqrt|floor|ceil|abs|round|log(?:2|10)?|sin|cos|tan)
-        \s*\([\d\s\.\+\-\*\/\%\(\)\*\*]+\)
+        (?:sqrt|floor|ceil|abs|round|exp|factorial|comb|perm|gcd|hypot
+          |log(?:2|10)?|sin|cos|tan|asin|acos|atan2?|degrees|radians
+          |norm_(?:cdf|pdf|ppf)|binom_(?:pmf|cdf)|poisson_(?:pmf|cdf)
+          |t_ppf|chi2_ppf)
+        \s*\([\d\s\.\+\-\*\/\%\(\)\*\*\,]+\)
     )
     |
     (?:                             # option B: infix expression with operator

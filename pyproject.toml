@@ -40,6 +40,9 @@ quantize = [
 tools = [
     "asteval>=0.9",
 ]
+stats = [
+    "scipy>=1.10",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

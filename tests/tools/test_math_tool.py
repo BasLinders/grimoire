@@ -6,12 +6,23 @@ Coverage:
     MathTool.evaluate    — correct results, division-by-zero, bad expressions
     MathTool.run         — full pipeline returning inject-ready strings or None
     MathTool.process_response — <TOOL:python> tag substitution
+    Stdlib extensions    — factorial, exp, comb, perm, gcd, hypot, trig inverses,
+                           degrees/radians, tau, inf
+    Scipy stats          — norm_cdf, binom_pmf, etc. (skipped when scipy absent)
 """
 
 import math
 import pytest
 
 from grimoire_ai.tools.math_tool import MathTool, _safe_eval
+
+try:
+    import scipy  # noqa: F401
+    _HAS_SCIPY = True
+except ImportError:
+    _HAS_SCIPY = False
+
+scipy_only = pytest.mark.skipif(not _HAS_SCIPY, reason="scipy not installed")
 
 
 # ---------------------------------------------------------------------------
@@ -275,3 +286,162 @@ class TestProcessResponse:
     def test_sqrt_in_tag(self):
         response = "<TOOL:python>sqrt(144)</TOOL>"
         assert "12" in self.tool.process_response(response)
+
+
+# ---------------------------------------------------------------------------
+# Stdlib math extensions
+# ---------------------------------------------------------------------------
+
+class TestStdlibExtensions:
+    def test_factorial(self):
+        assert _safe_eval("factorial(5)") == 120.0
+
+    def test_exp(self):
+        assert _safe_eval("exp(1)") == pytest.approx(math.e)
+
+    def test_comb(self):
+        assert _safe_eval("comb(10, 3)") == 120.0
+
+    def test_perm(self):
+        assert _safe_eval("perm(5, 2)") == 20.0
+
+    def test_gcd(self):
+        assert _safe_eval("gcd(12, 8)") == 4.0
+
+    def test_hypot(self):
+        assert _safe_eval("hypot(3, 4)") == pytest.approx(5.0)
+
+    def test_asin(self):
+        assert _safe_eval("asin(1)") == pytest.approx(math.pi / 2)
+
+    def test_acos(self):
+        assert _safe_eval("acos(1)") == pytest.approx(0.0)
+
+    def test_atan(self):
+        assert _safe_eval("atan(1)") == pytest.approx(math.pi / 4)
+
+    def test_atan2(self):
+        assert _safe_eval("atan2(1, 1)") == pytest.approx(math.pi / 4)
+
+    def test_degrees(self):
+        assert _safe_eval("degrees(pi)") == pytest.approx(180.0)
+
+    def test_radians(self):
+        assert _safe_eval("radians(180)") == pytest.approx(math.pi)
+
+    def test_constant_tau(self):
+        assert _safe_eval("tau") == pytest.approx(math.tau)
+
+    def test_constant_inf(self):
+        assert _safe_eval("inf") == math.inf
+
+    def test_detect_comb_call(self):
+        tool = MathTool()
+        assert tool.detect("calculate comb(10, 3)") is not None
+
+    def test_detect_atan2_call(self):
+        tool = MathTool()
+        assert tool.detect("what is atan2(1, 1)") is not None
+
+    def test_evaluate_factorial(self):
+        tool = MathTool()
+        result, error = tool.evaluate("factorial(6)")
+        assert error is None
+        assert result == "720"
+
+    def test_evaluate_hypot(self):
+        tool = MathTool()
+        result, error = tool.evaluate("hypot(3, 4)")
+        assert error is None
+        assert result == "5"
+
+
+# ---------------------------------------------------------------------------
+# Scipy statistics functions (skipped when scipy is not installed)
+# ---------------------------------------------------------------------------
+
+class TestScipyStats:
+    @scipy_only
+    def test_norm_cdf_at_zero(self):
+        result, error = MathTool().evaluate("norm_cdf(0)")
+        assert error is None
+        assert float(result) == pytest.approx(0.5, abs=1e-4)
+
+    @scipy_only
+    def test_norm_cdf_at_196(self):
+        result, error = MathTool().evaluate("norm_cdf(1.96)")
+        assert error is None
+        assert float(result) == pytest.approx(0.975, abs=1e-3)
+
+    @scipy_only
+    def test_norm_pdf_at_zero(self):
+        result, error = MathTool().evaluate("norm_pdf(0)")
+        assert error is None
+        assert float(result) == pytest.approx(1 / math.sqrt(2 * math.pi), rel=1e-4)
+
+    @scipy_only
+    def test_norm_ppf(self):
+        result, error = MathTool().evaluate("norm_ppf(0.975)")
+        assert error is None
+        assert float(result) == pytest.approx(1.96, abs=1e-2)
+
+    @scipy_only
+    def test_binom_pmf(self):
+        # P(X=3 | n=10, p=0.5) ≈ 0.1172
+        result, error = MathTool().evaluate("binom_pmf(3, 10, 0.5)")
+        assert error is None
+        assert float(result) == pytest.approx(0.1172, abs=1e-3)
+
+    @scipy_only
+    def test_binom_cdf(self):
+        # P(X≤5 | n=10, p=0.5) = 0.623
+        result, error = MathTool().evaluate("binom_cdf(5, 10, 0.5)")
+        assert error is None
+        assert float(result) == pytest.approx(0.6230, abs=1e-3)
+
+    @scipy_only
+    def test_poisson_pmf(self):
+        # P(X=2 | mu=3) ≈ 0.2240
+        result, error = MathTool().evaluate("poisson_pmf(2, 3)")
+        assert error is None
+        assert float(result) == pytest.approx(0.2240, abs=1e-3)
+
+    @scipy_only
+    def test_t_ppf(self):
+        # 97.5th percentile of t with 10 df ≈ 2.228
+        result, error = MathTool().evaluate("t_ppf(0.975, 10)")
+        assert error is None
+        assert float(result) == pytest.approx(2.228, abs=1e-2)
+
+    @scipy_only
+    def test_chi2_ppf(self):
+        # 95th percentile of chi2 with 5 df ≈ 11.07
+        result, error = MathTool().evaluate("chi2_ppf(0.95, 5)")
+        assert error is None
+        assert float(result) == pytest.approx(11.07, abs=0.05)
+
+    @scipy_only
+    def test_detect_norm_cdf(self):
+        tool = MathTool()
+        assert tool.detect("what is norm_cdf(1.96)?") is not None
+
+    @scipy_only
+    def test_detect_binom_pmf(self):
+        tool = MathTool()
+        assert tool.detect("calculate binom_pmf(3, 10, 0.5)") is not None
+
+    @scipy_only
+    def test_run_norm_cdf(self):
+        tool = MathTool()
+        result = tool.run("what is norm_cdf(1.96)?")
+        assert result is not None
+        assert "norm_cdf" in result
+
+    def test_norm_cdf_without_scipy_gives_error(self):
+        """norm_cdf returns an error string when scipy is absent, not a crash."""
+        if _HAS_SCIPY:
+            pytest.skip("scipy is installed; graceful-degradation test not applicable")
+        tool = MathTool()
+        result, error = tool.evaluate("norm_cdf(1.96)")
+        assert result == ""
+        assert error is not None
