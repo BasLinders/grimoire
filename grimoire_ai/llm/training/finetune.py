@@ -157,6 +157,9 @@ def main(argv: list[str] | None = None) -> None:
         print(f"  {len(train_dataset)} train / {len(val_dataset)} validation examples.")
 
     # Optional LoRA: freeze base weights, wrap target layers.
+    if args.resume_lora and args.lora_rank == 0:
+        print("Warning: --resume-lora is ignored when --lora-rank is 0.")
+
     lora_targets: list[str] = []
     on_save_lora = None
     if args.lora_rank > 0:

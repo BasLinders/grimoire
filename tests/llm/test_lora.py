@@ -432,3 +432,51 @@ class TestMergedStateDict:
             loaded = load_checkpoint(ckpt)
             plain = _small_model()
             plain.load_state_dict(loaded["model"])  # must not raise
+
+
+class TestEngineLoraDevice:
+    def test_lora_params_on_correct_device_after_load(self):
+        """engine.load_lora must move lora_A/lora_B to the engine's device."""
+        import copy
+        from grimoire_ai.llm.inference.engine import InferenceEngine
+        from grimoire_ai.llm.model.lora import LoRALinear
+        from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
+        from grimoire_ai.llm.training.checkpoint import save_checkpoint
+
+        config = _small_config()
+        base_model = _small_model()
+        base_sd = copy.deepcopy(base_model.state_dict())
+
+        lora_model = _small_model()
+        lora_model.load_state_dict(base_sd)
+        lora_model.add_lora_adapters(rank=4, alpha=8.0, targets=["q_proj", "v_proj"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ckpt_path  = str(Path(tmp) / "base.pt")
+            lora_path  = str(Path(tmp) / "test.lora")
+            vocab_path = str(Path(tmp) / "bpe.json")
+
+            save_checkpoint(
+                path=ckpt_path,
+                model=base_model,
+                optimizer=torch.optim.SGD(base_model.parameters(), lr=1e-3),
+                step=0,
+                config_dict=config.to_dict(),
+            )
+            save_lora(lora_model, rank=4, alpha=8.0,
+                      targets=["q_proj", "v_proj"], path=lora_path)
+
+            enc = BytePairEncoder()
+            enc.train(["hello world " * 50], vocab_size=262)
+            enc.save(vocab_path)
+
+            engine = InferenceEngine(
+                checkpoint_path=ckpt_path, tokenizer_path=vocab_path, device="cpu"
+            )
+            engine.load_lora(lora_path)
+
+            for mod in engine.model.modules():
+                if isinstance(mod, LoRALinear):
+                    assert mod.lora_A.device.type == "cpu"
+                    assert mod.lora_B.device.type == "cpu"
+                    assert mod.base_weight.device.type == "cpu"

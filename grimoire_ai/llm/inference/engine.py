@@ -185,9 +185,11 @@ class InferenceEngine:
             self.model.merge_and_unload()
             ckpt = load_checkpoint(self._checkpoint_path)
             self.model.load_state_dict(ckpt["model"])
-            self.model.to(self.device)
 
         _load_lora(self.model, lora_path)
+        # LoRALinear creates lora_A / lora_B on CPU by default; move everything
+        # to the engine's device so CUDA engines don't get a device mismatch.
+        self.model.to(self.device)
         self.model.eval()
 
     def _retrieve(self, query: str, top_k: int) -> list:
