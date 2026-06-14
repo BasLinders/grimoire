@@ -30,7 +30,7 @@ The tie is implemented by setting ``output_head.weight = embedding.weight``
 after construction. Both modules then point to the same ``nn.Parameter``.
 """
 
-from typing import Optional
+from typing import Iterable, Optional
 
 import torch
 import torch.nn as nn
@@ -39,6 +39,9 @@ import torch.utils.checkpoint
 from grimoire_ai.llm.model.block import RMSNorm, TransformerBlock
 from grimoire_ai.llm.model.config import TransformerConfig
 from grimoire_ai.llm.model.embedding import TokenEmbedding
+
+_ATTN_PROJS = ("q_proj", "k_proj", "v_proj", "o_proj")
+_FFN_PROJS  = ("gate_proj", "up_proj", "down_proj")
 
 
 class GrimoireTransformer(nn.Module):
@@ -236,6 +239,71 @@ class GrimoireTransformer(nn.Module):
     def disable_gradient_checkpointing(self) -> None:
         """Restore the standard forward pass that stores all activations."""
         self._gradient_checkpointing = False
+
+    def add_lora_adapters(
+        self,
+        rank: int = 8,
+        alpha: float = 16.0,
+        targets: Optional[Iterable[str]] = None,
+    ) -> None:
+        """Replace target Linear layers with LoRALinear and freeze base weights.
+
+        After this call only ``lora_A`` and ``lora_B`` parameters have
+        ``requires_grad=True``; the Trainer's optimizer automatically picks
+        up only those parameters (two 2-D matrices per adapted layer).
+
+        Args:
+            rank: LoRA rank r — number of columns in A and rows in B.
+                Higher rank = more capacity but more parameters.
+                Typical values: 4, 8, 16.
+            alpha: Scaling constant; effective scale = alpha / rank.
+                Setting alpha == rank keeps the scale at 1.0.
+                Default 16.0 gives a scale of 2.0 for rank=8.
+            targets: Names of ``nn.Linear`` submodules to wrap with LoRA.
+                Valid attention names: ``q_proj``, ``k_proj``, ``v_proj``,
+                ``o_proj``.  Valid FFN names: ``gate_proj``, ``up_proj``,
+                ``down_proj``.  Defaults to ``("q_proj", "v_proj")`` — the
+                two attention projections that give the best quality /
+                parameter trade-off for instruction tuning.
+        """
+        from grimoire_ai.llm.model.lora import LoRALinear
+
+        target_set = set(targets) if targets is not None else {"q_proj", "v_proj"}
+
+        for param in self.parameters():
+            param.requires_grad_(False)
+
+        for block in self.blocks:
+            for name in _ATTN_PROJS:
+                if name in target_set:
+                    setattr(block.attn, name,
+                            LoRALinear(getattr(block.attn, name), rank, alpha))
+            for name in _FFN_PROJS:
+                if name in target_set:
+                    setattr(block.ffn, name,
+                            LoRALinear(getattr(block.ffn, name), rank, alpha))
+
+    def merge_and_unload(self) -> None:
+        """Bake LoRA deltas into base weights and restore plain nn.Linear layers.
+
+        After this call the model is functionally equivalent to one that was
+        fully fine-tuned.  All parameters regain ``requires_grad=True``.
+        """
+        from grimoire_ai.llm.model.lora import LoRALinear
+
+        for block in self.blocks:
+            for parent, name in [
+                (block.attn, "q_proj"), (block.attn, "k_proj"),
+                (block.attn, "v_proj"), (block.attn, "o_proj"),
+                (block.ffn,  "gate_proj"), (block.ffn, "up_proj"),
+                (block.ffn,  "down_proj"),
+            ]:
+                mod = getattr(parent, name)
+                if isinstance(mod, LoRALinear):
+                    setattr(parent, name, mod.merge())
+
+        for param in self.parameters():
+            param.requires_grad_(True)
 
     def num_parameters(self, trainable_only: bool = True) -> int:
         """Count the total number of (trainable) parameters.

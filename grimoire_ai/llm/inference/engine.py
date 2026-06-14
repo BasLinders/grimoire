@@ -157,6 +157,26 @@ class InferenceEngine:
         )
         self.gen_config = gen_config if gen_config is not None else GenerationConfig()
 
+    def load_lora(self, lora_path: str) -> None:
+        """Load a LoRA adapter and apply it to the model.
+
+        The adapter must have been trained on the same base checkpoint this
+        engine was loaded from.  If the model already has adapters (e.g.
+        from a previous ``load_lora`` call) they are first merged and
+        removed before the new adapter is applied.
+
+        Args:
+            lora_path: Path to a ``.lora`` file written by ``save_lora``.
+        """
+        from grimoire_ai.llm.model.lora import LoRALinear, load_lora as _load_lora
+
+        # If adapters are already in place, merge them out first.
+        if any(isinstance(m, LoRALinear) for m in self.model.modules()):
+            self.model.merge_and_unload()
+
+        _load_lora(self.model, lora_path)
+        self.model.eval()
+
     def _retrieve(self, query: str, top_k: int) -> list:
         """Query the corpus and apply the retrieval threshold router.
 
