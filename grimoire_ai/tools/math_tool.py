@@ -202,6 +202,10 @@ def _format_result(value: float) -> str:
     Integers are shown without a decimal point; floats are rounded to 6
     significant figures to avoid floating-point noise.
     """
+    if math.isnan(value):
+        return "nan"
+    if math.isinf(value):
+        return "-inf" if value < 0 else "inf"
     if value == math.floor(value) and abs(value) < 1e15:
         return str(int(value))
     # Round to 6 significant figures.
@@ -332,6 +336,8 @@ class MathTool:
             return "", "division by zero"
         except (ValueError, TypeError) as exc:
             return "", str(exc)
+        except OverflowError as exc:
+            return "", f"result is too large: {exc}"
         except RecursionError:
             return "", "expression is too deeply nested"
         return _format_result(value), None

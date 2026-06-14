@@ -355,6 +355,31 @@ class TestStdlibExtensions:
         assert error is None
         assert result == "5"
 
+    def test_inf_constant_does_not_crash(self):
+        result, error = MathTool().evaluate("inf")
+        assert error is None
+        assert result == "inf"
+
+    def test_exp_overflow_returns_error(self):
+        result, error = MathTool().evaluate("exp(1000)")
+        assert result == ""
+        assert error is not None and "large" in error
+
+    def test_factorial_overflow_returns_error(self):
+        result, error = MathTool().evaluate("factorial(200)")
+        assert result == ""
+        assert error is not None
+
+    def test_factorial_negative_returns_error(self):
+        result, error = MathTool().evaluate("factorial(-1)")
+        assert result == ""
+        assert error is not None
+
+    def test_log_domain_error(self):
+        result, error = MathTool().evaluate("log(0)")
+        assert result == ""
+        assert error is not None
+
 
 # ---------------------------------------------------------------------------
 # Scipy statistics functions (skipped when scipy is not installed)
