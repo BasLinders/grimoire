@@ -82,20 +82,22 @@ Both halves run the same model, in the same learned representation space. There 
 | Component | Role | Status |
 |---|---|---|
 | **BPE Tokenizer** | Byte-level Byte-Pair Encoding; vocab 16 384; lossless round-trip for any Unicode | ✓ done |
+| **Corpus Scrapers** | `ingest()` dispatcher (web / PDF / DOCX / Markdown / OCR); dedicated scrapers for Wikipedia, Wikibooks, and arXiv abstracts | ✓ done |
+| **Near-Duplicate Dedup** | MinHash + LSH near-duplicate removal; word 5-gram shingling, SHA-1 hashing, union-find clustering, longest-kept policy | ✓ done |
 | **Corpus Engine** | Ingests text, indexes stemmed 4-gram multi-tokens, retrieves top-k passages by Jaccard similarity (lexical fallback) | ✓ done |
 | **Semantic Retriever** | Chunks documents into passages, embeds each with the model's own representations, and ranks by cosine similarity — the primary retrieval path | ✓ done |
 | **Retrieval Router** | Compares the top retrieval score against a configurable threshold; routes to grounded or pure-chat generation per query | ✓ done |
-| **Corpus Scraper** | `ingest()` dispatcher for web URLs (HTML + Markdown), PDFs, DOCX, Markdown files, plain text, and images (OCR) | ✓ done |
-| **GrimoireTransformer** | Scratch-built decoder-only transformer (~25 M params); GQA, RoPE, SwiGLU, RMSNorm, weight-tied output head; `embed()` for sentence embeddings | ✓ done |
-| **Training Pipeline** | AdamW + cosine-warmup LR, fp16 AMP, Flash Attention (SDPA), torch.compile, gradient accumulation, checkpointing | ✓ done |
+| **GrimoireTransformer** | Scratch-built decoder-only transformer (25 M / 85 M / 250 M params); GQA, RoPE, SwiGLU, RMSNorm, weight-tied output head; `embed()` for sentence embeddings; gradient checkpointing support | ✓ done |
+| **Training Pipeline** | AdamW + cosine-warmup LR, fp16 AMP, Flash Attention (SDPA), `torch.compile`, gradient accumulation, gradient checkpointing, SWA, bootstrap early stopping, difficulty-weighted sampling | ✓ done |
 | **Instruction Fine-tuning** | `ConversationDataset` on `{user, assistant, context?}` JSONL; response-only loss masking | ✓ done |
-| **Inference Engine** | PromptBuilder (corpus → prompt), KV-cache autoregressive sampler (temperature / top-k / top-p / repetition penalty), `respond()`, `chat()`, `chat_stream()`, `embed()`, `build_semantic_corpus()` | ✓ done |
+| **Inference Engine** | PromptBuilder (corpus → prompt), KV-cache autoregressive sampler with adaptive entropy temperature, `respond()`, `chat()`, `chat_stream()`, `embed()`, `build_semantic_corpus()`; optional int8 quantization | ✓ done |
 | **KV-Cache** | Caches K/V projections: O(n²) → O(1) per generation step; sliding-window truncation at `max_seq_len` | ✓ done |
+| **int8 Quantization** | `InferenceEngine(quantize=True)` replaces all Linear layers with dynamic int8 equivalents; ~4× smaller, faster on CPU; uses `torchao` when available, falls back to `torch.ao` | ✓ done |
 | **Conversation State** | `ConversationState` packs rolling history newest-first within the token budget, then fills remaining space with corpus context | ✓ done |
-| **Training UI** | Gradio app: Pre-train, Fine-tune, Ingest, and Chat tabs with live loss streaming | ✓ done |
-| **Agent Registry** | `AgentRegistry` reads `agents.json`; `build_engine(key)` returns a ready `InferenceEngine` with corpus auto-loaded | ✓ done |
+| **Training UI** | Gradio app: Preprocess, Pre-train (size presets, gradient checkpointing), Fine-tune, Ingest, Chat (int8 toggle, adaptive temperature, retrieval controls), Scale tabs | ✓ done |
+| **Agent Registry** | `AgentRegistry` reads `agents.json`; `build_engine(key, quantize=)` returns a ready `InferenceEngine` with corpus auto-loaded | ✓ done |
 | **Saga Corpus** | 24 D&D 5e SRD sections + 4 hand-authored math/probability reference files; built by `scripts/build_saga_corpus.py` | ✓ done |
-| **Saga Fine-tune Dataset** | 30 Q&A examples (D&D rules, encounter math, probability) in `scripts/finetune_data/saga_v1.jsonl` | ✓ done |
+| **Saga Fine-tune Dataset** | 59 Q&A examples (D&D rules, encounter math, probability, D&D math concepts) in `scripts/finetune_data/` | ✓ done |
 | **Integration Tests** | End-to-end: BPE train → corpus build → model pretrain → checkpoint → engine load → multi-turn `chat()` | ✓ done |
 
 ### Multi-turn prompt format
@@ -130,9 +132,17 @@ The transformer uses four improvements over the GPT-2 baseline:
 | **SwiGLU** | GELU feed-forward | Gated activation; consistently outperforms GELU at equal parameter budget |
 | **Grouped Query Attention** | Multi-head attention | `n_kv_heads=2` vs `n_heads=8`; 4× smaller KV cache at inference |
 
-Default configuration: `vocab_size=16384`, `d_model=512`, `n_layers=6`, `n_heads=8`, `n_kv_heads=2`, `d_ff=1408`, `max_seq_len=1024` → ~25 M parameters, ~100 MB fp32.
+Three size presets (all share `vocab_size=16384`, `max_seq_len=1024`):
 
-Training optimisations active: Flash Attention (SDPA), `torch.compile`, `cudnn.benchmark`, non-blocking GPU transfers.
+| Preset | d_model | n_layers | n_heads | n_kv_heads | d_ff | Params | fp32 size |
+|---|---|---|---|---|---|---|---|
+| **small-25M** | 512 | 6 | 8 | 2 | 1408 | ~25 M | ~100 MB |
+| **medium-85M** | 768 | 12 | 12 | 3 | 2048 | ~85 M | ~340 MB |
+| **large-250M** | 1024 | 20 | 16 | 4 | 2816 | ~250 M | ~1 GB |
+
+With `InferenceEngine(quantize=True)` the fp32 size shrinks ~4× (int8 Linear layers).
+
+**Training optimisations:** Flash Attention (SDPA), `torch.compile`, `cudnn.benchmark`, non-blocking GPU transfers, fp16 AMP, gradient accumulation, gradient checkpointing (halves VRAM at ~20% speed cost), Stochastic Weight Averaging, bootstrap-confidence early stopping, difficulty-weighted sampling.
 
 ## Agents
 
