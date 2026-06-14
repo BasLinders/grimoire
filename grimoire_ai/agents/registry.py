@@ -101,7 +101,7 @@ class AgentRegistry:
                 return agent
         raise KeyError(f"No agent with display name '{display_name}'.")
 
-    def build_engine(self, key: str):
+    def build_engine(self, key: str, quantize: bool = False):
         """Instantiate and return an ``InferenceEngine`` for *key*.
 
         Loads the corpus from all ``corpus_dirs`` if present.  Paths are
@@ -109,6 +109,10 @@ class AgentRegistry:
         n-gram index is cached to ``{corpus_dir}/.cache/lexical.pkl`` and
         reused on subsequent loads as long as the source ``.txt`` files have
         not changed.
+
+        Args:
+            key: Agent key in the registry.
+            quantize: Apply dynamic int8 quantization after loading.
 
         Returns:
             ``InferenceEngine`` ready for inference.
@@ -141,6 +145,7 @@ class AgentRegistry:
             tokenizer_path=str(self._resolve(cfg.vocab)),
             corpus=corpus,
             gen_config=gen_config,
+            quantize=quantize,
         )
 
     @staticmethod

@@ -536,6 +536,7 @@ def load_agent(
     display_name: str,
     encoder: str = "Model (decoder embeddings)",
     retrieval_threshold: Optional[float] = None,
+    quantize: bool = False,
 ) -> tuple[object, object, str, str, str]:
     """Load an agent by display name, applying the chosen retrieval backend.
 
@@ -555,7 +556,7 @@ def load_agent(
 
     # build_engine always loads the lexical corpus from corpus_dirs.
     # For semantic / external we replace it afterwards.
-    engine = registry.build_engine(cfg.key)
+    engine = registry.build_engine(cfg.key, quantize=quantize)
     engine.retrieval_threshold = retrieval_threshold
 
     if not use_lexical and engine.corpus is not None:
@@ -611,6 +612,7 @@ def load_engine(
     corpus_dir: str = "",
     encoder: str = "Model (decoder embeddings)",
     retrieval_threshold: Optional[float] = None,
+    quantize: bool = False,
 ) -> tuple[object, object, str]:
     """Load an ``InferenceEngine`` and a fresh ``ConversationState``.
 
@@ -661,6 +663,7 @@ def load_engine(
         tokenizer_path=vocab_path,
         corpus=lexical_corpus,
         retrieval_threshold=retrieval_threshold if corpus_dir else None,
+        quantize=quantize,
     )
 
     if corpus_dir and not use_lexical:
@@ -1785,6 +1788,13 @@ def build_app() -> gr.Blocks:
                         value="",
                         info="Directory of .txt files used to ground replies in your corpus. Leave blank for ungrounded chat.",
                     )
+                    chat_quantize = gr.Checkbox(
+                        label="int8 quantization",
+                        value=False,
+                        info="Quantize Linear layers to int8 after loading. Cuts memory ~4× and speeds up CPU inference. Ignored on CUDA.",
+                        scale=0,
+                        min_width=200,
+                    )
                 load_status = gr.Textbox(label="Status", interactive=False)
 
             # ---- Generation controls ------------------------------------
@@ -1873,12 +1883,12 @@ def build_app() -> gr.Blocks:
             # ---- Event wiring -------------------------------------------
             agent_load_btn.click(
                 fn=load_agent,
-                inputs=[agent_dropdown, chat_encoder, chat_threshold],
+                inputs=[agent_dropdown, chat_encoder, chat_threshold, chat_quantize],
                 outputs=[engine_state, conv_state, agent_status, chat_ckpt, chat_vocab],
             )
             load_btn.click(
                 fn=load_engine,
-                inputs=[chat_ckpt, chat_vocab, chat_corpus_dir, chat_encoder, chat_threshold],
+                inputs=[chat_ckpt, chat_vocab, chat_corpus_dir, chat_encoder, chat_threshold, chat_quantize],
                 outputs=[engine_state, conv_state, load_status],
             )
             chat_btn.click(
