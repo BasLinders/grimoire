@@ -34,6 +34,7 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+import torch.utils.checkpoint
 
 from grimoire_ai.llm.model.block import RMSNorm, TransformerBlock
 from grimoire_ai.llm.model.config import TransformerConfig
@@ -82,6 +83,7 @@ class GrimoireTransformer(nn.Module):
         # nn.Parameter tensor; updating one updates the other automatically.
         self.output_head.weight = self.embedding.weight
 
+        self._gradient_checkpointing = False
         self._init_weights()
 
     def _init_weights(self) -> None:
@@ -139,15 +141,28 @@ class GrimoireTransformer(nn.Module):
         present_kvs: list[tuple[torch.Tensor, torch.Tensor]] = []
 
         for i, block in enumerate(self.blocks):
-            layer_past = past_kvs[i] if past_kvs is not None else None
-            x, present_kv = block(
-                x,
-                attention_mask=attention_mask,
-                past_kv=layer_past,
-                use_cache=use_cache,
-            )
-            if use_cache and present_kv is not None:
-                present_kvs.append(present_kv)
+            if self._gradient_checkpointing and self.training:
+                # Recompute block activations during backward instead of
+                # storing them.  KV-cache is disabled (past_kv=None,
+                # use_cache=False) — caching is an inference-only feature.
+                # use_reentrant=False: modern path, compatible with autocast
+                # and torch.compile; None tensors (attention_mask) are safe.
+                def _block_fn(blk, x_in, mask_in):
+                    return blk(x_in, attention_mask=mask_in, past_kv=None, use_cache=False)[0]
+                x = torch.utils.checkpoint.checkpoint(
+                    _block_fn, block, x, attention_mask,
+                    use_reentrant=False,
+                )
+            else:
+                layer_past = past_kvs[i] if past_kvs is not None else None
+                x, present_kv = block(
+                    x,
+                    attention_mask=attention_mask,
+                    past_kv=layer_past,
+                    use_cache=use_cache,
+                )
+                if use_cache and present_kv is not None:
+                    present_kvs.append(present_kv)
 
         x = self.final_norm(x)
         logits = self.output_head(x)
@@ -205,6 +220,22 @@ class GrimoireTransformer(nn.Module):
             counts = mask.sum(dim=1).clamp(min=1.0)
             return summed / counts
         return x.mean(dim=1)
+
+    def enable_gradient_checkpointing(self) -> None:
+        """Trade activation memory for compute during training.
+
+        When enabled, intermediate activations inside each ``TransformerBlock``
+        are discarded after the forward pass and recomputed on demand during
+        backward.  This halves peak VRAM at a cost of roughly 20 % extra
+        compute (one extra forward pass per backward).
+
+        Has no effect during inference (``model.eval()``).
+        """
+        self._gradient_checkpointing = True
+
+    def disable_gradient_checkpointing(self) -> None:
+        """Restore the standard forward pass that stores all activations."""
+        self._gradient_checkpointing = False
 
     def num_parameters(self, trainable_only: bool = True) -> int:
         """Count the total number of (trainable) parameters.

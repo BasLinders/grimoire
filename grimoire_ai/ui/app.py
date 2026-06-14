@@ -215,6 +215,7 @@ def run_pretrain(
     n_heads: int,
     n_kv_heads: int,
     d_ff: int,
+    gradient_checkpointing: bool = False,
 ) -> Generator[str, None, None]:
     """Launch a pre-training run and stream log output.
 
@@ -264,6 +265,7 @@ def run_pretrain(
             eval_batches=int(eval_batches),
             checkpoint_dir=checkpoint_dir,
             device=device,
+            gradient_checkpointing=gradient_checkpointing,
             on_log=on_log,
             on_save=on_save,
             on_done=on_done,
@@ -1429,6 +1431,16 @@ def build_app() -> gr.Blocks:
                     info="Max validation batches averaged per eval pass. 0 uses the whole held-out set; a small cap keeps eval fast.",
                 )
 
+            # ---- Memory options -----------------------------------------
+            with gr.Row():
+                pt_grad_ckpt = gr.Checkbox(
+                    label="Gradient checkpointing",
+                    value=False,
+                    info="Recompute block activations during backward instead of storing them. "
+                         "Halves peak VRAM at a cost of ~20 % slower training. "
+                         "Recommended for medium-85M / large-250M on GPUs with < 16 GB VRAM.",
+                )
+
             # ---- Model architecture -------------------------------------
             with gr.Accordion("Model architecture", open=False):
                 gr.Markdown(
@@ -1474,6 +1486,7 @@ def build_app() -> gr.Blocks:
                     pt_batch, pt_accum, pt_log, pt_save,
                     pt_val_split, pt_eval_every, pt_eval_batches,
                     pt_d_model, pt_n_layers, pt_n_heads, pt_n_kv_heads, pt_d_ff,
+                    pt_grad_ckpt,
                 ],
                 outputs=[pt_log_box, pt_run_btn, pt_stop_btn],
             )
