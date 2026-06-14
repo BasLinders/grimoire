@@ -757,6 +757,73 @@ def chat(
 
 
 # ---------------------------------------------------------------------------
+# Evaluate tab logic
+# ---------------------------------------------------------------------------
+
+def run_eval_ui(
+    checkpoint_path: str,
+    vocab_path: str,
+    corpus_dir: str,
+    corpus_bin: str,
+    quiz_path: str,
+    semantic: bool,
+    quantize: bool,
+    max_ppl_batches: int,
+) -> Generator[tuple, None, None]:
+    """Run the evaluation harness and stream progress."""
+    from grimoire_ai.llm.inference.engine import InferenceEngine
+    from grimoire_ai.llm.eval.harness import run_eval
+
+    checkpoint_path = checkpoint_path.strip()
+    vocab_path = vocab_path.strip()
+    corpus_dir = corpus_dir.strip()
+    corpus_bin = corpus_bin.strip()
+    quiz_path = quiz_path.strip()
+
+    if not checkpoint_path or not vocab_path:
+        def _task(on_progress):
+            raise ValueError("Checkpoint and vocabulary paths are required.")
+        yield from _wrap_with_buttons(_stream_task(_task))
+        return
+
+    def _task(on_progress):
+        on_progress("Loading model …")
+        engine = InferenceEngine(
+            checkpoint_path=checkpoint_path,
+            tokenizer_path=vocab_path,
+            quantize=quantize,
+        )
+        on_progress(f"Model loaded  ({engine.model.num_parameters():,} params)")
+
+        if corpus_dir and Path(corpus_dir).is_dir():
+            documents: list[tuple[str, str]] = []
+            for txt in sorted(Path(corpus_dir).glob("*.txt")):
+                documents.append((txt.read_text(encoding="utf-8"), txt.stem))
+            if documents:
+                if semantic:
+                    on_progress(f"Building semantic corpus from {len(documents)} file(s) …")
+                    engine.build_semantic_corpus(documents)
+                else:
+                    from grimoire_ai.corpus.corpus import GrimoireCorpus
+                    corpus = GrimoireCorpus()
+                    for text, source in documents:
+                        corpus.add_text(text, source=source)
+                    engine.corpus = corpus
+                    on_progress(f"Lexical corpus loaded: {len(documents)} file(s).")
+
+        run_eval(
+            engine=engine,
+            corpus_bin=corpus_bin or None,
+            quiz_path=quiz_path or None,
+            output_dir="data/eval",
+            max_perplexity_batches=int(max_ppl_batches),
+            on_progress=on_progress,
+        )
+
+    yield from _wrap_with_buttons(_stream_task(_task))
+
+
+# ---------------------------------------------------------------------------
 # Scale calculator logic
 # ---------------------------------------------------------------------------
 
@@ -1652,6 +1719,78 @@ def build_app() -> gr.Blocks:
                 fn=run_scale_calc,
                 inputs=[sc_corpus, sc_checkpoint, sc_batch, sc_accum, sc_seq, sc_steps],
                 outputs=[sc_output],
+            )
+
+        # ----------------------------------------------------------------
+        with gr.Tab("Evaluate"):
+            gr.Markdown(
+                "Run the evaluation suite on a checkpoint: **perplexity / BPC** on a "
+                "held-out corpus slice, **retrieval hit-rate** over a fixed query set, "
+                "and a **factual Q&A quiz** with keyword-recall scoring.  "
+                "Results are saved to `data/eval/` as a timestamped JSON file."
+            )
+            with gr.Row():
+                ev_checkpoint = gr.Textbox(
+                    label="Checkpoint (.pt)",
+                    placeholder="checkpoints/finetune/step_0000500.pt",
+                    info="Model to evaluate.",
+                )
+                ev_vocab = gr.Textbox(
+                    label="Vocabulary (.json)",
+                    value="data/tokenizer/bpe.json",
+                    info="BPE vocabulary used at training time.",
+                )
+            with gr.Row():
+                ev_corpus_dir = gr.Textbox(
+                    label="Corpus directory — retrieval eval (optional)",
+                    placeholder="data/corpus/saga/",
+                    info="Directory of .txt files. Required for retrieval hit-rate.",
+                )
+                ev_corpus_bin = gr.Textbox(
+                    label="Corpus binary — perplexity eval (optional)",
+                    placeholder="data/processed/corpus.bin",
+                    info="Tokenised .bin file from Preprocess. Required for perplexity / BPC.",
+                )
+            ev_quiz = gr.Textbox(
+                label="Quiz file (optional)",
+                placeholder="scripts/eval_data/saga_quiz.jsonl",
+                info=(
+                    "JSONL file with {user, assistant, keywords} examples. "
+                    "Defaults to the built-in Saga quiz when left blank."
+                ),
+            )
+            with gr.Row():
+                ev_semantic = gr.Checkbox(
+                    label="Semantic retrieval (model embeddings)",
+                    value=True,
+                    info="Use the model's own embeddings for retrieval. Slower but more accurate than lexical.",
+                )
+                ev_quantize = gr.Checkbox(
+                    label="int8 quantization (CPU only)",
+                    value=False,
+                    info="Quantize model weights to int8 before evaluation — reduces memory use.",
+                )
+                ev_max_ppl = gr.Number(
+                    label="Max perplexity batches",
+                    value=50,
+                    precision=0,
+                    info="0 = evaluate the full held-out split. 50 batches ≈ 30–60 s on CPU.",
+                )
+            with gr.Row():
+                ev_run_btn  = gr.Button("Run evaluation", variant="primary")
+                ev_stop_btn = gr.Button("Stop", interactive=False, elem_classes=["stop-btn"])
+            ev_log = gr.Textbox(
+                label="Evaluation log",
+                lines=20,
+                interactive=False,
+            )
+            ev_run_btn.click(
+                fn=run_eval_ui,
+                inputs=[
+                    ev_checkpoint, ev_vocab, ev_corpus_dir, ev_corpus_bin,
+                    ev_quiz, ev_semantic, ev_quantize, ev_max_ppl,
+                ],
+                outputs=[ev_log, ev_run_btn, ev_stop_btn],
             )
 
         # ----------------------------------------------------------------

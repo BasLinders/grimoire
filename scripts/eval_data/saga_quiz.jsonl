@@ -1,0 +1,20 @@
+{"user": "What happens to a creature's speed when it is grappled?", "assistant": "A grappled creature has its speed reduced to zero.", "keywords": ["speed", "zero"]}
+{"user": "How does advantage work on a d20 roll?", "assistant": "When you have advantage, you roll the d20 twice and use the higher result.", "keywords": ["roll", "twice", "higher"]}
+{"user": "What is the proficiency bonus at level 7?", "assistant": "At level 7, the proficiency bonus is +3.", "keywords": ["+3"]}
+{"user": "What is the average damage of a greatsword?", "assistant": "A greatsword deals 2d6 damage with an average of 7.0.", "keywords": ["2d6", "7"]}
+{"user": "What conditions does being frightened impose?", "assistant": "A frightened creature has disadvantage on ability checks and attack rolls while the source of fear is in line of sight, and cannot willingly move closer to the source.", "keywords": ["disadvantage", "line of sight"]}
+{"user": "What does the incapacitated condition do?", "assistant": "An incapacitated creature cannot take actions or reactions.", "keywords": ["actions", "reactions"]}
+{"user": "How does a critical hit affect damage?", "assistant": "On a critical hit you roll all damage dice twice and add them together before adding modifiers.", "keywords": ["dice", "twice"]}
+{"user": "Can you cast a concentration spell while already concentrating on one?", "assistant": "No. Casting a second concentration spell immediately ends the first.", "keywords": ["ends", "concentration"]}
+{"user": "How many spell slots does a level 5 wizard have?", "assistant": "A level 5 wizard has 4 first-level, 3 second-level, and 2 third-level spell slots.", "keywords": ["4", "3", "2"]}
+{"user": "What is bounded accuracy in D&D 5e?", "assistant": "Bounded accuracy means attack bonuses, armor classes, and saving throw bonuses stay in a narrow range across all levels, keeping low-level content relevant at higher levels.", "keywords": ["bonuses", "narrow"]}
+{"user": "How do I calculate a spell save DC?", "assistant": "Spell save DC equals 8 plus proficiency bonus plus spellcasting ability modifier.", "keywords": ["8", "proficiency"]}
+{"user": "How many actions does a creature get on its turn?", "assistant": "A creature gets one action, one bonus action if available, and one reaction per round, plus movement up to its speed.", "keywords": ["action", "bonus action", "reaction"]}
+{"user": "What is the multiplier applied to encounter XP for two monsters?", "assistant": "For two monsters the XP multiplier is x1.5.", "keywords": ["1.5"]}
+{"user": "What is the chance to hit AC 16 with a +5 attack bonus?", "assistant": "The hit chance is 50 percent: (21 minus 16 plus 5) divided by 20 equals 10/20.", "keywords": ["50"]}
+{"user": "How does the rogue's sneak attack scale?", "assistant": "Sneak attack starts at 1d6 at level 1 and increases by 1d6 every two rogue levels.", "keywords": ["1d6", "two"]}
+{"user": "What is the expected value of rolling 4d6 and dropping the lowest?", "assistant": "The expected value of a 4d6 drop-lowest roll is approximately 12.24.", "keywords": ["12"]}
+{"user": "What is the deadly XP threshold for a level 5 character?", "assistant": "The deadly XP threshold for a single level 5 character is 1,100 XP.", "keywords": ["1,100", "deadly"]}
+{"user": "How does disadvantage affect the chance of a natural 20?", "assistant": "With disadvantage the chance of rolling a natural 20 drops from 5 percent to 0.25 percent (1/400), since both dice must be checked and you use the lower.", "keywords": ["0.25", "lower"]}
+{"user": "What is the difference between a saving throw and an ability check?", "assistant": "A saving throw is reactive, made to resist a threat. An ability check is active, made to accomplish a task.", "keywords": ["reactive", "active"]}
+{"user": "At what levels does the proficiency bonus increase?", "assistant": "The proficiency bonus starts at +2 (levels 1-4), increases to +3 (levels 5-8), then by +1 every four levels, reaching +6 at levels 17-20.", "keywords": ["+2", "+3", "+6"]}
