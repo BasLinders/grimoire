@@ -64,15 +64,17 @@ Dynamic int8 quantization via `torch.quantization.quantize_dynamic` / `torchao`.
 - **CLI:** `python scripts/evaluate.py --checkpoint ... --vocab ...` (perplexity, retrieval, quiz flags)
 - **UI:** Evaluate tab (after Scale) — checkpoint/vocab/corpus/quiz inputs, Run button, live log stream
 
-### 4. Math → Python CLI (Tool Calling)
+### 4. Math → Python CLI (Tool Calling) ✓ done
 
 **Why fourth:** The D&D fine-tuning data already trains the model to decline arithmetic and defer to a tool. This closes that loop.
 
-- Detect math-intent queries via pattern matching on the generated `<AST>` preamble (e.g., model emits `<TOOL:python>expr</TOOL>` before its narrative response)
-- Pass expression to a sandboxed evaluator (SymPy or `asteval` — not `eval()`) in a subprocess
-- Inject the result as a `<SEP>`-delimited context line before the model continues generation
-- Extend fine-tuning data with tool-call examples (`<TOOL:python>`, result, narrative)
-- Add opt-in toggle in Chat tab ("Enable math tool")
+- **Query-side detection:** `MathTool.detect()` identifies arithmetic in queries via regex (operators, percent-of, Unicode multiply/power); dice notation excluded (`grimoire_ai/tools/math_tool.py`)
+- **Safe evaluator:** pure `ast`-based visitor — no `eval()`, no subprocess needed; supports arithmetic operators, parentheses, and whitelisted math functions (sqrt, sin, cos, log, …)
+- **Context injection:** result prepended as a synthetic `QueryResult` with excerpt `[Math] expr = result`; flows through the existing `PromptBuilder` context slot
+- **Response-side tag resolution:** `MathTool.process_response()` replaces `<TOOL:python>…</TOOL>` tags emitted by fine-tuned models with evaluated results
+- **Fine-tune data:** 15 examples with `<TOOL:python>` format in `scripts/finetune_data/tool_call_examples.jsonl`
+- **CLI:** `--math-tool` flag on `python -m grimoire_ai.cli.chat`
+- **UI:** "Enable math tool" checkbox in Chat tab (wired to both agent load and manual load)
 
 ### 5. LoRA / Adapter Fine-Tuning
 
@@ -119,7 +121,7 @@ Dynamic int8 quantization via `torch.quantization.quantize_dynamic` / `torchao`.
 | 1 | int8 quantization | Low | ✓ done | CPU inference at medium/large scale |
 | 2 | Gradient checkpointing | Low | ✓ done | Training medium/large on consumer GPU |
 | 3 | Evaluation harness | Medium | ✓ done | All quality-sensitive decisions |
-| 4 | Math → Python CLI | Medium | — | Closing the tool-call loop from fine-tune data |
+| 4 | Math → Python CLI | Medium | ✓ done | Closing the tool-call loop from fine-tune data |
 | 5 | LoRA adapters | Medium | — | Per-agent specialization without catastrophic forgetting |
 | 6 | Agent routing | Low (after 5) | — | Automatic multi-domain dispatch |
 | 7 | Persistent RAG index | Medium | — | Startup time at 500M token corpus scale |

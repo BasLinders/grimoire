@@ -539,6 +539,7 @@ def load_agent(
     encoder: str = "Model (decoder embeddings)",
     retrieval_threshold: Optional[float] = None,
     quantize: bool = False,
+    math_tool_enabled: bool = False,
 ) -> tuple[object, object, str, str, str]:
     """Load an agent by display name, applying the chosen retrieval backend.
 
@@ -560,6 +561,9 @@ def load_agent(
     # For semantic / external we replace it afterwards.
     engine = registry.build_engine(cfg.key, quantize=quantize)
     engine.retrieval_threshold = retrieval_threshold
+    if math_tool_enabled:
+        from grimoire_ai.tools.math_tool import MathTool
+        engine.math_tool = MathTool()
 
     if not use_lexical and engine.corpus is not None:
         # Resolve via the registry so paths are correct regardless of cwd.
@@ -615,6 +619,7 @@ def load_engine(
     encoder: str = "Model (decoder embeddings)",
     retrieval_threshold: Optional[float] = None,
     quantize: bool = False,
+    math_tool_enabled: bool = False,
 ) -> tuple[object, object, str]:
     """Load an ``InferenceEngine`` and a fresh ``ConversationState``.
 
@@ -660,12 +665,18 @@ def load_engine(
         if not documents:
             return None, None, f"No .txt files found in {corpus_dir}"
 
+    math_tool = None
+    if math_tool_enabled:
+        from grimoire_ai.tools.math_tool import MathTool
+        math_tool = MathTool()
+
     engine = InferenceEngine(
         checkpoint_path=checkpoint_path,
         tokenizer_path=vocab_path,
         corpus=lexical_corpus,
         retrieval_threshold=retrieval_threshold if corpus_dir else None,
         quantize=quantize,
+        math_tool=math_tool,
     )
 
     if corpus_dir and not use_lexical:
@@ -1947,6 +1958,17 @@ def build_app() -> gr.Blocks:
                         scale=0,
                         min_width=200,
                     )
+                    chat_math_tool = gr.Checkbox(
+                        label="Enable math tool",
+                        value=False,
+                        info=(
+                            "Detect arithmetic in queries (e.g. '25% of 1200', '3^4') and "
+                            "inject the computed result as context before generation.  "
+                            "Also resolves <TOOL:python>…</TOOL> tags from fine-tuned models."
+                        ),
+                        scale=0,
+                        min_width=200,
+                    )
                 load_status = gr.Textbox(label="Status", interactive=False)
 
             # ---- Generation controls ------------------------------------
@@ -2035,12 +2057,12 @@ def build_app() -> gr.Blocks:
             # ---- Event wiring -------------------------------------------
             agent_load_btn.click(
                 fn=load_agent,
-                inputs=[agent_dropdown, chat_encoder, chat_threshold, chat_quantize],
+                inputs=[agent_dropdown, chat_encoder, chat_threshold, chat_quantize, chat_math_tool],
                 outputs=[engine_state, conv_state, agent_status, chat_ckpt, chat_vocab],
             )
             load_btn.click(
                 fn=load_engine,
-                inputs=[chat_ckpt, chat_vocab, chat_corpus_dir, chat_encoder, chat_threshold, chat_quantize],
+                inputs=[chat_ckpt, chat_vocab, chat_corpus_dir, chat_encoder, chat_threshold, chat_quantize, chat_math_tool],
                 outputs=[engine_state, conv_state, load_status],
             )
             chat_btn.click(
