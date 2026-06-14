@@ -1,17 +1,21 @@
-"""Download Wikipedia articles via the MediaWiki action API.
+"""Download Wikibooks pages via the MediaWiki action API.
 
-Recursively traverses subcategories from a set of seed categories and writes
-one .txt file per article to the output directory.  Two topic groups are
-covered: mathematics/data-science and fantasy/mythology.
+Wikibooks hosts free, collaboratively written textbooks.  Pages tend to be
+much longer than Wikipedia articles — a single chapter can run several thousand
+words — making this a token-dense source.  Two topic groups are covered:
+
+  math     — mathematics, statistics, probability, linear algebra, calculus,
+              logic, combinatorics, data science, machine learning
+  fantasy  — fantasy writing, mythology, folklore, world-building guides,
+              role-playing game manuals, historical fiction craft
 
 Usage
 -----
-    python scripts/scrape_wikipedia.py
-    python scripts/scrape_wikipedia.py --output data/corpus/saga/ --depth 2
-    python scripts/scrape_wikipedia.py --group math --max-articles 2000
+    python scripts/scrape_wikibooks.py
+    python scripts/scrape_wikibooks.py --output data/corpus/saga/ --depth 2
+    python scripts/scrape_wikibooks.py --group math --max-pages 3000
 
-The script is idempotent: already-downloaded files are skipped.  Respect
-Wikipedia's rate limits — do not set --delay below 0.1.
+The script is idempotent: already-downloaded files are skipped.
 
 Requirements
 ------------
@@ -25,7 +29,7 @@ from pathlib import Path
 
 import requests
 
-API_URL = "https://en.wikipedia.org/w/api.php"
+API_URL = "https://en.wikibooks.org/w/api.php"
 
 SESSION = requests.Session()
 SESSION.headers["User-Agent"] = (
@@ -34,7 +38,7 @@ SESSION.headers["User-Agent"] = (
 )
 
 _MAX_RETRIES = 6
-_RETRY_BASE  = 2.0   # seconds; doubled on each attempt
+_RETRY_BASE  = 2.0
 
 
 def _get(params: dict, delay: float, timeout: int = 60) -> requests.Response:
@@ -43,7 +47,7 @@ def _get(params: dict, delay: float, timeout: int = 60) -> requests.Response:
     for attempt in range(_MAX_RETRIES):
         try:
             resp = SESSION.get(API_URL, params=params, timeout=timeout)
-        except requests.RequestException as exc:
+        except requests.RequestException:
             if attempt == _MAX_RETRIES - 1:
                 raise
             time.sleep(wait)
@@ -64,59 +68,46 @@ def _get(params: dict, delay: float, timeout: int = 60) -> requests.Response:
     resp.raise_for_status()
     return resp
 
+
 # ---------------------------------------------------------------------------
 # Seed categories
 # ---------------------------------------------------------------------------
 
 MATH_CATEGORIES = [
-    "Statistics",
-    "Probability theory",
-    "Machine learning",
-    "Linear algebra",
+    "Mathematics",
+    "Algebra",
     "Calculus",
-    "Information theory",
-    "Bayesian statistics",
-    "Mathematical logic",
-    "Graph theory",
+    "Statistics",
+    "Probability",
+    "Linear Algebra",
+    "Discrete Mathematics",
+    "Mathematical Analysis",
+    "Number Theory",
     "Combinatorics",
-    "Number theory",
-    "Numerical analysis",
-    "Optimization (mathematics)",
-    "Data mining",
-    "Artificial intelligence",
-    "Neural networks",
-    "Natural language processing",
-    "Time series",
-    "Stochastic processes",
-    "Mathematical statistics",
+    "Logic",
+    "Numerical Methods",
+    "Data Science",
+    "Machine Learning",
+    "Artificial Intelligence",
+    "Computer Science",
+    "Algorithms",
+    "Information Theory",
+    "Optimization",
 ]
 
 FANTASY_CATEGORIES = [
-    "Greek mythology",
-    "Norse mythology",
-    "Celtic mythology",
-    "Arthurian legend",
+    "Fiction Writing",
+    "Fantasy",
+    "Mythology",
     "Folklore",
-    "Fairy tales",
-    "Demonology",
-    "Angels",
-    "Fantasy literature",
-    "Epic poetry",
-    "Mythological creatures",
-    "Dragons in mythology",
-    "Elves",
-    "Wizards",
-    "Magic (supernatural)",
-    "Necromancy",
-    "Alchemy",
-    "Divination",
-    "Curses in mythology",
-    "Legendary weapons",
-    "Underworld",
-    "Heroes in Greek mythology",
-    "Arabian mythology",
-    "Mesopotamian mythology",
-    "Egyptian mythology",
+    "Dungeons and Dragons",
+    "Role-playing Games",
+    "World Building",
+    "Speculative Fiction",
+    "Writing",
+    "History",
+    "Classical Studies",
+    "Linguistics",
 ]
 
 ALL_GROUPS = {
@@ -124,13 +115,13 @@ ALL_GROUPS = {
     "fantasy": FANTASY_CATEGORIES,
 }
 
+
 # ---------------------------------------------------------------------------
 # API helpers
 # ---------------------------------------------------------------------------
 
 def _get_subcategories(category: str, delay: float) -> list[str]:
-    """Return immediate subcategory names within a category."""
-    subs = []
+    subs: list[str] = []
     params = {
         "action":  "query",
         "list":    "categorymembers",
@@ -141,8 +132,7 @@ def _get_subcategories(category: str, delay: float) -> list[str]:
     }
     while True:
         data = _get(params, delay=delay, timeout=30).json()
-        members = data.get("query", {}).get("categorymembers", [])
-        for m in members:
+        for m in data.get("query", {}).get("categorymembers", []):
             subs.append(m["title"].removeprefix("Category:"))
         cont = data.get("continue", {}).get("cmcontinue")
         if not cont:
@@ -152,8 +142,7 @@ def _get_subcategories(category: str, delay: float) -> list[str]:
 
 
 def _get_category_page_titles(category: str, delay: float) -> list[str]:
-    """Return page titles (not subcategories) directly in a category."""
-    titles = []
+    titles: list[str] = []
     params = {
         "action":  "query",
         "list":    "categorymembers",
@@ -164,8 +153,8 @@ def _get_category_page_titles(category: str, delay: float) -> list[str]:
     }
     while True:
         data = _get(params, delay=delay, timeout=30).json()
-        members = data.get("query", {}).get("categorymembers", [])
-        titles.extend(m["title"] for m in members)
+        for m in data.get("query", {}).get("categorymembers", []):
+            titles.append(m["title"])
         cont = data.get("continue", {}).get("cmcontinue")
         if not cont:
             break
@@ -174,7 +163,6 @@ def _get_category_page_titles(category: str, delay: float) -> list[str]:
 
 
 def _collect_titles(seeds: list[str], depth: int, delay: float) -> list[str]:
-    """BFS over category tree up to *depth* levels deep; return unique page titles."""
     seen_cats: set[str] = set()
     seen_titles: set[str] = set()
     all_titles: list[str] = []
@@ -196,13 +184,12 @@ def _collect_titles(seeds: list[str], depth: int, delay: float) -> list[str]:
                         seen_titles.add(t)
                         all_titles.append(t)
                         new_pages += 1
-                subs = []
+                subs: list[str] = []
                 if level < depth:
                     subs = _get_subcategories(cat, delay)
                     next_frontier.extend(s for s in subs if s not in seen_cats)
-                print(f"  [depth {level}] {cat}: {new_pages} articles, {len(subs)} subcategories "
-                      f"(total so far: {len(all_titles)})")
-                time.sleep(delay)
+                print(f"  [depth {level}] {cat}: {new_pages} pages, "
+                      f"{len(subs)} subcategories (total: {len(all_titles)})")
             except Exception as exc:
                 print(f"  [warn] category '{cat}': {exc}")
         frontier = next_frontier
@@ -211,14 +198,13 @@ def _collect_titles(seeds: list[str], depth: int, delay: float) -> list[str]:
 
 
 def _fetch_extracts(titles: list[str], delay: float) -> dict[str, str]:
-    """Fetch plain-text extracts for a batch of titles; return {title: text}."""
     results: dict[str, str] = {}
     params = {
         "action":          "query",
         "prop":            "extracts",
         "explaintext":     "1",
         "exsectionformat": "plain",
-        "exlimit":         "max",   # return an extract for every page in the batch
+        "exlimit":         "max",
         "titles":          "|".join(titles),
         "format":          "json",
     }
@@ -236,14 +222,16 @@ def _fetch_extracts(titles: list[str], delay: float) -> dict[str, str]:
 
 
 def _clean(text: str) -> str:
+    # Remove Wikibooks boilerplate navigation lines
+    text = re.sub(r"^(Previous|Next|Back|Home|Contents|Navigation)\s*:.*$", "", text, flags=re.MULTILINE)
     text = re.sub(r"\n{4,}", "\n\n\n", text)
     return text.strip()
 
 
 def _safe_filename(title: str, prefix: str) -> str:
-    safe = re.sub(r"[^\w\s-]", "", title)[:60].strip()
-    safe = re.sub(r"\s+", "_", safe)
-    return f"wp_{prefix}_{safe}.txt"
+    safe = re.sub(r"[^\w\s/-]", "", title)[:60].strip()
+    safe = re.sub(r"[\s/]+", "_", safe)
+    return f"wb_{prefix}_{safe}.txt"
 
 
 # ---------------------------------------------------------------------------
@@ -255,29 +243,28 @@ def scrape(
     groups: list[str],
     depth: int,
     delay: float,
-    max_articles: int,
+    max_pages: int,
     batch_size: int,
+    min_chars: int,
 ) -> None:
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
     for group in groups:
         seeds = ALL_GROUPS[group]
-        print(f"\n=== Group: {group} ({len(seeds)} seed categories, depth={depth}) ===")
+        print(f"\n=== Wikibooks group: {group} ({len(seeds)} seed categories, depth={depth}) ===")
 
-        print("  Collecting article titles...")
+        print("  Collecting page titles...")
         titles = _collect_titles(seeds, depth=depth, delay=delay)
-        print(f"  Found {len(titles)} unique articles.")
+        print(f"  Found {len(titles)} unique pages.")
 
-        if max_articles and len(titles) > max_articles:
-            titles = titles[:max_articles]
-            print(f"  Capped at {max_articles}.")
+        if max_pages and len(titles) > max_pages:
+            titles = titles[:max_pages]
+            print(f"  Capped at {max_pages}.")
 
         written = skipped = failed = 0
         for start in range(0, len(titles), batch_size):
             batch = titles[start: start + batch_size]
-
-            # Skip titles whose files already exist
             needed = [t for t in batch if not (out / _safe_filename(t, group)).exists()]
             skipped += len(batch) - len(needed)
             if not needed:
@@ -285,54 +272,38 @@ def scrape(
 
             extracts = _fetch_extracts(needed, delay=delay)
             for title in needed:
-                text = extracts.get(title, "")
-                text = _clean(text)
-                if len(text) < 200:
+                text = _clean(extracts.get(title, ""))
+                if len(text) < min_chars:
                     failed += 1
                     continue
                 dest = out / _safe_filename(title, group)
-                header = f"# {title}\nSource: Wikipedia\n\n"
+                header = f"# {title}\nSource: Wikibooks (en.wikibooks.org)\n\n"
                 dest.write_text(header + text, encoding="utf-8")
                 written += 1
 
             done = start + len(batch)
             if done % 200 == 0 or done >= len(titles):
-                print(f"  {done}/{len(titles)} processed — {written} written, "
-                      f"{skipped} skipped, {failed} failed")
+                print(f"  {done}/{len(titles)} processed — "
+                      f"{written} written, {skipped} skipped, {failed} too short")
 
-        print(f"  Done: {written} new articles written.")
+        print(f"  Done: {written} new pages written.")
 
     print("\nFinished. Run the Preprocess tab to tokenize the new files.")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Download Wikipedia articles for the Grimoire corpus"
+        description="Download Wikibooks pages for the Grimoire corpus"
     )
-    parser.add_argument(
-        "--output", default="data/corpus/saga/",
-        help="Output directory (default: data/corpus/saga/)",
-    )
-    parser.add_argument(
-        "--group", choices=["math", "fantasy", "all"], default="all",
-        help="Topic group to fetch (default: all)",
-    )
-    parser.add_argument(
-        "--depth", type=int, default=2,
-        help="Subcategory recursion depth (default: 2)",
-    )
-    parser.add_argument(
-        "--delay", type=float, default=0.5,
-        help="Seconds between requests (default: 0.5 — do not go below 0.2)",
-    )
-    parser.add_argument(
-        "--max-articles", type=int, default=0,
-        help="Max articles per group (default: 0 = no limit)",
-    )
-    parser.add_argument(
-        "--batch-size", type=int, default=10,
-        help="Titles per API batch request (default: 10; max 50 for Wikipedia)",
-    )
+    parser.add_argument("--output", default="data/corpus/saga/")
+    parser.add_argument("--group", choices=["math", "fantasy", "all"], default="all")
+    parser.add_argument("--depth", type=int, default=2)
+    parser.add_argument("--delay", type=float, default=0.5)
+    parser.add_argument("--max-pages", type=int, default=0,
+                        help="Max pages per group (0 = no limit)")
+    parser.add_argument("--batch-size", type=int, default=10)
+    parser.add_argument("--min-chars", type=int, default=300,
+                        help="Drop pages shorter than this (default 300)")
     args = parser.parse_args()
 
     groups = ["math", "fantasy"] if args.group == "all" else [args.group]
@@ -341,6 +312,7 @@ if __name__ == "__main__":
         groups=groups,
         depth=args.depth,
         delay=args.delay,
-        max_articles=args.max_articles,
+        max_pages=args.max_pages,
         batch_size=min(args.batch_size, 50),
+        min_chars=args.min_chars,
     )
