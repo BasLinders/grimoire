@@ -109,7 +109,7 @@ def run_preprocess(
     output_path: str,
     vocab_path: str,
     vocab_size: int,
-    bpe_sample_size: int,
+    bpe_sample_size: Optional[float],  # gr.Number delivers float; None when field is cleared
 ) -> Generator[str, None, None]:
     """Train BPE tokenizer and write corpus binary; stream progress live."""
     from grimoire_ai.llm.data.preprocessing import preprocess
@@ -117,7 +117,7 @@ def run_preprocess(
     stop_event = threading.Event()
     _stop_events["preprocess"] = stop_event
 
-    sample: Optional[int] = int(bpe_sample_size) if int(bpe_sample_size) > 0 else None
+    n_sample: Optional[int] = int(bpe_sample_size) if bpe_sample_size else None
 
     def _task(on_progress):
         preprocess(
@@ -125,7 +125,7 @@ def run_preprocess(
             output_path=output_path.strip(),
             vocab_path=vocab_path.strip(),
             vocab_size=int(vocab_size),
-            bpe_sample_size=sample,
+            bpe_sample_size=n_sample,
             on_progress=on_progress,
         )
 

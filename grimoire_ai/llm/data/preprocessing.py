@@ -170,6 +170,9 @@ def preprocess(
     output_p = Path(output_path)
     vocab_p  = Path(vocab_path)
 
+    if bpe_sample_size is not None and bpe_sample_size <= 0:
+        bpe_sample_size = None
+
     if not input_p.exists():
         raise FileNotFoundError(f"Input path not found: {input_path}")
 
@@ -203,12 +206,7 @@ def preprocess(
         encoder = BytePairEncoder.load(str(vocab_p))
         _emit(f"      Vocabulary size: {len(encoder):,}")
     else:
-        n_sample = min(bpe_sample_size, len(files)) if bpe_sample_size else len(files)
-        _emit(f"[2/3] Training BPE encoder (vocab_size={vocab_size:,}) "
-              f"on {n_sample}/{len(files)} file(s) ...")
-        if n_sample < len(files):
-            _emit(f"      Sampling {n_sample} files — increase --bpe-sample for "
-                  f"broader vocabulary coverage.")
+        _emit(f"[2/3] Training BPE encoder (vocab_size={vocab_size:,}) ...")
         _emit(f"      This may take several minutes on CPU.")
 
         def _bpe_progress(step: int, total: int) -> None:
@@ -216,6 +214,10 @@ def preprocess(
             _emit(f"      BPE merges: {step:,} / {total:,}  ({pct}%)")
 
         sample = _sample_texts_for_bpe(files, texts, bpe_sample_size, encoding)
+        n_sample = len(sample)
+        _emit(f"      Sampling {n_sample}/{len(files)} file(s) for vocabulary training."
+              if n_sample < len(files) else
+              f"      Using all {n_sample} file(s) for vocabulary training.")
         encoder.train(
             sample,
             vocab_size=vocab_size,
@@ -227,19 +229,26 @@ def preprocess(
         _emit(f"      Saved to {vocab_p}")
 
     # --- Encode and write documents (streaming — no full buffer in RAM) ---
+    # Write to a sibling temp file and rename on success so a failed run never
+    # leaves a partial/corrupt .bin at the destination path.
     _emit(f"[3/3] Encoding and writing {output_p} ...")
     output_p.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = output_p.with_suffix(".bin.tmp")
     total_tokens = 0
-    with open(str(output_p), "wb") as f_out:
-        for i, path in enumerate(files):
-            text = texts[i] if texts is not None else path.read_text(
-                encoding=encoding, errors="replace"
-            )
-            ids = encoder.encode(text)
-            ids.append(EOS_ID)          # document boundary marker
-            np.array(ids, dtype=np.int32).tofile(f_out)
-            total_tokens += len(ids)
-            _emit(f"      [{i+1}/{len(files)}] {path.name}: {len(ids):,} tokens")
+    try:
+        with open(str(tmp_path), "wb") as f_out:
+            for i, path in enumerate(files):
+                text = texts[i] if texts is not None else path.read_text(
+                    encoding=encoding, errors="replace"
+                )
+                ids = encoder.encode(text) + [EOS_ID]   # +[EOS_ID] avoids mutating encoder cache
+                np.array(ids, dtype=np.int32).tofile(f_out)
+                total_tokens += len(ids)
+                _emit(f"      [{i+1}/{len(files)}] {path.name}: {len(ids):,} tokens")
+        tmp_path.replace(output_p)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
     size_mb = output_p.stat().st_size / (1024 ** 2)
     _emit(f"      Total: {total_tokens:,} tokens ({size_mb:.1f} MB) → {output_p}")
@@ -286,7 +295,6 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    bpe_sample: Optional[int] = args.bpe_sample if args.bpe_sample > 0 else None
     try:
         preprocess(
             input_path=args.input,
@@ -296,7 +304,7 @@ def main() -> None:
             encoding=args.encoding,
             dedup=args.dedup,
             dedup_threshold=args.dedup_threshold,
-            bpe_sample_size=bpe_sample,
+            bpe_sample_size=args.bpe_sample,
         )
         print("\nPreprocessing complete.")
     except (FileNotFoundError, ValueError) as exc:
