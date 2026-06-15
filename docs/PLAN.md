@@ -76,23 +76,27 @@ Dynamic int8 quantization via `torch.quantization.quantize_dynamic` / `torchao`.
 - **CLI:** `--math-tool` flag on `python -m grimoire_ai.cli.chat`
 - **UI:** "Enable math tool" checkbox in Chat tab (wired to both agent load and manual load)
 
-### 5. LoRA / Adapter Fine-Tuning
+### 5. LoRA / Adapter Fine-Tuning ✓ done
 
 **Why fifth:** Full fine-tuning on 29–36 examples risks catastrophic forgetting. LoRA freezes base weights and trains ~0.5% of parameters — better regularization, faster, and each domain persona becomes a 2–5 MB `.lora` file rather than a full checkpoint.
 
-- Implement `LoRALinear` wrapper (rank-decomposition `A × B` bypass on `q_proj`, `v_proj`)
-- Add `--lora-rank` and `--lora-alpha` args to the fine-tune pipeline
-- Save/load LoRA weights separately from base checkpoint
-- Merge adapters into base weights for export (`merge_and_unload()`)
+- `LoRALinear` wrapper: rank-decomposition `A × B` path fused into frozen `q_proj`/`v_proj` via registered buffer `base_weight`; `apply_lora()` patches the transformer in-place, `merge_and_unload()` absorbs adapter into weights for export (`grimoire_ai/llm/model/lora.py`)
+- `save_lora()` iterates `named_modules()` directly (never clones frozen `base_weight` buffers — avoids OOM); `load_lora()` matches by module name; both validated by 29-test suite
+- `--lora-rank` / `--lora-alpha` args on `finetune.py`; `InferenceEngine.load_lora()` hot-swaps adapter without reloading base weights
+- Fine-tune UI: **Mode dropdown** (Base instruction fine-tune vs Agent LoRA adapter) — switches defaults, shows/hides agent name field, clears stale resume path; saves named `<agent>.lora` file on completion
+- 64 general-conversation pairs (`scripts/finetune_data/general_conversations.jsonl`) for base instruction fine-tuning
 
-### 6. Agent Routing
+### 6. Agent Routing ✓ done
 
 **Why sixth:** `AgentRegistry` already loads multiple agents. What's missing is automatic dispatch.
 
-- Lightweight intent classifier: score query against each agent's domain corpus using the existing lexical retriever; route to highest-scoring agent
-- Fallback: if no agent exceeds a confidence threshold, use the default agent
-- Log routing decisions to the conversation trace for debugging
-- UI: show which agent handled each turn in the chat history
+- `AgentRouter` scores a query against each agent's `GrimoireCorpus` (top-1 Jaccard) and routes to the highest-scoring agent; falls back to `default_key` when no agent exceeds the threshold (`grimoire_ai/agents/router.py`)
+- `MultiAgentEngine` wraps one shared `InferenceEngine`; `_switch_to()` hot-swaps the active LoRA adapter and corpus per turn — sub-second vs minutes if reloading the full model
+- `_RoutingStateWrapper` proxy intercepts `add_turn()` to inject `agent_key` / `routing_score` into each stored `Turn` without modifying `InferenceEngine`
+- `ConversationState.routing_log` property returns `[(turn_index, agent_key, score), …]` for all routed turns; unrouted turns are excluded
+- `AgentRegistry.build_router()` and `build_multi_agent_engine()` wire everything together from `agents.json`; corpus index is cached to `{corpus_dir}/.cache/lexical.pkl` (stale-file aware)
+- UI: **Auto-route** option prepended to agent selector; active routing decision shown in "Routed to" textbox after each reply
+- 18-test suite covering `AgentRouter`, `_RoutingStateWrapper`, `ConversationState.routing_log`, and `MultiAgentEngine` (`tests/agents/test_router.py`)
 
 ### 7. Persistent RAG Index
 
@@ -122,7 +126,7 @@ Dynamic int8 quantization via `torch.quantization.quantize_dynamic` / `torchao`.
 | 2 | Gradient checkpointing | Low | ✓ done | Training medium/large on consumer GPU |
 | 3 | Evaluation harness | Medium | ✓ done | All quality-sensitive decisions |
 | 4 | Math → Python CLI | Medium | ✓ done | Closing the tool-call loop from fine-tune data |
-| 5 | LoRA adapters | Medium | — | Per-agent specialization without catastrophic forgetting |
-| 6 | Agent routing | Low (after 5) | — | Automatic multi-domain dispatch |
+| 5 | LoRA adapters | Medium | ✓ done | Per-agent specialization without catastrophic forgetting |
+| 6 | Agent routing | Low (after 5) | ✓ done | Automatic multi-domain dispatch |
 | 7 | Persistent RAG index | Medium | — | Startup time at 500M token corpus scale |
 | 8 | GGUF export | High | — | Widest deployment, no Python dependency |
