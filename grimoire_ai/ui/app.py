@@ -307,6 +307,7 @@ def run_finetune(
     lora_rank: int = 0,
     lora_alpha: float = 16.0,
     lora_targets: str = "q_proj,v_proj",
+    agent_name: str = "",
 ) -> Generator[str, None, None]:
     """Launch a fine-tuning run and stream log output.
 
@@ -360,6 +361,14 @@ def run_finetune(
             if on_save is not None:
                 on_save(step, elapsed)
 
+        # Capture the actual final step and elapsed time reported by Trainer.on_done
+        # so the final-save log entry shows accurate values instead of synthetic ones.
+        _done_info: list = []
+
+        def _on_done_capturing(step: int, elapsed: float) -> None:
+            _done_info.append((step, elapsed))
+            on_done(step, elapsed)
+
         Trainer(
             model=model,
             train_dataset=train_dataset,
@@ -377,11 +386,24 @@ def run_finetune(
             device=device,
             on_log=on_log,
             on_save=_on_save_combined,
-            on_done=on_done,
+            on_done=_on_done_capturing,
             on_eval=on_eval,
             stop_event=stop_event,
             model_state_dict_fn=model.merged_state_dict if lora_rank_int > 0 else None,
         ).train(resume_from=resume)
+
+        if lora_rank_int > 0 and not stop_event.is_set():
+            # Strip any directory separators from the agent name to prevent
+            # path traversal (e.g. "../../../tmp/evil" → "evil").
+            _raw = (agent_name or "").strip() or "lora_final"
+            _safe_name = _Path(_raw).name or "lora_final"
+            _final = _Path(checkpoint_dir) / f"{_safe_name}.lora"
+            try:
+                _save_lora(model, lora_rank_int, float(lora_alpha), lora_targets_list, str(_final))
+            except Exception as exc:
+                raise RuntimeError(f"Failed to save final LoRA adapter to {_final}: {exc}") from exc
+            _step, _elapsed = _done_info[0] if _done_info else (int(total_steps), 0.0)
+            on_save(_step, _elapsed)
 
     yield from _wrap_with_buttons(_stream_training(_train))
 
@@ -503,6 +525,17 @@ def _toggle_theme(current: str) -> tuple[str, str]:
     # Label always shows the OTHER mode (what the next click will do).
     label = "☀ Light mode" if new == "dark" else "🌙 Dark mode"
     return label, new
+
+
+def _toggle_finetune_mode(mode: str):
+    """Update defaults when the fine-tune mode dropdown changes."""
+    is_agent = mode == "Agent (LoRA adapter)"
+    return (
+        gr.update(visible=is_agent, value=""),                                           # ft_agent_name
+        gr.update(value=8 if is_agent else 0),                                           # ft_lora_rank
+        gr.update(value="checkpoints/lora/" if is_agent else "checkpoints/finetune/"),  # ft_ckpt_dir
+        gr.update(value=""),                                                              # ft_resume
+    )
 
 
 def _toggle_ingest_inputs(mode: str):
@@ -1610,6 +1643,17 @@ def build_app() -> gr.Blocks:
                 "Fine-tuning teaches the model to respond in a specific style or domain "
                 "without retraining from scratch."
             )
+            ft_mode = gr.Dropdown(
+                choices=["Base (instruction fine-tune)", "Agent (LoRA adapter)"],
+                value="Base (instruction fine-tune)",
+                label="Fine-tune mode",
+                info=(
+                    "Base: full fine-tune on general conversation examples — produces the shared "
+                    "base_chat.pt used by all agents. "
+                    "Agent: LoRA adapter for domain specialisation — produces a small .lora file "
+                    "that swaps in at inference time."
+                ),
+            )
             with gr.Row():
                 ft_pretrain_ckpt = gr.Textbox(
                     label="Pre-trained checkpoint (.pt)",
@@ -1691,6 +1735,12 @@ def build_app() -> gr.Blocks:
                     label="Eval batches", value=0, precision=0,
                     info="Max validation batches averaged per eval pass. 0 uses the whole held-out set (recommended for small fine-tune sets).",
                 )
+            ft_agent_name = gr.Textbox(
+                label="Agent name",
+                placeholder="saga",
+                info="Names the final output file: <name>.lora in the checkpoint directory. Leave blank for 'lora_final'.",
+                visible=False,
+            )
             with gr.Accordion("LoRA (parameter-efficient fine-tuning)", open=False):
                 gr.Markdown(
                     "LoRA freezes the base weights and trains only two small matrices "
@@ -1727,6 +1777,11 @@ def build_app() -> gr.Blocks:
                 interactive=False,
                 autoscroll=True,
             )
+            ft_mode.change(
+                fn=_toggle_finetune_mode,
+                inputs=[ft_mode],
+                outputs=[ft_agent_name, ft_lora_rank, ft_ckpt_dir, ft_resume],
+            )
             ft_event = ft_run_btn.click(
                 fn=run_finetune,
                 inputs=[
@@ -1736,6 +1791,7 @@ def build_app() -> gr.Blocks:
                     ft_val_split, ft_eval_every, ft_eval_batches,
                     ft_max_seq,
                     ft_lora_rank, ft_lora_alpha, ft_lora_targets,
+                    ft_agent_name,
                 ],
                 outputs=[ft_log_box, ft_run_btn, ft_stop_btn],
             )

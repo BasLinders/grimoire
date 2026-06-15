@@ -109,11 +109,11 @@ def save_lora(
         targets: Names of the Linear layers that were wrapped.
         path: Destination path (``.lora`` extension recommended).
     """
-    lora_sd = {
-        name: param
-        for name, param in model.state_dict().items()
-        if "lora_A" in name or "lora_B" in name
-    }
+    lora_sd: dict[str, torch.Tensor] = {}
+    for mod_name, module in model.named_modules():
+        if isinstance(module, LoRALinear):
+            lora_sd[f"{mod_name}.lora_A"] = module.lora_A.detach().cpu()
+            lora_sd[f"{mod_name}.lora_B"] = module.lora_B.detach().cpu()
     payload = {
         "rank":       rank,
         "alpha":      alpha,
