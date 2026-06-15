@@ -5,11 +5,17 @@ project root).  Each entry describes everything needed to instantiate an
 ``InferenceEngine`` for that agent:
 
     {
+        "general": {
+            "display_name": "General",
+            "checkpoint":   "checkpoints/base_chat.pt",
+            "vocab":        "data/tokenizer/bpe.json"
+        },
         "saga": {
             "display_name": "Saga",
-            "description": "D&D, mathematics, and data-science assistant.",
-            "checkpoint":   "checkpoints/saga/latest.pt",
+            "description":  "D&D, mathematics, and data-science assistant.",
+            "checkpoint":   "checkpoints/base_chat.pt",
             "vocab":        "data/tokenizer/bpe.json",
+            "lora_path":    "checkpoints/lora/saga.lora",
             "corpus_dirs":  ["data/corpus/saga/"],
             "gen_config": {
                 "max_new_tokens": 256,
@@ -21,8 +27,10 @@ project root).  Each entry describes everything needed to instantiate an
     }
 
 All paths are resolved relative to the directory that contains the JSON file.
-``corpus_dirs`` is optional; omit it (or set it to ``[]``) for a model-only
-agent with no retrieval corpus.
+``corpus_dirs`` and ``lora_path`` are optional.  When ``lora_path`` points to
+a ``.lora`` file the adapter is applied automatically at engine-load time.
+For the multi-agent router all agents should share the same ``checkpoint``
+so LoRA adapters can be swapped without reloading the base model.
 """
 
 from __future__ import annotations
@@ -44,6 +52,7 @@ class AgentConfig:
     vocab: str
     corpus_dirs: list[str] = field(default_factory=list)
     gen_config: dict = field(default_factory=dict)
+    lora_path: str = ""
 
 
 class AgentRegistry:
@@ -126,27 +135,133 @@ class AgentRegistry:
         if not ckpt_path.is_file():
             raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
-        corpus: Optional[GrimoireCorpus] = None
-        if cfg.corpus_dirs:
-            txt_files: list[Path] = []
-            for corpus_dir in cfg.corpus_dirs:
-                p = self._resolve(corpus_dir)
-                if p.exists():
-                    txt_files.extend(sorted(p.glob("*.txt")))
-
-            if txt_files:
-                cache_path = txt_files[0].parent / ".cache" / "lexical.pkl"
-                corpus = self._build_corpus_cached(txt_files, cache_path)
+        corpus = self._scan_corpus_dirs(cfg.corpus_dirs) if cfg.corpus_dirs else None
 
         gen_config = GenerationConfig(**cfg.gen_config) if cfg.gen_config else None
 
-        return InferenceEngine(
+        engine = InferenceEngine(
             checkpoint_path=str(ckpt_path),
             tokenizer_path=str(self._resolve(cfg.vocab)),
             corpus=corpus,
             gen_config=gen_config,
             quantize=quantize,
         )
+
+        if cfg.lora_path:
+            import warnings
+            lp = self._resolve(cfg.lora_path)
+            if lp.is_file():
+                engine.load_lora(str(lp))
+            else:
+                warnings.warn(
+                    f"LoRA file not found for agent '{key}': {lp}. Using base weights.",
+                    stacklevel=2,
+                )
+
+        return engine
+
+    @property
+    def default_key(self) -> str:
+        """The first agent key in the registry, used as the routing fallback."""
+        return next(iter(self._agents))
+
+    def build_router(self, threshold: float = 0.05) -> "AgentRouter":
+        """Build an ``AgentRouter`` using each agent's lexical corpus.
+
+        Only agents with ``corpus_dirs`` are scoreable.  Agents without a
+        corpus can only win as the ``default_key`` fallback.
+
+        Args:
+            threshold: Minimum Jaccard score for a routing decision to be
+                accepted.  Queries below this score are routed to the default.
+
+        Returns:
+            ``AgentRouter`` ready for ``route(query)`` calls.
+        """
+        from grimoire_ai.agents.router import AgentRouter
+
+        corpora: dict[str, "GrimoireCorpus"] = {}
+        for key, cfg in self._agents.items():
+            if not cfg.corpus_dirs:
+                continue
+            corpus = self._scan_corpus_dirs(cfg.corpus_dirs)
+            if corpus is not None:
+                corpora[key] = corpus
+
+        return AgentRouter(
+            corpora=corpora,
+            default_key=self.default_key,
+            threshold=threshold,
+        )
+
+    def build_multi_agent_engine(
+        self,
+        threshold: float = 0.05,
+        quantize: bool = False,
+    ) -> "MultiAgentEngine":
+        """Build a ``MultiAgentEngine`` that routes each query to the best agent.
+
+        The engine shares a single model checkpoint (the default agent's) and
+        swaps LoRA adapters and corpora between turns as needed.  Agents whose
+        ``lora_path`` file is absent are treated as using base weights only.
+
+        Args:
+            threshold: Routing confidence threshold passed to ``AgentRouter``.
+            quantize: Apply int8 quantization to the base model.
+
+        Returns:
+            ``MultiAgentEngine`` ready for ``chat_stream()`` calls.
+        """
+        from grimoire_ai.agents.router import MultiAgentEngine
+
+        router = self.build_router(threshold=threshold)
+
+        # Build the shared base engine from the default agent's checkpoint.
+        engine = self.build_engine(self.default_key, quantize=quantize)
+        # build_engine may have applied the default agent's LoRA; unload it
+        # so the engine starts from base weights and _switch_to handles the rest.
+        engine.unload_lora()
+
+        # Collect resolved lora_paths and corpora for all agents.
+        import warnings
+        lora_paths: dict[str, str] = {}
+        corpora: dict[str, object] = {}
+        for key, cfg in self._agents.items():
+            if cfg.lora_path:
+                lp = self._resolve(cfg.lora_path)
+                if lp.is_file():
+                    lora_paths[key] = str(lp)
+                else:
+                    warnings.warn(
+                        f"LoRA file not found for agent '{key}': {lp}. "
+                        "Agent will use base weights.",
+                        stacklevel=2,
+                    )
+            corpora[key] = router._corpora.get(key)
+
+        return MultiAgentEngine(
+            engine=engine,
+            router=router,
+            lora_paths=lora_paths,
+            corpora=corpora,
+            default_key=self.default_key,
+        )
+
+    def _scan_corpus_dirs(self, corpus_dirs: list[str]) -> "Optional[GrimoireCorpus]":
+        """Collect .txt files from *corpus_dirs* and return a cached GrimoireCorpus.
+
+        Returns ``None`` when no ``.txt`` files are found in any of the listed
+        directories so callers can distinguish "no corpus" from an empty one.
+        """
+        txt_files: list[Path] = []
+        for corpus_dir in corpus_dirs:
+            p = self._resolve(corpus_dir)
+            if p.exists():
+                txt_files.extend(sorted(p.glob("*.txt")))
+        if not txt_files:
+            return None
+        cache_path = txt_files[0].parent / ".cache" / "lexical.pkl"
+        return self._build_corpus_cached(txt_files, cache_path)
 
     @staticmethod
     def _build_corpus_cached(txt_files: list[Path], cache_path: Path) -> "GrimoireCorpus":
@@ -203,4 +318,5 @@ class AgentRegistry:
                 vocab=entry["vocab"],
                 corpus_dirs=entry.get("corpus_dirs", []),
                 gen_config=entry.get("gen_config", {}),
+                lora_path=entry.get("lora_path", ""),
             )

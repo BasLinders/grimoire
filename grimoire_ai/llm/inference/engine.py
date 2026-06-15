@@ -164,6 +164,11 @@ class InferenceEngine:
         self.gen_config = gen_config if gen_config is not None else GenerationConfig()
         self.math_tool = math_tool
 
+    @property
+    def checkpoint_path(self) -> str:
+        """Resolved path of the checkpoint this engine was loaded from."""
+        return self._checkpoint_path
+
     def _math_context(self, query: str) -> list[QueryResult]:
         """If a math tool is attached and detects arithmetic in *query*,
         return a synthetic ``QueryResult`` carrying the computed result as
@@ -183,6 +188,21 @@ class InferenceEngine:
             excerpt=f"[Math] {result}",
         )]
 
+    def unload_lora(self) -> None:
+        """Merge any active LoRA adapter into base weights and restore the original checkpoint.
+
+        No-op when no adapter is currently active.  After this call the model is
+        in the same state as if it had been loaded from the checkpoint with no LoRA.
+        """
+        from grimoire_ai.llm.model.lora import LoRALinear
+        if not any(isinstance(m, LoRALinear) for m in self.model.modules()):
+            return
+        self.model.merge_and_unload()
+        ckpt = load_checkpoint(self._checkpoint_path)
+        self.model.load_state_dict(ckpt["model"])
+        self.model.to(self.device)
+        self.model.eval()
+
     def load_lora(self, lora_path: str) -> None:
         """Load a LoRA adapter and apply it to the model.
 
@@ -201,14 +221,10 @@ class InferenceEngine:
                 "Load the engine without quantize=True before calling load_lora()."
             )
 
-        from grimoire_ai.llm.model.lora import LoRALinear, load_lora as _load_lora
+        from grimoire_ai.llm.model.lora import load_lora as _load_lora
 
-        # If adapters are already in place, restore clean base weights from the
-        # original checkpoint so the new adapter applies on top of the correct base.
-        if any(isinstance(m, LoRALinear) for m in self.model.modules()):
-            self.model.merge_and_unload()
-            ckpt = load_checkpoint(self._checkpoint_path)
-            self.model.load_state_dict(ckpt["model"])
+        # Restore clean base weights so the new adapter applies on top of the correct base.
+        self.unload_lora()
 
         _load_lora(self.model, lora_path)
         # LoRALinear creates lora_A / lora_B on CPU by default; move everything

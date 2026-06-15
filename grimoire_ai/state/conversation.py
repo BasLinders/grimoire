@@ -54,10 +54,15 @@ class Turn:
     Attributes:
         user: The raw user query string.
         assistant: The model's response string.
+        agent_key: Registry key of the agent that handled this turn, or
+            ``None`` when routing was not in use.
+        routing_score: Corpus similarity score that drove the routing decision.
     """
 
     user: str
     assistant: str
+    agent_key: Optional[str] = None
+    routing_score: float = 0.0
 
 
 class ConversationState:
@@ -90,14 +95,24 @@ class ConversationState:
     # Public API
     # ------------------------------------------------------------------
 
-    def add_turn(self, user: str, assistant: str) -> None:
+    def add_turn(
+        self,
+        user: str,
+        assistant: str,
+        agent_key: Optional[str] = None,
+        routing_score: float = 0.0,
+    ) -> None:
         """Record a completed exchange and evict the oldest if over the cap.
 
         Args:
             user: The user's query text.
             assistant: The model's response text.
+            agent_key: Registry key of the agent that handled this turn.
+            routing_score: Corpus similarity score from the routing decision.
         """
-        self._turns.append(Turn(user=user, assistant=assistant))
+        self._turns.append(
+            Turn(user=user, assistant=assistant, agent_key=agent_key, routing_score=routing_score)
+        )
         if len(self._turns) > self.max_turns:
             self._turns.pop(0)
 
@@ -114,6 +129,21 @@ class ConversationState:
     def history(self) -> list[Turn]:
         """Read-only copy of all stored turns, oldest first."""
         return list(self._turns)
+
+    @property
+    def routing_log(self) -> list[tuple[int, str, float]]:
+        """Routing decisions recorded across the conversation.
+
+        Returns:
+            List of ``(turn_index, agent_key, routing_score)`` for every turn
+            where an agent routing decision was recorded.  Empty when routing
+            was not in use.
+        """
+        return [
+            (i, t.agent_key, t.routing_score)
+            for i, t in enumerate(self._turns)
+            if t.agent_key is not None
+        ]
 
     # ------------------------------------------------------------------
     # Prompt assembly

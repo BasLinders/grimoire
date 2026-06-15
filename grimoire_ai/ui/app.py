@@ -583,10 +583,15 @@ def _cache_is_fresh(cache_path: Path, corpus_dirs: list[str], checkpoint: str) -
 
 
 def _load_agent_names() -> list[str]:
-    """Return display names from agents.json, or [] if the file is missing."""
+    """Return agent choices for the dropdown.
+
+    Prepends 'Auto-route' when the registry contains agents, so the router
+    option is always at the top.
+    """
     try:
         from grimoire_ai.agents.registry import AgentRegistry
-        return AgentRegistry(_AGENTS_JSON).display_names()
+        names = AgentRegistry(_AGENTS_JSON).display_names()
+        return (["Auto-route"] + names) if names else []
     except (FileNotFoundError, ValueError):
         return []
 
@@ -597,8 +602,13 @@ def load_agent(
     retrieval_threshold: Optional[float] = None,
     quantize: bool = False,
     math_tool_enabled: bool = False,
+    routing_threshold: float = 0.05,
 ) -> tuple[object, object, str, str, str]:
     """Load an agent by display name, applying the chosen retrieval backend.
+
+    When *display_name* is ``"Auto-route"`` a ``MultiAgentEngine`` is built
+    that scores each query against every agent's corpus and routes to the
+    best match.
 
     Returns (engine, conv_state, status, checkpoint_path, vocab_path).
     The last two values are passed back so the manual path fields reflect what
@@ -609,6 +619,27 @@ def load_agent(
     from grimoire_ai.state.conversation import ConversationState
 
     registry = AgentRegistry(_AGENTS_JSON)
+
+    # ---- Auto-route: build MultiAgentEngine --------------------------------
+    if display_name == "Auto-route":
+        try:
+            engine = registry.build_multi_agent_engine(threshold=routing_threshold, quantize=quantize)
+        except Exception as exc:
+            return None, None, f"Failed to build router: {exc}", "", ""
+        engine._engine.retrieval_threshold = retrieval_threshold
+        if math_tool_enabled:
+            from grimoire_ai.tools.math_tool import MathTool
+            engine._engine.math_tool = MathTool()
+        default_cfg = registry.get(registry.default_key)
+        n_agents = len(registry.keys())
+        return (
+            engine,
+            ConversationState(),
+            f"Auto-routing across {n_agents} agent(s). Default: '{default_cfg.display_name}'.",
+            default_cfg.checkpoint,
+            default_cfg.vocab,
+        )
+
     cfg = registry.get_by_display_name(display_name)
 
     use_lexical  = encoder == "Lexical (Jaccard)"
@@ -802,10 +833,10 @@ def chat(
     top_p: float,
     max_new_tokens: int,
     adaptive_temperature: bool = False,
-) -> Generator[tuple[str, object], None, None]:
+) -> Generator[tuple[str, object, str], None, None]:
     """Stream a response token-by-token and update the conversation state."""
     if engine_state is None:
-        yield "No model loaded. Use the Load button first.", conv_state
+        yield "No model loaded. Use the Load button first.", conv_state, ""
         return
     from grimoire_ai.llm.inference.sampler import GenerationConfig
     from grimoire_ai.state.conversation import ConversationState
@@ -818,8 +849,15 @@ def chat(
     )
     if conv_state is None:
         conv_state = ConversationState()
+    last_partial = ""
     for partial in engine_state.chat_stream(query, conv_state, gen_config=gen_config):
-        yield partial, conv_state
+        last_partial = partial
+        yield partial, conv_state, gr.update()  # preserve previous routing label during streaming
+    routing_info = ""
+    if hasattr(engine_state, "last_route") and engine_state.last_route[0]:
+        key, score = engine_state.last_route
+        routing_info = f"↳ {key}  ·  {score:.3f}"
+    yield last_partial, conv_state, routing_info
 
 
 # ---------------------------------------------------------------------------
@@ -2046,6 +2084,14 @@ def build_app() -> gr.Blocks:
                         scale=3,
                     )
                     agent_load_btn = gr.Button("Load agent", scale=1)
+                chat_routing_threshold = gr.Slider(
+                    minimum=0.0, maximum=1.0, value=0.05, step=0.01,
+                    label="Routing threshold",
+                    info="Minimum corpus similarity score for the router to commit to a "
+                         "specialist agent. Queries scoring below this fall back to the "
+                         "default agent. Only used in Auto-route mode.",
+                    visible=_agent_names[:1] == ["Auto-route"],
+                )
                 agent_status = gr.Textbox(label="Agent status", interactive=False)
 
             # ---- Manual load --------------------------------------------
@@ -2128,6 +2174,14 @@ def build_app() -> gr.Blocks:
 
             chat_query    = gr.Textbox(label="Your query", lines=3)
             chat_response = gr.Textbox(label="Response", lines=8, interactive=False)
+            chat_routing  = gr.Textbox(
+                label="Routed to",
+                interactive=False,
+                visible=True,
+                scale=0,
+                min_width=220,
+                info="Agent and score for the last turn (Auto-route mode only).",
+            )
             with gr.Row():
                 chat_btn      = gr.Button("Send", variant="primary")
                 stage_btn     = gr.Button("✦ Save this exchange", scale=0, min_width=160)
@@ -2175,9 +2229,14 @@ def build_app() -> gr.Blocks:
             dataset_state = gr.State(value=[])
 
             # ---- Event wiring -------------------------------------------
+            agent_dropdown.change(
+                fn=lambda name: gr.update(visible=(name == "Auto-route")),
+                inputs=[agent_dropdown],
+                outputs=[chat_routing_threshold],
+            )
             agent_load_btn.click(
                 fn=load_agent,
-                inputs=[agent_dropdown, chat_encoder, chat_threshold, chat_quantize, chat_math_tool],
+                inputs=[agent_dropdown, chat_encoder, chat_threshold, chat_quantize, chat_math_tool, chat_routing_threshold],
                 outputs=[engine_state, conv_state, agent_status, chat_ckpt, chat_vocab],
             )
             load_btn.click(
@@ -2190,7 +2249,7 @@ def build_app() -> gr.Blocks:
                 inputs=[chat_query, engine_state, conv_state,
                         chat_temp, chat_top_k, chat_top_p, chat_tokens,
                         chat_adaptive_temp],
-                outputs=[chat_response, conv_state],
+                outputs=[chat_response, conv_state, chat_routing],
             )
             clear_btn.click(
                 fn=clear_conversation,
