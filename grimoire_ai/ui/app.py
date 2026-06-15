@@ -109,6 +109,7 @@ def run_preprocess(
     output_path: str,
     vocab_path: str,
     vocab_size: int,
+    bpe_sample_size: int,
 ) -> Generator[str, None, None]:
     """Train BPE tokenizer and write corpus binary; stream progress live."""
     from grimoire_ai.llm.data.preprocessing import preprocess
@@ -116,12 +117,15 @@ def run_preprocess(
     stop_event = threading.Event()
     _stop_events["preprocess"] = stop_event
 
+    sample: Optional[int] = int(bpe_sample_size) if int(bpe_sample_size) > 0 else None
+
     def _task(on_progress):
         preprocess(
             input_path=input_dir.strip(),
             output_path=output_path.strip(),
             vocab_path=vocab_path.strip(),
             vocab_size=int(vocab_size),
+            bpe_sample_size=sample,
             on_progress=on_progress,
         )
 
@@ -1534,6 +1538,13 @@ def build_app() -> gr.Blocks:
                     info="How many unique word-pieces the tokenizer learns. 16 384 is a good default; only used when training a new tokenizer.",
                 )
             with gr.Row():
+                pp_bpe_sample = gr.Number(
+                    label="BPE sample size",
+                    value=500,
+                    precision=0,
+                    info="Max files sampled for BPE vocabulary training. 500 covers typical domain corpora well. Set to 0 to use all files.",
+                )
+            with gr.Row():
                 pp_run_btn  = gr.Button("Start preprocessing", variant="primary")
                 pp_stop_btn = gr.Button(
                     "Stop", interactive=False, elem_classes="stop-btn", scale=0, min_width=80
@@ -1546,7 +1557,7 @@ def build_app() -> gr.Blocks:
             )
             pp_event = pp_run_btn.click(
                 fn=run_preprocess,
-                inputs=[pp_input, pp_output, pp_vocab, pp_vocab_size],
+                inputs=[pp_input, pp_output, pp_vocab, pp_vocab_size, pp_bpe_sample],
                 outputs=[pp_log_box, pp_run_btn, pp_stop_btn],
             )
             pp_stop_btn.click(fn=stop_preprocess, inputs=[], outputs=[], cancels=[pp_event])
