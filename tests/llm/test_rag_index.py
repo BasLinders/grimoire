@@ -157,6 +157,18 @@ class TestSaveLoad:
         _make_index().save(nested)
         assert (nested / "meta.json").is_file()
 
+    def test_vectors_written_atomically_no_tmp_dat_left(self, tmp_path):
+        """save() must not leave a .tmp.dat file behind on success."""
+        _make_index().save(tmp_path)
+        assert not any(tmp_path.glob("*.tmp.dat"))
+
+    def test_stale_after_simulated_partial_write(self, tmp_path):
+        """A corrupt vectors.dat with a missing meta.json is detected as stale."""
+        # Simulate crash: vectors.dat truncated, meta.json not yet written.
+        (tmp_path / "vectors.dat").write_bytes(b"\x00" * 8)
+        hashes = {"doc_a.txt": "aabbcc"}
+        assert RagIndex.is_stale(tmp_path, hashes) is True  # meta.json absent → stale
+
 
 # ---------------------------------------------------------------------------
 # Brute-force query

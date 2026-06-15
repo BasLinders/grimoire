@@ -361,7 +361,6 @@ class SemanticRetriever:
         from grimoire_ai.llm.inference.rag_index import RagIndex
         if self._vectors is None:
             raise RuntimeError("Nothing indexed — call index() before save_index().")
-        import numpy as np
         rag = RagIndex(
             vectors=self._vectors.numpy(),
             excerpts=self._excerpts,

@@ -68,7 +68,7 @@ class RagIndex:
         chunk_chars: int,
         source_hashes: "dict[str, str]",
     ) -> None:
-        self._vectors = vectors.astype("float32")
+        self._vectors = vectors.astype("float32", copy=False)
         self._excerpts = excerpts
         self._sources = sources
         self._chunk_chars = chunk_chars
@@ -171,7 +171,7 @@ class RagIndex:
             return False
         n, d = self._vectors.shape
         idx = faiss.IndexFlatIP(d)
-        idx.add(self._vectors)
+        idx.add(np.ascontiguousarray(self._vectors))
         self._faiss_index = idx
         return True
 
@@ -230,11 +230,23 @@ class RagIndex:
         p = Path(dir_path)
         p.mkdir(parents=True, exist_ok=True)
         n, d = self._vectors.shape
-        # Write vectors as memmap.
-        mm = np.memmap(p / _VEC_FILE, dtype="float32", mode="w+", shape=(n, d))
-        mm[:] = self._vectors
-        mm.flush()
-        del mm
+        # Write vectors atomically: write to a temp file, then rename into place
+        # so a crash mid-write never leaves a corrupt vectors.dat alongside a
+        # valid meta.json that would pass the staleness check.
+        fd, tmp_vec = tempfile.mkstemp(dir=p, suffix=".tmp.dat")
+        try:
+            os.close(fd)
+            mm = np.memmap(tmp_vec, dtype="float32", mode="w+", shape=(n, d))
+            mm[:] = self._vectors
+            mm.flush()
+            del mm
+            os.replace(tmp_vec, str(p / _VEC_FILE))
+        except Exception:
+            try:
+                os.unlink(tmp_vec)
+            except OSError:
+                pass
+            raise
         # Write metadata atomically.
         meta: dict = {
             "version": _VERSION,

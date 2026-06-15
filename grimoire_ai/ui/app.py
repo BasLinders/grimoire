@@ -538,19 +538,19 @@ def corpus_index_status(corpus_dir: str, checkpoint_path: str) -> str:
     index_dir = Path(corpus_dir) / ".semantic_index"
     if not index_dir.is_dir():
         return "No index found — click Build to create one."
-    hashes = RagIndex.compute_source_hashes([corpus_dir], checkpoint_path or None)
-    stale = RagIndex.is_stale(index_dir, hashes)
     try:
-        import json
         meta = json.loads((index_dir / "meta.json").read_text(encoding="utf-8"))
         n = meta.get("n_passages", "?")
         faiss_present = (index_dir / "faiss.index").is_file()
         backend = "FAISS + brute-force fallback" if faiss_present else "brute-force cosine"
-        status = f"{n} passage(s) indexed  |  backend: {backend}"
+        index_info = f"{n} passage(s) indexed  |  backend: {backend}"
     except Exception:
-        status = "Index present but unreadable."
-        stale = True
-    return f"{'STALE — rebuild needed' if stale else 'Fresh'}  |  {status}"
+        return "Index present but unreadable — click Build to recreate it."
+    if not checkpoint_path:
+        return f"Index found  |  {index_info}  |  Enter a checkpoint path to check freshness."
+    hashes = RagIndex.compute_source_hashes([corpus_dir], checkpoint_path)
+    stale = RagIndex.is_stale(index_dir, hashes)
+    return f"{'STALE — rebuild needed' if stale else 'Fresh'}  |  {index_info}"
 
 
 def run_build_index(
