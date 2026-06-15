@@ -48,6 +48,7 @@ _stop_events: dict[str, Optional[threading.Event]] = {
     "preprocess": None,
     "pretrain": None,
     "finetune": None,
+    "corpus": None,
 }
 
 
@@ -523,6 +524,98 @@ def run_ingest(
     yield from _wrap_with_buttons(_stream_task(_task))
 
 
+# ---------------------------------------------------------------------------
+# Corpus index tab logic
+# ---------------------------------------------------------------------------
+
+def corpus_index_status(corpus_dir: str, checkpoint_path: str) -> str:
+    """Return a human-readable summary of the current index state."""
+    from grimoire_ai.llm.inference.rag_index import RagIndex
+    corpus_dir = corpus_dir.strip()
+    checkpoint_path = checkpoint_path.strip()
+    if not corpus_dir:
+        return "Enter a corpus directory to check status."
+    index_dir = Path(corpus_dir) / ".semantic_index"
+    if not index_dir.is_dir():
+        return "No index found — click Build to create one."
+    try:
+        meta = json.loads((index_dir / "meta.json").read_text(encoding="utf-8"))
+        n = meta.get("n_passages", "?")
+        faiss_present = (index_dir / "faiss.index").is_file()
+        backend = "FAISS + brute-force fallback" if faiss_present else "brute-force cosine"
+        index_info = f"{n} passage(s) indexed  |  backend: {backend}"
+    except Exception:
+        return "Index present but unreadable — click Build to recreate it."
+    if not checkpoint_path:
+        return f"Index found  |  {index_info}  |  Enter a checkpoint path to check freshness."
+    hashes = RagIndex.compute_source_hashes([corpus_dir], checkpoint_path)
+    stale = RagIndex.is_stale(index_dir, hashes)
+    return f"{'STALE — rebuild needed' if stale else 'Fresh'}  |  {index_info}"
+
+
+def run_build_index(
+    corpus_dir: str,
+    checkpoint_path: str,
+    vocab_path: str,
+) -> Generator[str, None, None]:
+    """Pre-compute and persist the semantic index for a corpus directory."""
+    from grimoire_ai.llm.inference.engine import InferenceEngine
+    from grimoire_ai.llm.inference.rag_index import RagIndex
+
+    corpus_dir = corpus_dir.strip()
+    checkpoint_path = checkpoint_path.strip()
+    vocab_path = vocab_path.strip()
+
+    stop_event = threading.Event()
+    _stop_events["corpus"] = stop_event
+
+    def _task(on_progress):
+        p = Path(corpus_dir)
+        if not p.is_dir():
+            raise ValueError(f"Corpus directory not found: {corpus_dir}")
+        if not checkpoint_path:
+            raise ValueError("Checkpoint path is required.")
+        if not vocab_path:
+            raise ValueError("Vocabulary path is required.")
+
+        on_progress("Loading model …")
+        engine = InferenceEngine(
+            checkpoint_path=checkpoint_path,
+            tokenizer_path=vocab_path,
+        )
+        on_progress(f"Model loaded  ({engine.model.num_parameters():,} params)")
+
+        documents: list[tuple[str, str]] = []
+        for txt in sorted(p.glob("*.txt")):
+            documents.append((txt.read_text(encoding="utf-8"), txt.stem))
+        if not documents:
+            raise ValueError(f"No .txt files found in {corpus_dir}")
+        on_progress(f"Found {len(documents)} source file(s).  Embedding passages …")
+
+        retriever = engine.build_semantic_corpus(documents)
+        on_progress(f"Indexed {retriever.size} passage(s).  Saving index …")
+
+        hashes = RagIndex.compute_source_hashes([corpus_dir], checkpoint_path)
+        index_dir = p / ".semantic_index"
+        retriever.save_index(index_dir, source_hashes=hashes)
+
+        faiss_built = (index_dir / "faiss.index").is_file()
+        backend = "FAISS + brute-force fallback" if faiss_built else "brute-force cosine"
+        on_progress(
+            f"Index saved to {index_dir}\n"
+            f"  Passages: {retriever.size}  |  Backend: {backend}"
+        )
+
+    yield from _wrap_with_buttons(_stream_task(_task))
+
+
+def stop_build_index() -> None:
+    """Signal the index build task to stop."""
+    ev = _stop_events.get("corpus")
+    if ev is not None:
+        ev.set()
+
+
 def _toggle_theme(current: str) -> tuple[str, str]:
     """Flip dark/light theme state and return the new button label."""
     new = "light" if current == "dark" else "dark"
@@ -559,31 +652,21 @@ def _toggle_ingest_inputs(mode: str):
 _AGENTS_JSON = "agents.json"
 
 
-def _semantic_cache_path(corpus_dirs: list[str], checkpoint: str) -> Optional[Path]:
-    """Return the .pt cache path for this corpus/checkpoint pair, or None."""
+def _semantic_index_dir(corpus_dirs: list[str]) -> Optional[Path]:
+    """Return the .semantic_index directory path for this corpus, or None."""
     if not corpus_dirs:
         return None
     first_dir = Path(corpus_dirs[0])
     if not first_dir.is_dir():
         return None
-    return first_dir / ".cache" / f"semantic_{Path(checkpoint).stem}.pt"
+    return first_dir / ".semantic_index"
 
 
-def _cache_is_fresh(cache_path: Path, corpus_dirs: list[str], checkpoint: str) -> bool:
-    """Return True when *cache_path* is newer than all corpus .txt files and the checkpoint."""
-    if not cache_path.is_file():
-        return False
-    cache_mtime = cache_path.stat().st_mtime
-    ckpt = Path(checkpoint)
-    if ckpt.is_file() and ckpt.stat().st_mtime > cache_mtime:
-        return False
-    for corpus_dir in corpus_dirs:
-        d = Path(corpus_dir)
-        if d.is_dir():
-            for f in d.glob("*.txt"):
-                if f.stat().st_mtime > cache_mtime:
-                    return False
-    return True
+def _index_is_fresh(index_dir: Path, corpus_dirs: list[str], checkpoint: str) -> bool:
+    """Return True when the on-disk RagIndex is up to date (content-hash based)."""
+    from grimoire_ai.llm.inference.rag_index import RagIndex
+    hashes = RagIndex.compute_source_hashes(corpus_dirs, checkpoint)
+    return not RagIndex.is_stale(index_dir, hashes)
 
 
 def _load_agent_names() -> list[str]:
@@ -678,19 +761,21 @@ def load_agent(
                 engine.corpus = retriever
             else:
                 resolved_ckpt = str(registry._resolve(cfg.checkpoint))
-                sem_cache = _semantic_cache_path(resolved_dirs, resolved_ckpt)
+                index_dir = _semantic_index_dir(resolved_dirs)
                 loaded_ok = False
-                if sem_cache and _cache_is_fresh(sem_cache, resolved_dirs, resolved_ckpt):
+                if index_dir and _index_is_fresh(index_dir, resolved_dirs, resolved_ckpt):
                     try:
-                        engine.corpus = SemanticRetriever.from_cache(sem_cache, embed_fn=engine.embed)
+                        engine.corpus = SemanticRetriever.from_index(index_dir, embed_fn=engine.embed)
                         loaded_ok = engine.corpus.size > 0
                     except Exception:
-                        pass  # sem_cache still set — rebuild will overwrite the corrupt file
+                        pass
                 if not loaded_ok:
+                    from grimoire_ai.llm.inference.rag_index import RagIndex
                     retriever = engine.build_semantic_corpus(documents)
-                    if sem_cache:
+                    if index_dir:
                         try:
-                            retriever.save_cache(sem_cache)
+                            hashes = RagIndex.compute_source_hashes(resolved_dirs, resolved_ckpt)
+                            retriever.save_index(index_dir, source_hashes=hashes)
                         except Exception:
                             pass
 
@@ -789,22 +874,24 @@ def load_engine(
                 f"from {len(documents)} file(s)"
             )
         else:
-            # Default: model's own decoder embeddings — use cache when available.
-            sem_cache = _semantic_cache_path([corpus_dir], checkpoint_path)
+            # Default: model's own decoder embeddings — use persistent index when fresh.
+            index_dir = _semantic_index_dir([corpus_dir])
             loaded_ok = False
-            if sem_cache and _cache_is_fresh(sem_cache, [corpus_dir], checkpoint_path):
+            if index_dir and _index_is_fresh(index_dir, [corpus_dir], checkpoint_path):
                 try:
-                    retriever = SemanticRetriever.from_cache(sem_cache, embed_fn=engine.embed)
+                    retriever = SemanticRetriever.from_index(index_dir, embed_fn=engine.embed)
                     engine.corpus = retriever
                     engine.retrieval_threshold = retrieval_threshold
                     loaded_ok = retriever.size > 0
                 except Exception:
-                    pass  # sem_cache still set — rebuild will overwrite the corrupt file
+                    pass
             if not loaded_ok:
+                from grimoire_ai.llm.inference.rag_index import RagIndex
                 retriever = engine.build_semantic_corpus(documents)
-                if sem_cache:
+                if index_dir:
                     try:
-                        retriever.save_cache(sem_cache)
+                        hashes = RagIndex.compute_source_hashes([corpus_dir], checkpoint_path)
+                        retriever.save_index(index_dir, source_hashes=hashes)
                     except Exception:
                         pass
             else:
@@ -2045,6 +2132,64 @@ def build_app() -> gr.Blocks:
                 outputs=[ing_log, ing_btn, ing_stop_btn],
             )
             ing_stop_btn.click(fn=None, cancels=[ing_event])
+
+        # ----------------------------------------------------------------
+        with gr.Tab("Corpus"):
+            gr.Markdown(
+                "Pre-compute the semantic embedding index for a corpus directory.  "
+                "The index is stored as `.semantic_index/` inside the corpus directory "
+                "and is reloaded automatically by the Chat tab whenever the source files "
+                "and checkpoint haven't changed.  Run this once after training or after "
+                "adding new corpus files — the Chat tab will load in seconds instead of "
+                "re-embedding from scratch on every session start.\n\n"
+                "Requires the same checkpoint that will be used in Chat.  Switching "
+                "checkpoints automatically invalidates the index (MD5 content hashes are "
+                "compared, not file timestamps)."
+            )
+            with gr.Row():
+                ci_corpus_dir = gr.Textbox(
+                    label="Corpus directory (.txt files)",
+                    value="data/corpus/saga/",
+                    info="Directory of plain-text corpus files.  The index is stored inside it as .semantic_index/.",
+                )
+                ci_checkpoint = gr.Textbox(
+                    label="Checkpoint (.pt)",
+                    placeholder="checkpoints/finetune/step_0000500.pt",
+                    info="Model checkpoint used to embed passages.  Must match the checkpoint you will load in Chat.",
+                )
+            ci_vocab = gr.Textbox(
+                label="Vocabulary path (.json)",
+                value="data/tokenizer/bpe.json",
+                info="BPE vocabulary.  Must match the vocabulary used at training time.",
+            )
+            ci_status = gr.Textbox(
+                label="Index status",
+                interactive=False,
+                info="Shows whether the current index is fresh or needs a rebuild.",
+            )
+            with gr.Row():
+                ci_check_btn = gr.Button("Check status", scale=0, min_width=140)
+                ci_run_btn   = gr.Button("Build / Rebuild index", variant="primary")
+                ci_stop_btn  = gr.Button(
+                    "Stop", interactive=False, elem_classes="stop-btn", scale=0, min_width=80
+                )
+            ci_log = gr.Textbox(
+                label="Progress",
+                lines=10,
+                interactive=False,
+                autoscroll=True,
+            )
+            ci_check_btn.click(
+                fn=corpus_index_status,
+                inputs=[ci_corpus_dir, ci_checkpoint],
+                outputs=[ci_status],
+            )
+            ci_event = ci_run_btn.click(
+                fn=run_build_index,
+                inputs=[ci_corpus_dir, ci_checkpoint, ci_vocab],
+                outputs=[ci_log, ci_run_btn, ci_stop_btn],
+            )
+            ci_stop_btn.click(fn=stop_build_index, inputs=[], outputs=[], cancels=[ci_event])
 
         # ----------------------------------------------------------------
         with gr.Tab("Chat"):

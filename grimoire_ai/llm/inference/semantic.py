@@ -33,12 +33,15 @@ Pipeline
 """
 
 import re
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 import torch
 import torch.nn.functional as F
 
 from grimoire_ai.corpus.corpus import QueryResult
+
+if TYPE_CHECKING:
+    from grimoire_ai.llm.inference.rag_index import RagIndex
 
 # ---------------------------------------------------------------------------
 # External encoder factory
@@ -186,6 +189,7 @@ class SemanticRetriever:
         self._excerpts: list[str] = []
         self._sources: list[Optional[str]] = []
         self._vectors: Optional[torch.Tensor] = None
+        self._rag_index: Optional["RagIndex"] = None  # set by from_index()
 
     def add_text(self, text: str, source: Optional[str] = None) -> int:
         """Chunk a document and queue its passages for indexing.
@@ -262,23 +266,35 @@ class SemanticRetriever:
             return []
 
         query_vec = self._embed_fn([text])  # (1, d_model), normalised
-        scores = (self._vectors @ query_vec.squeeze(0))  # (n,)
 
-        k = min(top_k, self.size)
-        top_scores, top_idx = torch.topk(scores, k)
-
-        results: list[QueryResult] = []
-        for score, idx in zip(top_scores.tolist(), top_idx.tolist()):
-            results.append(
+        # Use FAISS via the attached RagIndex when available — faster at scale.
+        if self._rag_index is not None and self._rag_index._faiss_index is not None:
+            scored = self._rag_index.query(query_vec.numpy(), top_k)
+            return [
                 QueryResult(
                     multi_token=(),
                     next_token=None,
-                    score=float(score),
+                    score=score,
                     source=self._sources[idx],
                     excerpt=self._excerpts[idx],
                 )
+                for score, idx in scored
+            ]
+
+        # Brute-force cosine (dot product on L2-normalised vectors).
+        scores = (self._vectors @ query_vec.squeeze(0))  # (n,)
+        k = min(top_k, self.size)
+        top_scores, top_idx = torch.topk(scores, k)
+        return [
+            QueryResult(
+                multi_token=(),
+                next_token=None,
+                score=float(score),
+                source=self._sources[idx],
+                excerpt=self._excerpts[idx],
             )
-        return results
+            for score, idx in zip(top_scores.tolist(), top_idx.tolist())
+        ]
 
     def save_cache(self, path) -> None:
         """Save indexed vectors, excerpts, and sources to a .pt cache file.
@@ -316,6 +332,76 @@ class SemanticRetriever:
         obj._vectors = data["vectors"]
         obj._excerpts = data["excerpts"]
         obj._sources = data["sources"]
+        return obj
+
+    def save_index(
+        self,
+        dir_path,
+        source_hashes: Optional[dict] = None,
+        build_faiss: bool = True,
+    ) -> None:
+        """Persist this retriever's index as a :class:`~grimoire_ai.llm.inference.rag_index.RagIndex`.
+
+        Vectors are written as a float32 numpy memmap (``vectors.dat``);
+        excerpts, sources, chunk_chars, and MD5 source hashes are written to
+        ``meta.json``.  When *build_faiss* is ``True`` and faiss-cpu is
+        installed, a ``faiss.index`` file is also written for fast ANN search.
+
+        Args:
+            dir_path: Target directory (created if absent).
+            source_hashes: Dict from :meth:`RagIndex.compute_source_hashes
+                <grimoire_ai.llm.inference.rag_index.RagIndex.compute_source_hashes>`,
+                stored in ``meta.json`` for staleness detection on the next load.
+            build_faiss: Attempt to build a FAISS index; silently skipped when
+                faiss-cpu is not installed.
+
+        Raises:
+            RuntimeError: When called before :meth:`index`.
+        """
+        from grimoire_ai.llm.inference.rag_index import RagIndex
+        if self._vectors is None:
+            raise RuntimeError("Nothing indexed — call index() before save_index().")
+        rag = RagIndex(
+            vectors=self._vectors.numpy(),
+            excerpts=self._excerpts,
+            sources=self._sources,
+            chunk_chars=self._chunk_chars,
+            source_hashes=source_hashes or {},
+        )
+        if build_faiss:
+            rag.build_faiss()
+        rag.save(dir_path)
+
+    @classmethod
+    def from_index(
+        cls,
+        dir_path,
+        embed_fn: Callable[[list[str]], torch.Tensor],
+    ) -> "SemanticRetriever":
+        """Restore a retriever from a persistent :class:`~grimoire_ai.llm.inference.rag_index.RagIndex` directory.
+
+        The restored retriever uses a FAISS index for :meth:`query` when a
+        ``faiss.index`` file is present and faiss-cpu is installed; otherwise
+        it falls back to brute-force cosine.
+
+        Args:
+            dir_path: Directory produced by :meth:`save_index`.
+            embed_fn: Embedding function used for query-time encoding.
+
+        Returns:
+            A fully populated :class:`SemanticRetriever` with no pending queue.
+
+        Raises:
+            FileNotFoundError: When ``meta.json`` or ``vectors.dat`` is absent.
+            ValueError: When ``meta.json`` is malformed.
+        """
+        from grimoire_ai.llm.inference.rag_index import RagIndex
+        rag = RagIndex.load(dir_path)
+        obj = cls(embed_fn=embed_fn, chunk_chars=rag.chunk_chars)
+        obj._vectors = torch.from_numpy(rag.vectors)
+        obj._excerpts = rag.excerpts
+        obj._sources = rag.sources
+        obj._rag_index = rag
         return obj
 
     @property
