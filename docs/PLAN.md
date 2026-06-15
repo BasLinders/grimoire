@@ -90,12 +90,13 @@ Dynamic int8 quantization via `torch.quantization.quantize_dynamic` / `torchao`.
 
 **Why sixth:** `AgentRegistry` already loads multiple agents. What's missing is automatic dispatch.
 
-- `AgentRouter` scores a query against each agent's `GrimoireCorpus` (top-1 Jaccard) and routes to the highest-scoring agent; falls back to `default_key` when no agent exceeds the threshold (`grimoire_ai/agents/router.py`)
-- `MultiAgentEngine` wraps one shared `InferenceEngine`; `_switch_to()` hot-swaps the active LoRA adapter and corpus per turn — sub-second vs minutes if reloading the full model
-- `_RoutingStateWrapper` proxy intercepts `add_turn()` to inject `agent_key` / `routing_score` into each stored `Turn` without modifying `InferenceEngine`
-- `ConversationState.routing_log` property returns `[(turn_index, agent_key, score), …]` for all routed turns; unrouted turns are excluded
-- `AgentRegistry.build_router()` and `build_multi_agent_engine()` wire everything together from `agents.json`; corpus index is cached to `{corpus_dir}/.cache/lexical.pkl` (stale-file aware)
-- UI: **Auto-route** option prepended to agent selector; active routing decision shown in "Routed to" textbox after each reply
+- `AgentRouter` scores a query against each agent's `GrimoireCorpus` (top-1 Jaccard) and routes to the highest-scoring agent when it strictly exceeds the threshold; falls back to `default_key` otherwise (`grimoire_ai/agents/router.py`)
+- `MultiAgentEngine` wraps one shared `InferenceEngine`; `_switch_to()` hot-swaps the active LoRA adapter and corpus per turn — sub-second vs minutes if reloading the full model; `top_k_corpus` forwarded so corpus retrieval depth is configurable in the multi-agent path
+- `_RoutingStateWrapper` proxy intercepts `add_turn()` to inject `agent_key` / `routing_score`; `__setattr__` delegates public-name writes to the wrapped `ConversationState` so no state mutation is silently dropped; `add_turn` signature accepts `**_` to tolerate future keyword arguments without crashing
+- `InferenceEngine.unload_lora()` public method consolidates the merge+reload sequence; `checkpoint_path` property exposes the path without callers accessing `_checkpoint_path` directly
+- `ConversationState.routing_log` property returns `[(turn_index, agent_key, score), …]` for all routed turns; unrouted turns excluded
+- `AgentRegistry._scan_corpus_dirs()` helper eliminates the duplicate corpus-scan block from `build_engine` and `build_router`; `build_multi_agent_engine()` now calls `engine.unload_lora()` instead of duplicating the merge+reload sequence
+- UI: **Auto-route** option prepended to agent selector; **Routing threshold** slider revealed on Auto-route selection and passed to `build_multi_agent_engine(threshold=)`; routing label in "Routed to" textbox preserved mid-stream via `gr.update()` no-op yields (was cleared to `""` on every token)
 - 18-test suite covering `AgentRouter`, `_RoutingStateWrapper`, `ConversationState.routing_log`, and `MultiAgentEngine` (`tests/agents/test_router.py`)
 
 ### 7. Persistent RAG Index

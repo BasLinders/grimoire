@@ -602,6 +602,7 @@ def load_agent(
     retrieval_threshold: Optional[float] = None,
     quantize: bool = False,
     math_tool_enabled: bool = False,
+    routing_threshold: float = 0.05,
 ) -> tuple[object, object, str, str, str]:
     """Load an agent by display name, applying the chosen retrieval backend.
 
@@ -622,7 +623,7 @@ def load_agent(
     # ---- Auto-route: build MultiAgentEngine --------------------------------
     if display_name == "Auto-route":
         try:
-            engine = registry.build_multi_agent_engine(quantize=quantize)
+            engine = registry.build_multi_agent_engine(threshold=routing_threshold, quantize=quantize)
         except Exception as exc:
             return None, None, f"Failed to build router: {exc}", "", ""
         engine._engine.retrieval_threshold = retrieval_threshold
@@ -851,7 +852,7 @@ def chat(
     last_partial = ""
     for partial in engine_state.chat_stream(query, conv_state, gen_config=gen_config):
         last_partial = partial
-        yield partial, conv_state, ""
+        yield partial, conv_state, gr.update()  # preserve previous routing label during streaming
     routing_info = ""
     if hasattr(engine_state, "last_route") and engine_state.last_route[0]:
         key, score = engine_state.last_route
@@ -2083,6 +2084,14 @@ def build_app() -> gr.Blocks:
                         scale=3,
                     )
                     agent_load_btn = gr.Button("Load agent", scale=1)
+                chat_routing_threshold = gr.Slider(
+                    minimum=0.0, maximum=1.0, value=0.05, step=0.01,
+                    label="Routing threshold",
+                    info="Minimum corpus similarity score for the router to commit to a "
+                         "specialist agent. Queries scoring below this fall back to the "
+                         "default agent. Only used in Auto-route mode.",
+                    visible=_agent_names[:1] == ["Auto-route"],
+                )
                 agent_status = gr.Textbox(label="Agent status", interactive=False)
 
             # ---- Manual load --------------------------------------------
@@ -2220,9 +2229,14 @@ def build_app() -> gr.Blocks:
             dataset_state = gr.State(value=[])
 
             # ---- Event wiring -------------------------------------------
+            agent_dropdown.change(
+                fn=lambda name: gr.update(visible=(name == "Auto-route")),
+                inputs=[agent_dropdown],
+                outputs=[chat_routing_threshold],
+            )
             agent_load_btn.click(
                 fn=load_agent,
-                inputs=[agent_dropdown, chat_encoder, chat_threshold, chat_quantize, chat_math_tool],
+                inputs=[agent_dropdown, chat_encoder, chat_threshold, chat_quantize, chat_math_tool, chat_routing_threshold],
                 outputs=[engine_state, conv_state, agent_status, chat_ckpt, chat_vocab],
             )
             load_btn.click(

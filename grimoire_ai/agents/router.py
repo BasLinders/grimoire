@@ -27,8 +27,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
 
-from grimoire_ai.llm.training.checkpoint import load_checkpoint
-
 if TYPE_CHECKING:
     from grimoire_ai.corpus.corpus import GrimoireCorpus
     from grimoire_ai.llm.inference.engine import InferenceEngine
@@ -105,7 +103,7 @@ class _RoutingStateWrapper:
         self._agent_key = agent_key
         self._routing_score = routing_score
 
-    def add_turn(self, user: str, assistant: str) -> None:
+    def add_turn(self, user: str, assistant: str, **_) -> None:
         self._state.add_turn(
             user,
             assistant,
@@ -115,6 +113,12 @@ class _RoutingStateWrapper:
 
     def __getattr__(self, name: str):
         return getattr(self._state, name)
+
+    def __setattr__(self, name: str, value) -> None:
+        if name.startswith("_"):
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._state, name, value)
 
 
 class MultiAgentEngine:
@@ -165,18 +169,12 @@ class MultiAgentEngine:
 
         lora_path = self._lora_paths.get(key, "")
         if lora_path:
-            # load_lora reloads base weights before applying the new adapter,
-            # so it handles the LoRA-to-LoRA transition correctly.
+            # load_lora restores base weights before applying the adapter,
+            # so LoRA-to-LoRA transitions are handled correctly.
             self._engine.load_lora(lora_path)
         else:
             # Target agent uses base weights only — unload any active LoRA.
-            from grimoire_ai.llm.model.lora import LoRALinear
-            if any(isinstance(m, LoRALinear) for m in self._engine.model.modules()):
-                self._engine.model.merge_and_unload()
-                ckpt = load_checkpoint(self._engine._checkpoint_path)
-                self._engine.model.load_state_dict(ckpt["model"])
-                self._engine.model.to(self._engine.device)
-                self._engine.model.eval()
+            self._engine.unload_lora()
 
         self._engine.corpus = self._corpora.get(key)
         self._active_key = key
@@ -185,6 +183,7 @@ class MultiAgentEngine:
         self,
         query: str,
         state: "ConversationState",
+        top_k_corpus: int = 5,
         gen_config: Optional["GenerationConfig"] = None,
     ):
         """Route *query*, switch agent if needed, then stream the response.
@@ -199,6 +198,7 @@ class MultiAgentEngine:
         yield from self._engine.chat_stream(
             query,
             _RoutingStateWrapper(state, key, score),
+            top_k_corpus=top_k_corpus,
             gen_config=gen_config,
         )
 
@@ -206,6 +206,7 @@ class MultiAgentEngine:
         self,
         query: str,
         state: "ConversationState",
+        top_k_corpus: int = 5,
         gen_config: Optional["GenerationConfig"] = None,
     ) -> str:
         """Route *query* and return the complete response string."""
@@ -215,5 +216,6 @@ class MultiAgentEngine:
         return self._engine.chat(
             query,
             _RoutingStateWrapper(state, key, score),
+            top_k_corpus=top_k_corpus,
             gen_config=gen_config,
         )

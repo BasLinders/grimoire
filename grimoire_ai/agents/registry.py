@@ -135,17 +135,7 @@ class AgentRegistry:
         if not ckpt_path.is_file():
             raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
-        corpus: Optional[GrimoireCorpus] = None
-        if cfg.corpus_dirs:
-            txt_files: list[Path] = []
-            for corpus_dir in cfg.corpus_dirs:
-                p = self._resolve(corpus_dir)
-                if p.exists():
-                    txt_files.extend(sorted(p.glob("*.txt")))
-
-            if txt_files:
-                cache_path = txt_files[0].parent / ".cache" / "lexical.pkl"
-                corpus = self._build_corpus_cached(txt_files, cache_path)
+        corpus = self._scan_corpus_dirs(cfg.corpus_dirs) if cfg.corpus_dirs else None
 
         gen_config = GenerationConfig(**cfg.gen_config) if cfg.gen_config else None
 
@@ -194,14 +184,9 @@ class AgentRegistry:
         for key, cfg in self._agents.items():
             if not cfg.corpus_dirs:
                 continue
-            txt_files: list[Path] = []
-            for corpus_dir in cfg.corpus_dirs:
-                p = self._resolve(corpus_dir)
-                if p.exists():
-                    txt_files.extend(sorted(p.glob("*.txt")))
-            if txt_files:
-                cache_path = txt_files[0].parent / ".cache" / "lexical.pkl"
-                corpora[key] = self._build_corpus_cached(txt_files, cache_path)
+            corpus = self._scan_corpus_dirs(cfg.corpus_dirs)
+            if corpus is not None:
+                corpora[key] = corpus
 
         return AgentRouter(
             corpora=corpora,
@@ -235,14 +220,7 @@ class AgentRegistry:
         engine = self.build_engine(self.default_key, quantize=quantize)
         # build_engine may have applied the default agent's LoRA; unload it
         # so the engine starts from base weights and _switch_to handles the rest.
-        from grimoire_ai.llm.model.lora import LoRALinear
-        if any(isinstance(m, LoRALinear) for m in engine.model.modules()):
-            engine.model.merge_and_unload()
-            from grimoire_ai.llm.training.checkpoint import load_checkpoint
-            ckpt = load_checkpoint(engine._checkpoint_path)
-            engine.model.load_state_dict(ckpt["model"])
-            engine.model.to(engine.device)
-            engine.model.eval()
+        engine.unload_lora()
 
         # Collect resolved lora_paths and corpora for all agents.
         import warnings
@@ -268,6 +246,22 @@ class AgentRegistry:
             corpora=corpora,
             default_key=self.default_key,
         )
+
+    def _scan_corpus_dirs(self, corpus_dirs: list[str]) -> "Optional[GrimoireCorpus]":
+        """Collect .txt files from *corpus_dirs* and return a cached GrimoireCorpus.
+
+        Returns ``None`` when no ``.txt`` files are found in any of the listed
+        directories so callers can distinguish "no corpus" from an empty one.
+        """
+        txt_files: list[Path] = []
+        for corpus_dir in corpus_dirs:
+            p = self._resolve(corpus_dir)
+            if p.exists():
+                txt_files.extend(sorted(p.glob("*.txt")))
+        if not txt_files:
+            return None
+        cache_path = txt_files[0].parent / ".cache" / "lexical.pkl"
+        return self._build_corpus_cached(txt_files, cache_path)
 
     @staticmethod
     def _build_corpus_cached(txt_files: list[Path], cache_path: Path) -> "GrimoireCorpus":

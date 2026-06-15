@@ -173,7 +173,7 @@ class TestMultiAgentEngine:
         state = ConversationState()
 
         # Simulate engine calling state.add_turn at the end of generation
-        def _fake_chat_stream(query, state_arg, gen_config=None):
+        def _fake_chat_stream(query, state_arg, top_k_corpus=5, gen_config=None):
             yield "partial"
             state_arg.add_turn(query, "partial")
 
@@ -198,20 +198,13 @@ class TestMultiAgentEngine:
         mock_inner.load_lora.assert_called_once_with("checkpoints/lora/saga.lora")
 
     def test_switch_to_base_weights_when_agent_has_no_lora(self):
-        """Switching to an agent without lora_path reloads base weights if LoRA is active."""
-        from grimoire_ai.llm.model.lora import LoRALinear
-
+        """Switching to an agent without lora_path calls unload_lora on the inner engine."""
         engine, mock_inner = self._make_engine()
-        # Simulate an active LoRA on the model
-        lora_module = MagicMock(spec=LoRALinear)
-        mock_inner.model.modules.return_value = [lora_module]
 
-        # Force a switch to "general" (no lora_path)
-        with patch("grimoire_ai.agents.router.load_checkpoint") as mock_ckpt:
-            mock_ckpt.return_value = {"model": {}}
-            engine._switch_to("general")
+        # Force a switch to "general" (no lora_path).
+        engine._switch_to("general")
 
-        mock_inner.model.merge_and_unload.assert_called_once()
+        mock_inner.unload_lora.assert_called_once()
 
     def test_fallback_routes_to_default_below_threshold(self):
         engine, _ = self._make_engine(threshold=0.50)  # very high threshold
