@@ -361,6 +361,14 @@ def run_finetune(
             if on_save is not None:
                 on_save(step, elapsed)
 
+        # Capture the actual final step and elapsed time reported by Trainer.on_done
+        # so the final-save log entry shows accurate values instead of synthetic ones.
+        _done_info: list = []
+
+        def _on_done_capturing(step: int, elapsed: float) -> None:
+            _done_info.append((step, elapsed))
+            on_done(step, elapsed)
+
         Trainer(
             model=model,
             train_dataset=train_dataset,
@@ -378,17 +386,24 @@ def run_finetune(
             device=device,
             on_log=on_log,
             on_save=_on_save_combined,
-            on_done=on_done,
+            on_done=_on_done_capturing,
             on_eval=on_eval,
             stop_event=stop_event,
             model_state_dict_fn=model.merged_state_dict if lora_rank_int > 0 else None,
         ).train(resume_from=resume)
 
-        if lora_rank_int > 0:
-            _name = (agent_name or "").strip() or "lora_final"
-            _final = _Path(checkpoint_dir) / f"{_name}.lora"
-            _save_lora(model, lora_rank_int, float(lora_alpha), lora_targets_list, str(_final))
-            on_save(int(total_steps), 0.0)
+        if lora_rank_int > 0 and not stop_event.is_set():
+            # Strip any directory separators from the agent name to prevent
+            # path traversal (e.g. "../../../tmp/evil" → "evil").
+            _raw = (agent_name or "").strip() or "lora_final"
+            _safe_name = _Path(_raw).name or "lora_final"
+            _final = _Path(checkpoint_dir) / f"{_safe_name}.lora"
+            try:
+                _save_lora(model, lora_rank_int, float(lora_alpha), lora_targets_list, str(_final))
+            except Exception as exc:
+                raise RuntimeError(f"Failed to save final LoRA adapter to {_final}: {exc}") from exc
+            _step, _elapsed = _done_info[0] if _done_info else (int(total_steps), 0.0)
+            on_save(_step, _elapsed)
 
     yield from _wrap_with_buttons(_stream_training(_train))
 
@@ -516,9 +531,10 @@ def _toggle_finetune_mode(mode: str):
     """Update defaults when the fine-tune mode dropdown changes."""
     is_agent = mode == "Agent (LoRA adapter)"
     return (
-        gr.update(visible=is_agent),
-        gr.update(value=8 if is_agent else 0),
-        gr.update(value="checkpoints/lora/" if is_agent else "checkpoints/finetune/"),
+        gr.update(visible=is_agent, value=""),                                           # ft_agent_name
+        gr.update(value=8 if is_agent else 0),                                           # ft_lora_rank
+        gr.update(value="checkpoints/lora/" if is_agent else "checkpoints/finetune/"),  # ft_ckpt_dir
+        gr.update(value=""),                                                              # ft_resume
     )
 
 
@@ -1764,7 +1780,7 @@ def build_app() -> gr.Blocks:
             ft_mode.change(
                 fn=_toggle_finetune_mode,
                 inputs=[ft_mode],
-                outputs=[ft_agent_name, ft_lora_rank, ft_ckpt_dir],
+                outputs=[ft_agent_name, ft_lora_rank, ft_ckpt_dir, ft_resume],
             )
             ft_event = ft_run_btn.click(
                 fn=run_finetune,
