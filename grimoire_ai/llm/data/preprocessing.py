@@ -73,20 +73,38 @@ def _collect_text_files(input_path: Path) -> list[Path]:
     return files
 
 
-def _read_texts(files: list[Path], encoding: str) -> list[str]:
-    """Read and return the contents of each file as a string.
-
-    Args:
-        files: List of file paths to read.
-        encoding: Text encoding (e.g. ``"utf-8"``).
-
-    Returns:
-        A list of raw text strings, one per file.
-    """
+def _load_texts(files: list[Path], encoding: str) -> list[str]:
+    """Read all files into memory — only used when deduplication is requested."""
     return [
         path.read_text(encoding=encoding, errors="replace")
         for path in files
     ]
+
+
+def _sample_texts_for_bpe(
+    files: list[Path],
+    texts: Optional[list[str]],
+    max_files: Optional[int],
+    encoding: str,
+) -> list[str]:
+    """Return up to *max_files* texts for BPE vocabulary training.
+
+    When *texts* is already loaded (dedup path), samples from that list to
+    avoid a second disk read.  Otherwise reads a random sample from disk.
+    A good vocabulary only needs to see a representative slice of the corpus —
+    sampling 500 files already covers the long tail for typical domain corpora.
+    """
+    import random
+    n = len(files)
+    if max_files is None or n <= max_files:
+        if texts is not None:
+            return texts
+        return [p.read_text(encoding=encoding, errors="replace") for p in files]
+    # Sample without replacement; sort for deterministic disk-read ordering.
+    indices = sorted(random.sample(range(n), max_files))
+    if texts is not None:
+        return [texts[i] for i in indices]
+    return [files[i].read_text(encoding=encoding, errors="replace") for i in indices]
 
 
 def preprocess(
@@ -97,18 +115,21 @@ def preprocess(
     encoding: str = "utf-8",
     dedup: bool = False,
     dedup_threshold: float = 0.8,
+    bpe_sample_size: Optional[int] = 500,
     on_progress: Optional[Callable[[str], None]] = None,
 ) -> int:
     """Tokenize text files and write a flat binary array of token ids.
 
-    If ``vocab_path`` does not exist, trains a new BPE encoder on the
-    collected texts and saves it.  Otherwise loads the existing encoder.
+    If ``vocab_path`` does not exist, trains a new BPE encoder on up to
+    ``bpe_sample_size`` randomly-sampled source files and saves it.  Otherwise
+    loads the existing encoder.  All files are then encoded and written to
+    ``output_path`` one at a time — no full corpus is ever held in RAM, so
+    the function scales to corpora of arbitrary size.
 
     Encoding pipeline per document:
     1. ``BytePairEncoder.encode(text)`` → list of int ids
     2. Append ``EOS_ID`` to signal end of document
-    3. Concatenate all documents into one long token sequence
-    4. Write as a numpy int32 array to ``output_path``
+    3. Write the int32 array directly to the output file
 
     Args:
         input_path: Path to a directory of ``.txt`` files or a single file.
@@ -120,10 +141,13 @@ def preprocess(
         encoding: Text encoding of the source files.
         dedup: When ``True``, near-duplicate documents are detected with
             MinHash + LSH and only one representative of each duplicate cluster
-            is kept before tokenisation.  Off by default so existing behaviour
-            is unchanged.
+            is kept before tokenisation.  Requires loading all files into RAM.
         dedup_threshold: Minimum estimated Jaccard similarity for two documents
             to be treated as near duplicates (only used when ``dedup`` is set).
+        bpe_sample_size: Maximum number of files loaded into RAM for BPE
+            vocabulary training.  A random sample is drawn when the corpus is
+            larger.  ``None`` loads all files (original behaviour).  Ignored
+            when ``vocab_path`` already exists.
         on_progress: Optional callable invoked with a progress message string
             at each major step and during BPE merge iterations.  When
             ``None`` messages are printed to stdout — existing CLI behaviour
@@ -146,22 +170,25 @@ def preprocess(
     output_p = Path(output_path)
     vocab_p  = Path(vocab_path)
 
+    if bpe_sample_size is not None and bpe_sample_size <= 0:
+        bpe_sample_size = None
+
     if not input_p.exists():
         raise FileNotFoundError(f"Input path not found: {input_path}")
 
     # --- Collect source files -------------------------------------------
-    _emit(f"[1/4] Collecting text files from {input_p} ...")
+    _emit(f"[1/3] Collecting text files from {input_p} ...")
     files = _collect_text_files(input_p)
     _emit(f"      Found {len(files)} file(s).")
-    for path in files:
-        _emit(f"      Reading {path.name} ({path.stat().st_size / 1024:.1f} KB)")
-    texts = _read_texts(files, encoding)
 
     # --- Optional near-duplicate removal --------------------------------
+    # Dedup requires all texts in RAM; accept that cost only when requested.
+    texts: Optional[list[str]] = None
     if dedup:
+        _emit(f"      Loading {len(files)} files for deduplication ...")
+        texts = _load_texts(files, encoding)
         from grimoire_ai.llm.data.dedup import deduplicate_indices
-        _emit(f"      Deduplicating {len(texts)} document(s) "
-              f"(threshold={dedup_threshold}) ...")
+        _emit(f"      Deduplicating (threshold={dedup_threshold}) ...")
         kept, clusters = deduplicate_indices(texts, threshold=dedup_threshold)
         removed = len(texts) - len(kept)
         if removed:
@@ -175,19 +202,24 @@ def preprocess(
     # --- Train or load BPE encoder -------------------------------------
     encoder = BytePairEncoder()
     if vocab_p.exists():
-        _emit(f"[2/4] Loading existing vocabulary from {vocab_p} ...")
+        _emit(f"[2/3] Loading existing vocabulary from {vocab_p} ...")
         encoder = BytePairEncoder.load(str(vocab_p))
         _emit(f"      Vocabulary size: {len(encoder):,}")
     else:
-        _emit(f"[2/4] Training BPE encoder (vocab_size={vocab_size:,}) ...")
-        _emit(f"      This may take 10–30 minutes on CPU.")
+        _emit(f"[2/3] Training BPE encoder (vocab_size={vocab_size:,}) ...")
+        _emit(f"      This may take several minutes on CPU.")
 
         def _bpe_progress(step: int, total: int) -> None:
             pct = 100 * step // total
             _emit(f"      BPE merges: {step:,} / {total:,}  ({pct}%)")
 
+        sample = _sample_texts_for_bpe(files, texts, bpe_sample_size, encoding)
+        n_sample = len(sample)
+        _emit(f"      Sampling {n_sample}/{len(files)} file(s) for vocabulary training."
+              if n_sample < len(files) else
+              f"      Using all {n_sample} file(s) for vocabulary training.")
         encoder.train(
-            texts,
+            sample,
             vocab_size=vocab_size,
             on_progress=_bpe_progress if on_progress is not None else None,
         )
@@ -196,27 +228,31 @@ def preprocess(
         _emit(f"      Vocabulary size: {len(encoder):,}")
         _emit(f"      Saved to {vocab_p}")
 
-    # --- Encode all documents -----------------------------------------
-    _emit(f"[3/4] Encoding documents ...")
-    all_ids: list[int] = []
-    for i, (path, text) in enumerate(zip(files, texts)):
-        ids = encoder.encode(text)
-        ids.append(EOS_ID)          # document boundary marker
-        all_ids.extend(ids)
-        _emit(f"      [{i+1}/{len(files)}] {path.name}: {len(ids):,} tokens")
-    _emit(f"      Total tokens: {len(all_ids):,}")
-
-    # --- Write binary file --------------------------------------------
-    _emit(f"[4/4] Writing {output_p} ...")
+    # --- Encode and write documents (streaming — no full buffer in RAM) ---
+    # Write to a sibling temp file and rename on success so a failed run never
+    # leaves a partial/corrupt .bin at the destination path.
+    _emit(f"[3/3] Encoding and writing {output_p} ...")
     output_p.parent.mkdir(parents=True, exist_ok=True)
-    arr = np.array(all_ids, dtype=np.int32)
-    fp = np.memmap(str(output_p), dtype=np.int32, mode="w+", shape=(len(arr),))
-    fp[:] = arr
-    fp.flush()
-    del fp
+    tmp_path = output_p.with_suffix(".bin.tmp")
+    total_tokens = 0
+    try:
+        with open(str(tmp_path), "wb") as f_out:
+            for i, path in enumerate(files):
+                text = texts[i] if texts is not None else path.read_text(
+                    encoding=encoding, errors="replace"
+                )
+                ids = encoder.encode(text) + [EOS_ID]   # +[EOS_ID] avoids mutating encoder cache
+                np.array(ids, dtype=np.int32).tofile(f_out)
+                total_tokens += len(ids)
+                _emit(f"      [{i+1}/{len(files)}] {path.name}: {len(ids):,} tokens")
+        tmp_path.replace(output_p)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
     size_mb = output_p.stat().st_size / (1024 ** 2)
-    _emit(f"      Written {len(arr):,} tokens ({size_mb:.1f} MB) to {output_p}")
-    return len(arr)
+    _emit(f"      Total: {total_tokens:,} tokens ({size_mb:.1f} MB) → {output_p}")
+    return total_tokens
 
 
 def main() -> None:
@@ -253,6 +289,10 @@ def main() -> None:
         "--dedup-threshold", type=float, default=0.8,
         help="Min estimated Jaccard similarity to treat documents as duplicates.",
     )
+    parser.add_argument(
+        "--bpe-sample", type=int, default=500, metavar="N",
+        help="Max files sampled for BPE vocabulary training (0 = all files).",
+    )
     args = parser.parse_args()
 
     try:
@@ -264,6 +304,7 @@ def main() -> None:
             encoding=args.encoding,
             dedup=args.dedup,
             dedup_threshold=args.dedup_threshold,
+            bpe_sample_size=args.bpe_sample,
         )
         print("\nPreprocessing complete.")
     except (FileNotFoundError, ValueError) as exc:
