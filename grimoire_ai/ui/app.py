@@ -95,6 +95,56 @@ def _fmt_elapsed(seconds: float) -> str:
     return f"{s}s"
 
 
+def _detect_device_profile() -> dict:
+    """Probe the available compute device and derive safe training/inference defaults.
+
+    Returns a dict with keys:
+      device    – "cuda" or "cpu"
+      vram_gb   – total GPU VRAM in GiB (0.0 on CPU)
+      pt_batch  – recommended pre-train batch size
+      pt_accum  – recommended pre-train gradient accumulation steps
+      ft_batch  – recommended fine-tune batch size
+      ft_accum  – recommended fine-tune gradient accumulation steps
+      grad_ckpt – whether to suggest gradient checkpointing
+      quantize  – whether to suggest int8 quantization (CPU inference only)
+    """
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return dict(device="cpu", vram_gb=0.0,
+                        pt_batch=1, pt_accum=32,
+                        ft_batch=1, ft_accum=16,
+                        grad_ckpt=False, quantize=True)
+        vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+    except Exception:
+        # torch unavailable or CUDA probe failed — return neutral defaults.
+        return dict(device="cpu", vram_gb=0.0,
+                    pt_batch=4, pt_accum=8,
+                    ft_batch=4, ft_accum=4,
+                    grad_ckpt=False, quantize=False)
+
+    # Batch sizing: target effective batch = 32 for pre-train, 16 for fine-tune.
+    if vram_gb < 4:
+        pt_batch, ft_batch = 1, 1
+    elif vram_gb < 8:
+        pt_batch, ft_batch = 2, 2
+    elif vram_gb < 16:
+        pt_batch, ft_batch = 4, 4
+    else:
+        pt_batch, ft_batch = 8, 8
+
+    return dict(
+        device="cuda",
+        vram_gb=vram_gb,
+        pt_batch=pt_batch,
+        pt_accum=max(1, 32 // pt_batch),
+        ft_batch=ft_batch,
+        ft_accum=max(1, 16 // ft_batch),
+        grad_ckpt=vram_gb < 16,
+        quantize=False,
+    )
+
+
 def _stream_training(train_fn) -> Generator[str, None, None]:
     """Run a training function in a background thread and stream loss lines.
 
@@ -946,6 +996,12 @@ def load_engine(
         from grimoire_ai.tools.math_tool import MathTool
         math_tool = MathTool()
 
+    lora_path = (lora_path or "").strip()
+    # LoRA adapters are incompatible with int8-quantized engines; silently
+    # disable quantization when a LoRA path is provided so load_lora() succeeds.
+    if lora_path:
+        quantize = False
+
     engine = InferenceEngine(
         checkpoint_path=checkpoint_path,
         tokenizer_path=vocab_path,
@@ -1001,7 +1057,6 @@ def load_engine(
     elif corpus_dir:
         status_suffix = f" | lexical (Jaccard): {len(documents)} file(s)"
 
-    lora_path = (lora_path or "").strip()
     if lora_path:
         try:
             engine.load_lora(lora_path)
@@ -1623,6 +1678,9 @@ def build_app() -> gr.Blocks:
     _corpus_dirs    = _scan_subdirs("data/corpus/")
     _jsonl_choices  = _scan_files("data/finetune/", "*.jsonl")
 
+    # Probe compute device once; used to set sensible defaults for memory-sensitive fields.
+    _dp = _detect_device_profile()
+
     with gr.Blocks(title="Grimoire") as app:
         theme_state = gr.State("dark")
         with gr.Row(elem_classes="grimoire-header"):
@@ -1789,11 +1847,11 @@ def build_app() -> gr.Blocks:
                 )
             with gr.Row():
                 pt_batch = gr.Number(
-                    label="Batch size", value=4, precision=0,
+                    label="Batch size", value=_dp["pt_batch"], precision=0,
                     info="Sequences processed per step. Reduce to 1–2 if you run out of memory.",
                 )
                 pt_accum = gr.Number(
-                    label="Gradient accum.", value=8, precision=0,
+                    label="Gradient accum.", value=_dp["pt_accum"], precision=0,
                     info="Simulates a larger batch without extra memory. Effective batch = Batch size × this value.",
                 )
                 pt_log = gr.Number(
@@ -1823,7 +1881,7 @@ def build_app() -> gr.Blocks:
             with gr.Row():
                 pt_grad_ckpt = gr.Checkbox(
                     label="Gradient checkpointing",
-                    value=False,
+                    value=_dp["grad_ckpt"],
                     info="Recompute block activations during backward instead of storing them. "
                          "Halves peak VRAM at a cost of ~20 % slower training. "
                          "Recommended for medium-85M / large-250M on GPUs with < 16 GB VRAM.",
@@ -1966,11 +2024,11 @@ def build_app() -> gr.Blocks:
                 )
             with gr.Row():
                 ft_batch = gr.Number(
-                    label="Batch size", value=4, precision=0,
+                    label="Batch size", value=_dp["ft_batch"], precision=0,
                     info="Reduce if you run out of memory.",
                 )
                 ft_accum = gr.Number(
-                    label="Gradient accum.", value=4, precision=0,
+                    label="Gradient accum.", value=_dp["ft_accum"], precision=0,
                     info="Simulates a larger batch without extra memory. Effective batch = Batch size × this value.",
                 )
                 ft_log = gr.Number(
@@ -2085,9 +2143,9 @@ def build_app() -> gr.Blocks:
                     info="Load a checkpoint to read the exact parameter count. Leave blank to use the 25M default.",
                 )
             with gr.Row():
-                sc_batch  = gr.Number(label="Batch size",        value=4,   precision=0,
+                sc_batch  = gr.Number(label="Batch size",        value=_dp["pt_batch"],  precision=0,
                     info="Must match what you use in Pre-train.")
-                sc_accum  = gr.Number(label="Gradient accum.",   value=8,   precision=0,
+                sc_accum  = gr.Number(label="Gradient accum.",   value=_dp["pt_accum"],  precision=0,
                     info="Must match what you use in Pre-train.")
                 sc_seq    = gr.Number(label="Sequence length",   value=1024, precision=0,
                     info="Context window. Match your training run — pre-training uses max_seq_len=1024. A smaller value here under-counts tokens-per-step and inflates the pass estimate.")
@@ -2156,7 +2214,7 @@ def build_app() -> gr.Blocks:
                 )
                 ev_quantize = gr.Checkbox(
                     label="int8 quantization (CPU only)",
-                    value=False,
+                    value=_dp["quantize"],
                     info="Quantize model weights to int8 before evaluation — reduces memory use.",
                 )
                 ev_max_ppl = gr.Number(
@@ -2417,7 +2475,7 @@ def build_app() -> gr.Blocks:
                     )
                     chat_quantize = gr.Checkbox(
                         label="int8 quantization",
-                        value=False,
+                        value=_dp["quantize"],
                         info="Quantize Linear layers to int8 after loading. Cuts memory ~4× and speeds up CPU inference. Ignored on CUDA.",
                         scale=0,
                         min_width=200,

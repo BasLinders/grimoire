@@ -9,7 +9,7 @@ Assessment of ~75 UI parameters across Chat, Pre-train, Fine-tune, Scale, Evalua
 | 1 — Zero-effort pre-fills | **Complete** |
 | 2 — Filesystem discovery | **Complete** |
 | 3 — agents.json config | **Complete** |
-| 4 — Device-aware suggestions | Pending |
+| 4 — Device-aware suggestions | **Complete** |
 | 5 — Corpus-size-aware model preset | Pending |
 | 6 — Query-aware generation | Pending |
 
@@ -100,7 +100,7 @@ When the user selects an agent from `agent_dropdown`, auto-populate generation a
 
 ---
 
-## Phase 4 — Device-aware suggestions
+## Phase 4 — Device-aware suggestions ✓
 
 Use `torch.cuda.is_available()` and `torch.cuda.get_device_properties()` at startup. Already partially done in `engine.py:133–134`.
 
@@ -113,14 +113,21 @@ Use `torch.cuda.is_available()` and `torch.cuda.get_device_properties()` at star
 | `pt_accum` | Pre-train | `max(1, target_effective_batch // pt_batch)` |
 | `ft_accum` | Fine-tune | `max(1, target_effective_batch // ft_batch)` |
 
-**Batch size heuristic** (target effective batch = 32):
+**Batch size heuristic** (target effective batch = 32 for pre-train, 16 for fine-tune):
 
 | VRAM | Suggested `batch` | Notes |
 |------|-------------------|-------|
 | CPU / < 4 GB | 1 | Use high `accum` |
 | 4–8 GB | 2 | |
-| 8–16 GB | 4 | Current default |
-| > 16 GB | 8–16 | Reduce `accum` accordingly |
+| 8–16 GB | 4 | Previous hardcoded default |
+| > 16 GB | 8 | Reduce `accum` accordingly |
+
+**Implementation notes:**
+- Added `_detect_device_profile()` helper in `app.py`; called once at the top of `build_app()`, result stored in `_dp`.
+- `sc_batch` and `sc_accum` (Scale tab) are synced to `_dp["pt_batch"]` / `_dp["pt_accum"]` so the Chinchilla calculator always reflects the actual training config.
+- CPU with no CUDA: `quantize=True`, `batch=1`, `accum=32/16`. CUDA: `quantize=False`, batch/accum derived from VRAM, `grad_ckpt=True` when VRAM < 16 GB.
+- MPS (Apple Metal) falls into the CPU path — int8 quantization suggested, batch=1. Acceptable for now.
+- If `torch` is unavailable or CUDA probe fails, returns neutral defaults identical to the previous hardcoded values.
 
 ---
 
