@@ -11,7 +11,7 @@ Assessment of ~75 UI parameters across Chat, Pre-train, Fine-tune, Scale, Evalua
 | 3 — agents.json config | **Complete** |
 | 4 — Device-aware suggestions | **Complete** |
 | 5 — Corpus-size-aware model preset | **Complete** |
-| 6 — Query-aware generation | Pending |
+| 6 — Query-aware generation | **Complete** |
 
 ---
 
@@ -163,16 +163,25 @@ optimal_steps  = optimal_tokens / (batch × accum × seq_len)
 
 ---
 
-## Phase 6 — Query-aware generation (optional / runtime)
+## Phase 6 — Query-aware generation ✓
 
 Analyse the user's message text before generation and adjust generation defaults. Lower priority; can be done without UI changes via a pre-processing hook.
 
 | Heuristic | Condition | Action |
 |-----------|-----------|--------|
-| Factual query | Starts with "What", "How many", "List", "When", "Define" | Suggest `temp ≤ 0.5` |
-| Creative query | Starts with "Write", "Create", "Design", "Imagine" | Suggest `temp ≥ 0.9` |
-| Short query (< 10 tokens) | — | Suggest `max_tokens = 256` |
-| Long query (> 50 tokens) | — | Suggest `max_tokens = 128` |
+| Factual query | Starts with "What", "How many", "List", "When", "Define" | `temp = min(temp, 0.5)` |
+| Creative query | Starts with "Write", "Create", "Design", "Imagine" | `temp = max(temp, 0.9)` |
+| Short query (< 10 words) | — | `max_tokens = max(max_tokens, 256)` — floor at 256 |
+| Long query (> 50 words) | — | `max_tokens = min(max_tokens, 128)` — cap at 128 |
+
+**Implementation notes:**
+- Added `_query_gen_hints(query, temperature, max_new_tokens, adaptive_temperature)` in `app.py`; called inside `chat()` before `GenerationConfig` is constructed — no UI changes required.
+- All four hints use clamp semantics (min/max), not hard overrides — agent-configured and user-tuned values are never pushed in the wrong direction.
+- Temperature hints are skipped entirely when `adaptive_temperature=True` (the adaptive schedule supersedes them).
+- Added `_starts_with_word(text, phrase)` helper: checks that the prefix is a complete word/phrase boundary so "listen" doesn't match "list", "definitely" doesn't match "define", "whatever" doesn't match "what", etc.
+- Token-budget hints use word count (whitespace split) as a fast approximation; no tokenizer import needed.
+- `(query or "")` guard at the top of the function prevents `AttributeError` if Gradio passes `None` for an empty textbox.
+- `_FACTUAL_PREFIXES`, `_CREATIVE_PREFIXES` are module-level constants compiled once at import time.
 
 ---
 
