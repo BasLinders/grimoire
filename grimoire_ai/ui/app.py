@@ -1139,6 +1139,38 @@ def load_engine(
     return engine, state, f"Model loaded from {checkpoint_path}{status_suffix}"
 
 
+_FACTUAL_PREFIXES = ("what", "how many", "list", "when", "define")
+_CREATIVE_PREFIXES = ("write", "create", "design", "imagine")
+
+
+def _query_gen_hints(query: str, temperature: float, max_new_tokens: int, adaptive_temperature: bool):
+    """Adjust temperature and max_new_tokens based on simple query heuristics.
+
+    Temperature hints (skipped when adaptive_temperature is True):
+      - Factual opener  → cap temperature at 0.5 (min)
+      - Creative opener → floor temperature at 0.9 (max)
+
+    Token-budget hints (word-count approximation for speed):
+      - Short query < 10 words  → set max_new_tokens = 256
+      - Long query  > 50 words  → set max_new_tokens = 128
+    """
+    q = query.strip().lower()
+    word_count = len(q.split())
+
+    if not adaptive_temperature:
+        if any(q.startswith(p) for p in _FACTUAL_PREFIXES):
+            temperature = min(temperature, 0.5)
+        elif any(q.startswith(p) for p in _CREATIVE_PREFIXES):
+            temperature = max(temperature, 0.9)
+
+    if word_count < 10:
+        max_new_tokens = 256
+    elif word_count > 50:
+        max_new_tokens = 128
+
+    return temperature, max_new_tokens
+
+
 def chat(
     query: str,
     engine_state,
@@ -1155,6 +1187,9 @@ def chat(
         return
     from grimoire_ai.llm.inference.sampler import GenerationConfig
     from grimoire_ai.state.conversation import ConversationState
+    temperature, max_new_tokens = _query_gen_hints(
+        query, temperature, max_new_tokens, adaptive_temperature
+    )
     gen_config = GenerationConfig(
         max_new_tokens=max_new_tokens,
         temperature=temperature,

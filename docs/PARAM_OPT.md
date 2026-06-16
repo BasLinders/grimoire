@@ -11,7 +11,7 @@ Assessment of ~75 UI parameters across Chat, Pre-train, Fine-tune, Scale, Evalua
 | 3 — agents.json config | **Complete** |
 | 4 — Device-aware suggestions | **Complete** |
 | 5 — Corpus-size-aware model preset | **Complete** |
-| 6 — Query-aware generation | Pending |
+| 6 — Query-aware generation | **Complete** |
 
 ---
 
@@ -163,16 +163,23 @@ optimal_steps  = optimal_tokens / (batch × accum × seq_len)
 
 ---
 
-## Phase 6 — Query-aware generation (optional / runtime)
+## Phase 6 — Query-aware generation ✓
 
 Analyse the user's message text before generation and adjust generation defaults. Lower priority; can be done without UI changes via a pre-processing hook.
 
 | Heuristic | Condition | Action |
 |-----------|-----------|--------|
-| Factual query | Starts with "What", "How many", "List", "When", "Define" | Suggest `temp ≤ 0.5` |
-| Creative query | Starts with "Write", "Create", "Design", "Imagine" | Suggest `temp ≥ 0.9` |
-| Short query (< 10 tokens) | — | Suggest `max_tokens = 256` |
-| Long query (> 50 tokens) | — | Suggest `max_tokens = 128` |
+| Factual query | Starts with "What", "How many", "List", "When", "Define" | `temp = min(temp, 0.5)` |
+| Creative query | Starts with "Write", "Create", "Design", "Imagine" | `temp = max(temp, 0.9)` |
+| Short query (< 10 words) | — | `max_tokens = 256` |
+| Long query (> 50 words) | — | `max_tokens = 128` |
+
+**Implementation notes:**
+- Added `_query_gen_hints(query, temperature, max_new_tokens, adaptive_temperature)` in `app.py`; called inside `chat()` before `GenerationConfig` is constructed — no UI changes required.
+- Temperature hints use clamp semantics (min/max) rather than hard overrides, so a user who has already tuned temperature below 0.5 for a factual query isn't pushed back up.
+- Temperature hints are skipped entirely when `adaptive_temperature=True` (the adaptive schedule supersedes them).
+- Token-budget hints use word count (whitespace split) as a fast approximation; no tokenizer import needed.
+- `_FACTUAL_PREFIXES` and `_CREATIVE_PREFIXES` are module-level constants so they compile once.
 
 ---
 
