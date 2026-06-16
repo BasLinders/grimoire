@@ -46,10 +46,13 @@ from grimoire_ai.llm.tokenizer.special_tokens import (
     AST_ID,
     BOS_ID,
     EOS_ID,
-    PAD_ID,
     SEP_ID,
     USR_ID,
 )
+
+# PyTorch canonical value for positions excluded from the loss.
+# Using -100 (not PAD_ID=0) so real tokens with id 0 are never silently dropped.
+_LABEL_IGNORE_IDX: int = -100
 
 
 class ConversationDataset(Dataset):
@@ -147,12 +150,19 @@ class ConversationDataset(Dataset):
         input_ids = full_ids[:-1]
         target_ids = full_ids[1:]
 
-        # Mask the prompt portion of the target with PAD_ID.
-        # The response starts at position len(prompt_ids) - 1 in target_ids
-        # (shifted by one due to the causal shift above).
-        response_start = len(prompt_ids) - 1
+        # Recompute response_start against the (possibly truncated) full_ids so
+        # that truncation cutting into the response doesn't corrupt the mask offset.
+        truncated_prompt_len = min(len(prompt_ids), len(full_ids))
+        response_start = truncated_prompt_len - 1
+
+        # Skip examples where truncation eliminated all response tokens.
+        if response_start >= len(target_ids):
+            return None
+
+        # Mask the prompt portion of the target with _LABEL_IGNORE_IDX (-100)
+        # so cross_entropy ignores those positions.
         target_ids = (
-            [PAD_ID] * min(response_start, len(target_ids))
+            [_LABEL_IGNORE_IDX] * min(response_start, len(target_ids))
             + target_ids[response_start:]
         )
 

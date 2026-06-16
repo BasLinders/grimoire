@@ -184,8 +184,11 @@ def generate_stream(
 
             if config.top_p < 1.0:
                 sorted_logits, sorted_indices = torch.sort(next_logits, descending=True)
-                cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
-                remove_mask = cumulative_probs - F.softmax(sorted_logits, dim=-1) > config.top_p
+                # Compute softmax once and reuse to avoid fragile double-call.
+                probs_sorted = F.softmax(sorted_logits, dim=-1)
+                cumulative_probs = torch.cumsum(probs_sorted, dim=-1)
+                # Shift by one so the token that pushes us over the threshold is kept.
+                remove_mask = cumulative_probs - probs_sorted > config.top_p
                 sorted_logits[remove_mask] = float("-inf")
                 next_logits = torch.zeros_like(next_logits).scatter_(
                     0, sorted_indices, sorted_logits
@@ -201,7 +204,7 @@ def generate_stream(
             yield next_token
 
             past_len = past_kvs[0][0].shape[2]
-            if past_len >= max_seq - 1:
+            if past_len >= max_seq:
                 past_kvs = [
                     (kv[0][:, :, 1:, :], kv[1][:, :, 1:, :])
                     for kv in past_kvs
@@ -318,7 +321,7 @@ def generate(
             # position indices and the causal mask never go out of bounds.
             # Drop the oldest token from every layer's K and V.
             past_len = past_kvs[0][0].shape[2]
-            if past_len >= max_seq - 1:
+            if past_len >= max_seq:
                 past_kvs = [
                     (kv[0][:, :, 1:, :], kv[1][:, :, 1:, :])
                     for kv in past_kvs

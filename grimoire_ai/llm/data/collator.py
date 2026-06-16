@@ -32,6 +32,11 @@ from torch.nn.utils.rnn import pad_sequence
 
 from grimoire_ai.llm.tokenizer.special_tokens import PAD_ID
 
+# Labels at padding positions must be ignored by the loss; PyTorch's canonical
+# ignore value is -100.  Using PAD_ID (0) was wrong: it would silently exclude
+# any real response token whose id happened to be 0.
+_LABEL_IGNORE_IDX: int = -100
+
 
 class PaddingCollator:
     """Collate a list of ``(input_ids, target_ids)`` pairs into padded batches.
@@ -93,7 +98,10 @@ class PaddingCollator:
             return padded.flip(1)
 
         input_ids = left_pad(list(inputs), self.pad_id)
-        target_ids = left_pad(list(targets), self.pad_id)
+        # Pad labels with -100, not PAD_ID, so cross_entropy(ignore_index=-100)
+        # correctly ignores all padding positions without accidentally masking
+        # real tokens whose id is 0.
+        target_ids = left_pad(list(targets), _LABEL_IGNORE_IDX)
         attention_mask = left_pad(masks, 0)
 
         return input_ids, target_ids, attention_mask

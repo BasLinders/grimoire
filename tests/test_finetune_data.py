@@ -129,14 +129,13 @@ def test_conversation_dataset_respects_max_seq_len(tiny_tokenizer):
 
 
 def test_response_masking_has_pad_at_start(tiny_tokenizer):
-    """The target tensor should begin with PAD tokens (prompt is masked)."""
+    """The target tensor should begin with masked positions (-100) for the prompt."""
     from grimoire_ai.llm.data.conversation import ConversationDataset
-    from grimoire_ai.llm.tokenizer.special_tokens import PAD_ID
 
     ds = ConversationDataset(path=str(_DATA), tokenizer=tiny_tokenizer, max_seq_len=256)
     _, tgt = ds[0]
     # At least the BOS position should be masked.
-    assert tgt[0].item() == PAD_ID, "First target token should be PAD (prompt masking)."
+    assert tgt[0].item() == -100, "First target token should be masked (-100, prompt masking)."
 
 
 def test_response_masking_has_non_pad_at_end(tiny_tokenizer):

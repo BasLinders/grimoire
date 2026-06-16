@@ -81,13 +81,16 @@ class GrimoireTransformer(nn.Module):
         self.final_norm = RMSNorm(config.d_model)
         self.output_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
 
+        self._gradient_checkpointing = False
+        # Initialise before weight tying so named_parameters() only visits the
+        # shared tensor once; initialising after would double-init it (once as
+        # embedding._embed.weight, once as output_head.weight).
+        self._init_weights()
+
         # Weight tying: share the embedding matrix with the output projection.
         # After this assignment both modules hold a reference to the same
         # nn.Parameter tensor; updating one updates the other automatically.
         self.output_head.weight = self.embedding.weight
-
-        self._gradient_checkpointing = False
-        self._init_weights()
 
     def _init_weights(self) -> None:
         """Initialise all weight matrices with small normal values.

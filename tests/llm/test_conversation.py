@@ -143,7 +143,7 @@ def test_final_response_token_is_eos(tokenizer: BytePairEncoder) -> None:
 # ---------------------------------------------------------------------------
 
 def test_prompt_tokens_masked_in_target(tokenizer: BytePairEncoder) -> None:
-    """All target positions corresponding to prompt tokens must be PAD_ID."""
+    """All target positions corresponding to prompt tokens must be masked (-100)."""
     with tempfile.TemporaryDirectory() as tmp:
         path = _write_jsonl(tmp, [{"user": "what is speed", "assistant": "fast"}])
         ds = ConversationDataset(path, tokenizer)
@@ -152,8 +152,8 @@ def test_prompt_tokens_masked_in_target(tokenizer: BytePairEncoder) -> None:
     # Find where AST appears in the input — everything before it is prompt.
     inp_list = inp.tolist()
     ast_pos = inp_list.index(AST_ID)
-    assert all(t == PAD_ID for t in tgt[:ast_pos].tolist()), (
-        "All target positions before AST must be PAD_ID."
+    assert all(t == -100 for t in tgt[:ast_pos].tolist()), (
+        "All target positions before AST must be masked (-100)."
     )
 
 
@@ -168,7 +168,7 @@ def test_response_tokens_not_all_pad(tokenizer: BytePairEncoder) -> None:
 
 
 def test_response_only_loss_equivalence(tokenizer: BytePairEncoder) -> None:
-    """cross_entropy with PAD ignore_index equals manual response-only loss."""
+    """cross_entropy with ignore_index=-100 equals manual response-only loss."""
     with tempfile.TemporaryDirectory() as tmp:
         path = _write_jsonl(tmp, [{"user": "what", "assistant": "this is the answer"}])
         ds = ConversationDataset(path, tokenizer)
@@ -181,11 +181,11 @@ def test_response_only_loss_equivalence(tokenizer: BytePairEncoder) -> None:
     masked_loss = F.cross_entropy(
         logits.view(-1, vocab_size),
         tgt.view(-1),
-        ignore_index=PAD_ID,
+        ignore_index=-100,
     )
 
-    # Manual: compute loss only over non-PAD positions.
-    mask = tgt != PAD_ID
+    # Manual: compute loss only over non-masked positions.
+    mask = tgt != -100
     manual_loss = F.cross_entropy(
         logits.view(-1, vocab_size)[mask],
         tgt.view(-1)[mask],

@@ -258,6 +258,9 @@ class AgentRegistry:
             p = self._resolve(corpus_dir)
             if p.exists():
                 txt_files.extend(sorted(p.glob("*.txt")))
+        # Deduplicate (same path listed twice via different corpus_dir entries)
+        # to prevent double-counting documents in the Jaccard scorer.
+        txt_files = list(dict.fromkeys(txt_files))
         if not txt_files:
             return None
         cache_path = txt_files[0].parent / ".cache" / "lexical.pkl"

@@ -452,7 +452,7 @@ class Trainer:
                 loss = F.cross_entropy(
                     logits.view(-1, self.config.vocab_size),
                     target_ids.view(-1),
-                    ignore_index=PAD_ID,
+                    ignore_index=-100,
                 )
                 # Scale loss by 1/accumulate_steps so the gradient is the
                 # mean over all micro-batches in this optimizer step.
@@ -460,7 +460,10 @@ class Trainer:
 
             # --- Backward pass ------------------------------------------
             self._scaler.scale(loss).backward()
-            running_loss += loss.item()
+            # Accumulate the unscaled loss for logging; multiply back by
+            # accumulate_steps so the logged value reflects the true per-step
+            # cross-entropy, not the 1/accumulate_steps-scaled training loss.
+            running_loss += loss.item() * self.accumulate_steps
             micro_count  += 1
 
             # --- Optimizer step (every accumulate_steps micro-batches) ---
@@ -625,7 +628,7 @@ class Trainer:
         Runs the model in eval mode (dropout disabled) with no gradient
         tracking.  AMP autocast is applied on CUDA exactly as in training so
         the number is comparable to the training loss.  Padding positions are
-        ignored via ``ignore_index=PAD_ID``.
+        ignored via ``ignore_index=-100``.
 
         The raw (uncompiled) module is used for the forward pass to avoid a
         separate ``torch.compile`` recompilation for the eval-mode graph; it
@@ -665,7 +668,7 @@ class Trainer:
                 loss = F.cross_entropy(
                     logits.view(-1, self.config.vocab_size),
                     target_ids.view(-1),
-                    ignore_index=PAD_ID,
+                    ignore_index=-100,
                 )
 
             batch_loss = loss.item()
@@ -709,6 +712,13 @@ class Trainer:
 
         self.model.load_state_dict(ckpt["model"])
         self._optimizer.load_state_dict(ckpt["optimizer"])
+        # Checkpoints are always loaded with map_location="cpu"; move optimizer
+        # state tensors (momentum, variance buffers) to the training device so
+        # AdamW doesn't mix CPU state with CUDA parameters on the first step.
+        for state in self._optimizer.state.values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    state[k] = v.to(self.device)
         if ckpt.get("scaler") is not None and self._use_amp:
             self._scaler.load_state_dict(ckpt["scaler"])
 

@@ -189,7 +189,7 @@ class InferenceEngine:
         )]
 
     def unload_lora(self) -> None:
-        """Merge any active LoRA adapter into base weights and restore the original checkpoint.
+        """Restore the model to clean base weights, removing any active LoRA adapter.
 
         No-op when no adapter is currently active.  After this call the model is
         in the same state as if it had been loaded from the checkpoint with no LoRA.
@@ -197,11 +197,18 @@ class InferenceEngine:
         from grimoire_ai.llm.model.lora import LoRALinear
         if not any(isinstance(m, LoRALinear) for m in self.model.modules()):
             return
+        # merge_and_unload() replaces LoRALinear modules with plain nn.Linear;
+        # the computed merged weights are immediately overwritten by load_state_dict,
+        # so we call it only for the module-structure restoration, not the merge math.
         self.model.merge_and_unload()
         ckpt = load_checkpoint(self._checkpoint_path)
         self.model.load_state_dict(ckpt["model"])
         self.model.to(self.device)
         self.model.eval()
+        # Freeze all parameters; inference never needs gradients, and load_lora's
+        # subsequent add_lora_adapters call correctly re-enables them for LoRA only.
+        for param in self.model.parameters():
+            param.requires_grad_(False)
 
     def load_lora(self, lora_path: str) -> None:
         """Load a LoRA adapter and apply it to the model.

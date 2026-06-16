@@ -129,9 +129,9 @@ class EarlyStopper:
             self.best_loss = mean_loss
             self.num_bad_evals = 0
         else:
-            # Still track the running best even on a "noisy" improvement so the
-            # threshold tightens as the model genuinely gets better.
-            self.best_loss = min(self.best_loss, mean_loss)
+            # Do not update best_loss on non-significant evals: silently
+            # ratcheting the threshold downward on noisy improvements would
+            # allow the stopping threshold to drift and delay termination.
             self.num_bad_evals += 1
 
         return self.num_bad_evals >= self.patience
