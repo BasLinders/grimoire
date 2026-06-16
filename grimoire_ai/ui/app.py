@@ -627,11 +627,13 @@ def _toggle_theme(current: str) -> tuple[str, str]:
 def _toggle_finetune_mode(mode: str):
     """Update defaults when the fine-tune mode dropdown changes."""
     is_agent = mode == "Agent (LoRA adapter)"
+    rank = 8 if is_agent else 0
     return (
         gr.update(visible=is_agent, value=""),                                           # ft_agent_name
-        gr.update(value=8 if is_agent else 0),                                           # ft_lora_rank
+        gr.update(value=rank),                                                            # ft_lora_rank
         gr.update(value="checkpoints/lora/" if is_agent else "checkpoints/finetune/"),  # ft_ckpt_dir
         gr.update(value=""),                                                              # ft_resume
+        gr.update(value=float(rank) if rank > 0 else 16.0),                             # ft_lora_alpha
     )
 
 
@@ -643,6 +645,39 @@ def _toggle_ingest_inputs(mode: str):
         gr.update(visible=mode == "Directory"),            # recursive checkbox
         gr.update(visible=mode == "URL"),                  # timeout input
     )
+
+
+def _derive_pt_step_params(steps: int):
+    """Auto-fill warmup, log, save, and eval_every from total pre-train steps."""
+    steps = max(1, int(steps or 1))
+    warmup    = max(1, round(steps * 0.05))
+    log_every = max(1, round(steps * 0.005))
+    save      = max(1, round(steps * 0.10))
+    return (
+        gr.update(value=warmup),
+        gr.update(value=log_every),
+        gr.update(value=save),
+        gr.update(value=save),
+    )
+
+
+def _derive_ft_step_params(steps: int):
+    """Auto-fill warmup, log, save, and eval_every from total fine-tune steps."""
+    steps = max(1, int(steps or 1))
+    warmup    = max(1, round(steps * 0.02))
+    log_every = max(1, round(steps * 0.05))
+    save      = max(1, round(steps * 0.20))
+    return (
+        gr.update(value=warmup),
+        gr.update(value=log_every),
+        gr.update(value=save),
+        gr.update(value=save),
+    )
+
+
+def _derive_lora_alpha(rank: int):
+    """Keep LoRA alpha equal to rank (gives scale=1); fall back to 16 when rank=0."""
+    return gr.update(value=float(rank) if rank > 0 else 16.0)
 
 
 # ---------------------------------------------------------------------------
@@ -1747,6 +1782,12 @@ def build_app() -> gr.Blocks:
                     outputs=[pt_d_model, pt_n_layers, pt_n_heads, pt_n_kv_heads, pt_d_ff],
                 )
 
+            pt_steps.change(
+                fn=_derive_pt_step_params,
+                inputs=[pt_steps],
+                outputs=[pt_warmup, pt_log, pt_save, pt_eval_every],
+            )
+
             with gr.Row():
                 pt_run_btn  = gr.Button("Start pre-training", variant="primary")
                 pt_stop_btn = gr.Button(
@@ -1916,7 +1957,17 @@ def build_app() -> gr.Blocks:
             ft_mode.change(
                 fn=_toggle_finetune_mode,
                 inputs=[ft_mode],
-                outputs=[ft_agent_name, ft_lora_rank, ft_ckpt_dir, ft_resume],
+                outputs=[ft_agent_name, ft_lora_rank, ft_ckpt_dir, ft_resume, ft_lora_alpha],
+            )
+            ft_steps.change(
+                fn=_derive_ft_step_params,
+                inputs=[ft_steps],
+                outputs=[ft_warmup, ft_log, ft_save, ft_eval_every],
+            )
+            ft_lora_rank.change(
+                fn=_derive_lora_alpha,
+                inputs=[ft_lora_rank],
+                outputs=[ft_lora_alpha],
             )
             ft_event = ft_run_btn.click(
                 fn=run_finetune,

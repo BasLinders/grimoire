@@ -4,9 +4,18 @@ Assessment of ~75 UI parameters across Chat, Pre-train, Fine-tune, Scale, Evalua
 
 **Currently auto-detected**: device type only (`engine.py:133–134`).
 
+| Phase | Status |
+|-------|--------|
+| 1 — Zero-effort pre-fills | **Complete** |
+| 2 — Filesystem discovery | Pending |
+| 3 — agents.json config | Pending |
+| 4 — Device-aware suggestions | Pending |
+| 5 — Corpus-size-aware model preset | Pending |
+| 6 — Query-aware generation | Pending |
+
 ---
 
-## Phase 1 — Zero-effort pre-fills
+## Phase 1 — Zero-effort pre-fills ✓
 
 No runtime probing required; values are always constant or trivially derived.
 
@@ -32,6 +41,11 @@ No runtime probing required; values are always constant or trivially derived.
 | `ft_lora_targets` | Fine-tune | Default to `"q_proj,v_proj"` (never user-tuned) |
 | `ing_cleaning` | Ingest | Default `"standard"` (safe, no detection needed) |
 | `ing_recursive` | Ingest | Auto-enable when mode is `"Directory"` |
+
+**Implementation notes:**
+- Vocab paths, standard directory defaults, `ing_cleaning`, `ing_recursive`, and `ft_lora_targets` were already pre-filled/handled in the original code.
+- Added `_derive_pt_step_params` and `_derive_ft_step_params` helper functions; wired to `pt_steps.change` and `ft_steps.change` events so warmup, log, save, and eval_every auto-update (`app.py`).
+- Added `_derive_lora_alpha`; wired to `ft_lora_rank.change`. Also updated `_toggle_finetune_mode` to sync `ft_lora_alpha` when mode switches between Base and Agent.
 
 ---
 
