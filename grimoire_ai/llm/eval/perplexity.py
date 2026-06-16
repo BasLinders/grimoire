@@ -90,6 +90,7 @@ def eval_perplexity(
     model.eval()
 
     total_loss = 0.0
+    total_tokens = 0
     n_batches = 0
     non_blocking = device == "cuda"
 
@@ -105,21 +106,28 @@ def eval_perplexity(
             loss = F.cross_entropy(
                 logits.view(-1, logits.size(-1)),
                 target_ids.view(-1),
-                ignore_index=PAD_ID,
+                ignore_index=-100,
+                reduction="sum",
             )
+            # Count non-ignored tokens so we weight each batch by its actual
+            # token count — unweighted batch-mean biases perplexity when the
+            # last batch is smaller than batch_size.
+            n_tokens = int((target_ids != -100).sum().item())
             total_loss += loss.item()
+            total_tokens += n_tokens
             n_batches += 1
 
             if n_batches % 10 == 0:
-                _log(f"  batch {n_batches}/{max_batches or len(loader)}  loss {total_loss/n_batches:.4f}")
+                cur_mean = total_loss / max(total_tokens, 1)
+                _log(f"  batch {n_batches}/{max_batches or len(loader)}  loss {cur_mean:.4f}")
 
     if was_training:
         model.train()
 
-    if n_batches == 0:
+    if n_batches == 0 or total_tokens == 0:
         return {"perplexity": float("nan"), "bpc": float("nan"), "mean_loss": float("nan"), "n_batches": 0}
 
-    mean_loss = total_loss / n_batches
+    mean_loss = total_loss / total_tokens
     perplexity = math.exp(mean_loss)
     bpc = mean_loss / math.log(2)
 

@@ -239,6 +239,10 @@ class SemanticRetriever:
             self._excerpts.extend(texts)
             self._sources.extend(sources)
             self._pending.clear()
+            # Invalidate any attached RagIndex: its FAISS index no longer
+            # covers the newly-added passages, so queries must fall back to
+            # brute-force until save_index()/from_index() is called again.
+            self._rag_index = None
 
         return self.size
 

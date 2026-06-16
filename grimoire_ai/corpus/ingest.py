@@ -400,7 +400,8 @@ def from_markdown(path: str, cleaning: CleaningLevel = CleaningLevel.STANDARD) -
     if not p.exists():
         raise FileNotFoundError(f"Markdown file not found: {path}")
 
-    text = p.read_text(encoding="utf-8")
+    # Use errors="replace" to handle non-UTF-8 Markdown files gracefully.
+    text = p.read_text(encoding="utf-8", errors="replace")
     return _clean_markdown_text(text, cleaning)
 
 
@@ -466,7 +467,9 @@ def from_txt(path: str, cleaning: CleaningLevel = CleaningLevel.STANDARD) -> str
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"Text file not found: {path}")
-    return _clean(p.read_text(encoding="utf-8"), level=cleaning)
+    # Use errors="replace" to handle non-UTF-8 files gracefully instead of
+    # raising UnicodeDecodeError when called from a single-file ingest path.
+    return _clean(p.read_text(encoding="utf-8", errors="replace"), level=cleaning)
 
 
 # ---------------------------------------------------------------------------
@@ -628,8 +631,14 @@ def ingest(
             on_progress=on_progress,
         )
         for file_path, text in results.items():
-            stem = Path(file_path).stem
+            src = Path(file_path)
+            stem = src.stem
             dest = out / (stem + ".txt")
+            # When two source files share the same stem (e.g. rules.pdf and
+            # rules.docx), append the original extension to avoid silent overwrite.
+            if dest.exists():
+                stem = stem + "_" + src.suffix.lstrip(".")
+                dest = out / (stem + ".txt")
             dest.write_text(text, encoding="utf-8")
         return None
 

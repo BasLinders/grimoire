@@ -196,16 +196,17 @@ class ConversationState:
             history_budget -= 2  # for the two SEP tokens
 
         # Pack history segments newest-first into available budget.
+        # Skip turns that don't fit rather than stopping at the first miss so
+        # that a single long middle turn doesn't silently discard all older turns.
         packed: list[list[int]] = []
         used = 0
         for turn in reversed(self._turns):
             u_ids = tokenizer.encode(turn.user)
             a_ids = tokenizer.encode(turn.assistant)
             seg = [USR_ID] + u_ids + [AST_ID] + a_ids
-            if used + len(seg) > history_budget:
-                break  # oldest remaining turn does not fit; stop
-            packed.insert(0, seg)
-            used += len(seg)
+            if used + len(seg) <= history_budget:
+                packed.insert(0, seg)
+                used += len(seg)
 
         history_ids: list[int] = [tok for seg in packed for tok in seg]
 

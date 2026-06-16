@@ -380,7 +380,8 @@ class BytePairEncoder:
 
         ids = [self._encoder[sym] for sym in symbols]
         self._word_cache[word] = ids
-        return ids
+        # Return a copy so callers that mutate the list don't corrupt the cache.
+        return list(ids)
 
     @staticmethod
     def _split_on_special_tokens(text: str) -> list[str]:

@@ -251,11 +251,10 @@ class GroupedQueryAttention(nn.Module):
 
         # --- Expand K and V for GQA ------------------------------------
         # Repeat each KV head n_groups times so dimensions align with Q.
-        # expand + reshape is cheaper than repeat (no memory copy on most backends).
-        k = k.unsqueeze(2).expand(batch, self.n_kv_heads, self.n_groups, full_seq, self.head_dim)
-        k = k.reshape(batch, self.n_heads, full_seq, self.head_dim)
-        v = v.unsqueeze(2).expand(batch, self.n_kv_heads, self.n_groups, full_seq, self.head_dim)
-        v = v.reshape(batch, self.n_heads, full_seq, self.head_dim)
+        # repeat_interleave is explicit and avoids the non-contiguous tensor
+        # that expand() produces (which forces an implicit copy in reshape).
+        k = k.repeat_interleave(self.n_groups, dim=1)
+        v = v.repeat_interleave(self.n_groups, dim=1)
 
         # --- Scaled dot-product attention --------------------------------
         # Use PyTorch's fused SDPA when available (PyTorch >= 2.0).
@@ -284,6 +283,9 @@ class GroupedQueryAttention(nn.Module):
                 out = F.scaled_dot_product_attention(
                     q, k, v, attn_mask=attn_bias, dropout_p=dropout_p,
                 )
+                # Guard against NaN from fully-padded positions (all-inf rows
+                # produce 0/0 in softmax). The manual path has this guard too.
+                out = torch.nan_to_num(out, nan=0.0)
             else:
                 # No padding mask: let SDPA apply the causal mask internally.
                 out = F.scaled_dot_product_attention(

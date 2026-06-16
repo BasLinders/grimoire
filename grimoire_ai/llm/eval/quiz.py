@@ -48,18 +48,20 @@ def _tokenize(text: str) -> list[str]:
 
 
 def _token_f1(prediction: str, reference: str) -> float:
-    """Token-level F1 between *prediction* and *reference*."""
+    """Token-level F1 between *prediction* and *reference* (SQuAD standard)."""
+    from collections import Counter
     pred_tokens = _tokenize(prediction)
     ref_tokens  = _tokenize(reference)
     if not pred_tokens or not ref_tokens:
         return 0.0
-    pred_set = set(pred_tokens)
-    ref_set  = set(ref_tokens)
-    common   = pred_set & ref_set
-    if not common:
+    # Use multiset (Counter) intersection so repeated tokens are counted
+    # correctly — a set intersection would over-count recall for repeated words.
+    common_counts = Counter(pred_tokens) & Counter(ref_tokens)
+    n_common = sum(common_counts.values())
+    if n_common == 0:
         return 0.0
-    precision = len(common) / len(pred_tokens)
-    recall    = len(common) / len(ref_tokens)
+    precision = n_common / len(pred_tokens)
+    recall    = n_common / len(ref_tokens)
     return 2 * precision * recall / (precision + recall)
 
 

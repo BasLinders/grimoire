@@ -89,7 +89,13 @@ class CorpusIndex:
                 surrounding this multi-token. Defaults to ``None``.
         """
         if multi_token in self._store:
-            self._store[multi_token].increment()
+            entry = self._store[multi_token]
+            entry.increment()
+            # Update metadata to the most recent occurrence so query results
+            # reflect a representative context rather than always the first one.
+            entry.next_token = next_token
+            entry.source = source
+            entry.excerpt = excerpt
         else:
             self._store[multi_token] = IndexEntry(
                 next_token=next_token, source=source, excerpt=excerpt
