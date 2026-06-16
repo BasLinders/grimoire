@@ -158,7 +158,7 @@ optimal_steps  = optimal_tokens / (batch × accum × seq_len)
 - Added `_PRESET_PARAMS` dict mapping preset names to approximate param counts for Chinchilla math.
 - Returns 7 `gr.update()` values covering `pt_preset`, all 5 arch fields, and `pt_steps` atomically — bypasses the `pt_preset.change` cascade since arch fields are returned directly.
 - Wired to `pt_corpus.change` (inputs: `pt_corpus`, `pt_batch`, `pt_accum`) and `app.load` using a shared `_pt_corpus_outputs` list.
-- `pt_steps` update cascades through the existing `pt_steps.change` handler to auto-update warmup, log, save, and eval_every.
+- `pt_warmup`, `pt_log`, `pt_save`, `pt_eval_every` are computed directly inside `_suggest_preset_from_corpus` via `_derive_pt_step_params(optimal_steps)` and included in the 11-element return list — Gradio does not guarantee that programmatic `gr.update()` outputs re-fire a component's own `.change()` handlers, so the cascade is made explicit.
 - Guards: missing path, non-existent file, zero batch/accum → all-no-op returns; no crash.
 
 ---
