@@ -25,6 +25,7 @@ scraper = [
     "pdfplumber>=0.10",
     "python-docx>=1.0",
     "openpyxl>=3.1",
+    "py7zr>=0.20",
 ]
 scraper-ocr = [
     "grimoire-ai[scraper]",
