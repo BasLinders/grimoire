@@ -750,6 +750,77 @@ def _derive_lora_alpha(rank: int):
     return gr.update(value=float(rank) if rank > 0 else 16.0)
 
 
+# Approximate parameter counts for each named preset (used for Chinchilla math).
+_PRESET_PARAMS: dict[str, int] = {
+    "small-25M":  25_000_000,
+    "medium-85M": 85_000_000,
+    "large-250M": 250_000_000,
+}
+
+
+def _suggest_preset_from_corpus(corpus_path: str, pt_batch: int, pt_accum: int):
+    """Suggest a model size preset and Chinchilla-optimal step count from a corpus binary.
+
+    Reads the token count from the binary's file size (int32 = 4 bytes each),
+    then applies the thresholds from PARAM_OPT.md Phase 5:
+      < 100 M tokens  → small-25M
+      100 M–500 M     → medium-85M
+      > 500 M         → large-250M
+
+    Also derives pt_steps = round(20 × n_params / (batch × accum × 1024)).
+
+    Returns updates for: pt_preset, pt_d_model, pt_n_layers, pt_n_heads,
+    pt_n_kv_heads, pt_d_ff, pt_steps, pt_warmup, pt_log, pt_save, pt_eval_every.
+    """
+    from pathlib import Path as _Path
+    from grimoire_ai.llm.model.config import MODEL_PRESETS
+
+    _no_update = [gr.update()] * 11
+
+    corpus_path = (corpus_path or "").strip()
+    if not corpus_path:
+        return _no_update
+
+    p = _Path(corpus_path)
+    if not p.is_file():
+        return _no_update
+
+    try:
+        n_tokens = p.stat().st_size // 4  # int32 tokens
+    except OSError:
+        return _no_update
+
+    if n_tokens < 100_000_000:
+        preset = "small-25M"
+    elif n_tokens < 500_000_000:
+        preset = "medium-85M"
+    else:
+        preset = "large-250M"
+
+    cfg = MODEL_PRESETS[preset]
+    n_params = _PRESET_PARAMS[preset]
+
+    batch = max(int(pt_batch or 1), 1)
+    accum = max(int(pt_accum or 1), 1)
+    tokens_per_step = batch * accum * 1024  # max_seq_len default
+    optimal_steps = round(20 * n_params / tokens_per_step)
+
+    # Compute step-derived fields directly rather than relying on pt_steps.change
+    # cascading from a programmatic update, which Gradio does not guarantee.
+    step_updates = _derive_pt_step_params(optimal_steps)
+
+    return [
+        gr.update(value=preset),
+        gr.update(value=cfg.d_model),
+        gr.update(value=cfg.n_layers),
+        gr.update(value=cfg.n_heads),
+        gr.update(value=cfg.n_kv_heads),
+        gr.update(value=cfg.d_ff),
+        gr.update(value=optimal_steps),
+        *step_updates,
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Chat tab logic
 # ---------------------------------------------------------------------------
@@ -1912,6 +1983,21 @@ def build_app() -> gr.Blocks:
                     inputs=[pt_preset],
                     outputs=[pt_d_model, pt_n_layers, pt_n_heads, pt_n_kv_heads, pt_d_ff],
                 )
+
+            _pt_corpus_outputs = [
+                pt_preset, pt_d_model, pt_n_layers, pt_n_heads, pt_n_kv_heads, pt_d_ff,
+                pt_steps, pt_warmup, pt_log, pt_save, pt_eval_every,
+            ]
+            pt_corpus.change(
+                fn=_suggest_preset_from_corpus,
+                inputs=[pt_corpus, pt_batch, pt_accum],
+                outputs=_pt_corpus_outputs,
+            )
+            app.load(
+                fn=_suggest_preset_from_corpus,
+                inputs=[pt_corpus, pt_batch, pt_accum],
+                outputs=_pt_corpus_outputs,
+            )
 
             pt_steps.change(
                 fn=_derive_pt_step_params,
