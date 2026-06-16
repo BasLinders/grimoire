@@ -7,7 +7,7 @@ Assessment of ~75 UI parameters across Chat, Pre-train, Fine-tune, Scale, Evalua
 | Phase | Status |
 |-------|--------|
 | 1 — Zero-effort pre-fills | **Complete** |
-| 2 — Filesystem discovery | Pending |
+| 2 — Filesystem discovery | **Complete** |
 | 3 — agents.json config | Pending |
 | 4 — Device-aware suggestions | Pending |
 | 5 — Corpus-size-aware model preset | Pending |
@@ -49,7 +49,7 @@ No runtime probing required; values are always constant or trivially derived.
 
 ---
 
-## Phase 2 — Filesystem discovery
+## Phase 2 — Filesystem discovery ✓
 
 Scan local paths on tab load; replace freetext fields with dropdowns populated from found files.
 
@@ -68,7 +68,13 @@ Scan local paths on tab load; replace freetext fields with dropdowns populated f
 | `ev_corpus_dir` | Evaluate | `data/corpus/` | subdirectories |
 | `ft_data` | Fine-tune | `data/finetune/` | `*.jsonl` |
 
-Default selection: most recently modified file in each list.
+Default selection: most recently modified file in each list. `ci_corpus_dir` auto-selects the newest corpus directory; all other path fields default to empty (user selects).
+
+**Implementation notes:**
+- Added `_scan_files(base_dir, pattern, recursive)` and `_scan_subdirs(base_dir)` helpers in `app.py`.
+- All 12 path fields converted from `gr.Textbox` to `gr.Dropdown(allow_custom_value=True)` — custom paths can still be typed freely.
+- Six choice lists pre-computed once at app startup inside `build_app()`: `_ckpts_all`, `_ckpts_pretrain`, `_ckpts_finetune`, `_lora_choices`, `_corpus_dirs`, `_jsonl_choices`.
+- `chat_lora` and `chat_ckpt` scan `checkpoints/` recursively; resume fields scope to their respective subdirectory.
 
 ---
 

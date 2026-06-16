@@ -64,6 +64,26 @@ def _list_checkpoints(checkpoint_dir: str) -> list[str]:
     return sorted(str(f) for f in p.glob("*.pt"))
 
 
+def _scan_files(base_dir: str, pattern: str, recursive: bool = False) -> list[str]:
+    """Return files matching pattern under base_dir, sorted newest-first."""
+    p = Path(base_dir)
+    if not p.exists():
+        return []
+    matches = list(p.rglob(pattern) if recursive else p.glob(pattern))
+    matches.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+    return [str(f) for f in matches]
+
+
+def _scan_subdirs(base_dir: str) -> list[str]:
+    """Return immediate subdirectories of base_dir (hidden dirs excluded), newest-first."""
+    p = Path(base_dir)
+    if not p.exists():
+        return []
+    dirs = [d for d in p.iterdir() if d.is_dir() and not d.name.startswith(".")]
+    dirs.sort(key=lambda d: d.stat().st_mtime, reverse=True)
+    return [str(d) + "/" for d in dirs]
+
+
 def _fmt_elapsed(seconds: float) -> str:
     """Format a duration in seconds as a human-readable string."""
     h, rem = divmod(int(seconds), 3600)
@@ -1552,6 +1572,14 @@ def _vars_to_js(d: dict) -> str:
 
 def build_app() -> gr.Blocks:
     """Assemble and return the Gradio Blocks app."""
+    # Pre-compute filesystem choices once at startup so dropdowns are populated immediately.
+    _ckpts_all      = _scan_files("checkpoints/", "*.pt", recursive=True)
+    _ckpts_pretrain = _scan_files("checkpoints/pretrain/", "*.pt")
+    _ckpts_finetune = _scan_files("checkpoints/finetune/", "*.pt")
+    _lora_choices   = _scan_files("checkpoints/", "*.lora", recursive=True)
+    _corpus_dirs    = _scan_subdirs("data/corpus/")
+    _jsonl_choices  = _scan_files("data/finetune/", "*.jsonl")
+
     with gr.Blocks(title="Grimoire") as app:
         theme_state = gr.State("dark")
         with gr.Row(elem_classes="grimoire-header"):
@@ -1696,10 +1724,12 @@ def build_app() -> gr.Blocks:
                     label="Checkpoint directory",
                     value="checkpoints/pretrain/",
                 )
-            pt_resume = gr.Textbox(
+            pt_resume = gr.Dropdown(
+                choices=_ckpts_pretrain,
+                value=None,
                 label="Resume from checkpoint (.pt)",
-                placeholder="Leave blank to start from scratch",
-                info="Continue a stopped run. Total steps is the final target — resuming from step 5 000 with 10 000 total runs only 5 000 more.",
+                allow_custom_value=True,
+                info="Continue a stopped run. Total steps is the final target — resuming from step 5 000 with 10 000 total runs only 5 000 more. Leave blank to start from scratch.",
             )
             with gr.Row():
                 pt_steps  = gr.Number(
@@ -1832,8 +1862,11 @@ def build_app() -> gr.Blocks:
                 ),
             )
             with gr.Row():
-                ft_pretrain_ckpt = gr.Textbox(
+                ft_pretrain_ckpt = gr.Dropdown(
+                    choices=_ckpts_pretrain,
+                    value=None,
                     label="Pre-trained checkpoint (.pt)",
+                    allow_custom_value=True,
                     info="The base model from Pre-train that fine-tuning builds on.",
                 )
                 ft_ckpt_info = gr.Textbox(
@@ -1847,8 +1880,11 @@ def build_app() -> gr.Blocks:
                 outputs=[ft_ckpt_info],
             )
             with gr.Row():
-                ft_data = gr.Textbox(
+                ft_data = gr.Dropdown(
+                    choices=_jsonl_choices,
+                    value=None,
                     label="JSONL dataset path",
+                    allow_custom_value=True,
                     info='Each line must be a JSON object with "prompt" and "response" keys.',
                 )
                 ft_vocab = gr.Textbox(
@@ -1865,10 +1901,12 @@ def build_app() -> gr.Blocks:
                     label="Max sequence length", value=512, precision=0,
                     info="Max tokens per prompt+response pair. Pairs longer than this are truncated. Longer = more memory.",
                 )
-            ft_resume = gr.Textbox(
+            ft_resume = gr.Dropdown(
+                choices=_ckpts_finetune,
+                value=None,
                 label="Resume fine-tune from checkpoint (.pt)",
-                placeholder="Leave blank to start fine-tuning from scratch",
-                info="Continue a stopped fine-tuning run. Restores optimizer state and step counter.",
+                allow_custom_value=True,
+                info="Continue a stopped fine-tuning run. Restores optimizer state and step counter. Leave blank to start from scratch.",
             )
             with gr.Row():
                 ft_steps  = gr.Number(
@@ -1996,9 +2034,11 @@ def build_app() -> gr.Blocks:
                     value="data/processed/corpus.bin",
                     info="The tokenised corpus written by the Preprocess tab. Used to count tokens.",
                 )
-                sc_checkpoint = gr.Textbox(
+                sc_checkpoint = gr.Dropdown(
+                    choices=_ckpts_all,
+                    value=None,
                     label="Checkpoint (.pt) — optional",
-                    placeholder="checkpoints/pretrain/step_0010000.pt",
+                    allow_custom_value=True,
                     info="Load a checkpoint to read the exact parameter count. Leave blank to use the 25M default.",
                 )
             with gr.Row():
@@ -2032,9 +2072,11 @@ def build_app() -> gr.Blocks:
                 "Results are saved to `data/eval/` as a timestamped JSON file."
             )
             with gr.Row():
-                ev_checkpoint = gr.Textbox(
+                ev_checkpoint = gr.Dropdown(
+                    choices=_ckpts_all,
+                    value=None,
                     label="Checkpoint (.pt)",
-                    placeholder="checkpoints/finetune/step_0000500.pt",
+                    allow_custom_value=True,
                     info="Model to evaluate.",
                 )
                 ev_vocab = gr.Textbox(
@@ -2043,9 +2085,11 @@ def build_app() -> gr.Blocks:
                     info="BPE vocabulary used at training time.",
                 )
             with gr.Row():
-                ev_corpus_dir = gr.Textbox(
+                ev_corpus_dir = gr.Dropdown(
+                    choices=_corpus_dirs,
+                    value=None,
                     label="Corpus directory — retrieval eval (optional)",
-                    placeholder="data/corpus/saga/",
+                    allow_custom_value=True,
                     info="Directory of .txt files. Required for retrieval hit-rate.",
                 )
                 ev_corpus_bin = gr.Textbox(
@@ -2198,14 +2242,18 @@ def build_app() -> gr.Blocks:
                 "compared, not file timestamps)."
             )
             with gr.Row():
-                ci_corpus_dir = gr.Textbox(
+                ci_corpus_dir = gr.Dropdown(
+                    choices=_corpus_dirs,
+                    value=_corpus_dirs[0] if _corpus_dirs else None,
                     label="Corpus directory (.txt files)",
-                    value="data/corpus/saga/",
+                    allow_custom_value=True,
                     info="Directory of plain-text corpus files.  The index is stored inside it as .semantic_index/.",
                 )
-                ci_checkpoint = gr.Textbox(
+                ci_checkpoint = gr.Dropdown(
+                    choices=_ckpts_all,
+                    value=None,
                     label="Checkpoint (.pt)",
-                    placeholder="checkpoints/finetune/step_0000500.pt",
+                    allow_custom_value=True,
                     info="Model checkpoint used to embed passages.  Must match the checkpoint you will load in Chat.",
                 )
             ci_vocab = gr.Textbox(
@@ -2304,8 +2352,11 @@ def build_app() -> gr.Blocks:
             # ---- Manual load --------------------------------------------
             with gr.Accordion("Load checkpoint manually", open=not bool(_agent_names)):
                 with gr.Row():
-                    chat_ckpt = gr.Textbox(
+                    chat_ckpt = gr.Dropdown(
+                        choices=_ckpts_all,
+                        value=None,
                         label="Checkpoint path (.pt)",
+                        allow_custom_value=True,
                     )
                     chat_vocab = gr.Textbox(
                         label="Vocabulary path (.json)",
@@ -2314,9 +2365,11 @@ def build_app() -> gr.Blocks:
                     )
                     load_btn = gr.Button("Load model")
                 with gr.Row():
-                    chat_corpus_dir = gr.Textbox(
+                    chat_corpus_dir = gr.Dropdown(
+                        choices=_corpus_dirs,
+                        value=None,
                         label="Corpus directory (optional)",
-                        value="",
+                        allow_custom_value=True,
                         info="Directory of .txt files used to ground replies in your corpus. Leave blank for ungrounded chat.",
                     )
                     chat_quantize = gr.Checkbox(
@@ -2326,9 +2379,11 @@ def build_app() -> gr.Blocks:
                         scale=0,
                         min_width=200,
                     )
-                chat_lora = gr.Textbox(
+                chat_lora = gr.Dropdown(
+                    choices=_lora_choices,
+                    value=None,
                     label="LoRA adapter (.lora) — optional",
-                    placeholder="checkpoints/finetune/lora_final.lora",
+                    allow_custom_value=True,
                     info="Path to a .lora file produced by LoRA fine-tuning. Leave blank to use the base checkpoint.",
                 )
                 chat_math_tool = gr.Checkbox(
