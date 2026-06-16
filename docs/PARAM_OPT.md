@@ -8,7 +8,7 @@ Assessment of ~75 UI parameters across Chat, Pre-train, Fine-tune, Scale, Evalua
 |-------|--------|
 | 1 — Zero-effort pre-fills | **Complete** |
 | 2 — Filesystem discovery | **Complete** |
-| 3 — agents.json config | Pending |
+| 3 — agents.json config | **Complete** |
 | 4 — Device-aware suggestions | Pending |
 | 5 — Corpus-size-aware model preset | Pending |
 | 6 — Query-aware generation | Pending |
@@ -78,7 +78,7 @@ Default selection: most recently modified file in each list. `ci_corpus_dir` aut
 
 ---
 
-## Phase 3 — Config-driven (agents.json)
+## Phase 3 — Config-driven (agents.json) ✓
 
 When the user selects an agent from `agent_dropdown`, auto-populate generation and retrieval fields from the agent's entry in `agents.json`. The registry already loads this data (`registry.py:140–151`); it needs to be wired to the UI components.
 
@@ -92,7 +92,11 @@ When the user selects an agent from `agent_dropdown`, auto-populate generation a
 | `chat_lora` | `lora_path` (if present) |
 | `chat_ckpt` | `checkpoint` (if present) |
 
-**Implementation note**: wire a `gr.change` event on `agent_dropdown` that calls a function loading the selected agent's config and returning updated component values.
+**Implementation notes:**
+- Added `_preview_agent_config(display_name)` in `app.py`; replaces the previous `agent_dropdown.change` lambda that only toggled `chat_routing_threshold`.
+- "Auto-route" leaves all sliders and paths unchanged (no single agent to derive from); only the routing threshold visibility is toggled.
+- Individual `gen_config` keys are applied only when present in the agent's entry — missing keys leave the corresponding slider at its current value.
+- Registry errors (missing `agents.json`, malformed JSON) are caught silently; UI falls back to current values.
 
 ---
 
