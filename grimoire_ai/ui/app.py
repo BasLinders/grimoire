@@ -996,6 +996,12 @@ def load_engine(
         from grimoire_ai.tools.math_tool import MathTool
         math_tool = MathTool()
 
+    lora_path = (lora_path or "").strip()
+    # LoRA adapters are incompatible with int8-quantized engines; silently
+    # disable quantization when a LoRA path is provided so load_lora() succeeds.
+    if lora_path:
+        quantize = False
+
     engine = InferenceEngine(
         checkpoint_path=checkpoint_path,
         tokenizer_path=vocab_path,
@@ -1051,7 +1057,6 @@ def load_engine(
     elif corpus_dir:
         status_suffix = f" | lexical (Jaccard): {len(documents)} file(s)"
 
-    lora_path = (lora_path or "").strip()
     if lora_path:
         try:
             engine.load_lora(lora_path)
@@ -2209,7 +2214,7 @@ def build_app() -> gr.Blocks:
                 )
                 ev_quantize = gr.Checkbox(
                     label="int8 quantization (CPU only)",
-                    value=False,
+                    value=_dp["quantize"],
                     info="Quantize model weights to int8 before evaluation — reduces memory use.",
                 )
                 ev_max_ppl = gr.Number(
