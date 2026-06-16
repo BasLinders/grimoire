@@ -70,7 +70,7 @@ def _scan_files(base_dir: str, pattern: str, recursive: bool = False) -> list[st
     if not p.exists():
         return []
     matches = list(p.rglob(pattern) if recursive else p.glob(pattern))
-    matches.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+    matches.sort(key=lambda f: f.stat().st_mtime if f.exists() else 0, reverse=True)
     return [str(f) for f in matches]
 
 
@@ -80,7 +80,7 @@ def _scan_subdirs(base_dir: str) -> list[str]:
     if not p.exists():
         return []
     dirs = [d for d in p.iterdir() if d.is_dir() and not d.name.startswith(".")]
-    dirs.sort(key=lambda d: d.stat().st_mtime, reverse=True)
+    dirs.sort(key=lambda d: d.stat().st_mtime if d.exists() else 0, reverse=True)
     return [str(d) + "/" for d in dirs]
 
 
@@ -1726,7 +1726,7 @@ def build_app() -> gr.Blocks:
                 )
             pt_resume = gr.Dropdown(
                 choices=_ckpts_pretrain,
-                value=None,
+                value="",
                 label="Resume from checkpoint (.pt)",
                 allow_custom_value=True,
                 info="Continue a stopped run. Total steps is the final target — resuming from step 5 000 with 10 000 total runs only 5 000 more. Leave blank to start from scratch.",
@@ -1864,7 +1864,7 @@ def build_app() -> gr.Blocks:
             with gr.Row():
                 ft_pretrain_ckpt = gr.Dropdown(
                     choices=_ckpts_pretrain,
-                    value=None,
+                    value="",
                     label="Pre-trained checkpoint (.pt)",
                     allow_custom_value=True,
                     info="The base model from Pre-train that fine-tuning builds on.",
@@ -1882,7 +1882,7 @@ def build_app() -> gr.Blocks:
             with gr.Row():
                 ft_data = gr.Dropdown(
                     choices=_jsonl_choices,
-                    value=None,
+                    value="",
                     label="JSONL dataset path",
                     allow_custom_value=True,
                     info='Each line must be a JSON object with "prompt" and "response" keys.',
@@ -1902,8 +1902,8 @@ def build_app() -> gr.Blocks:
                     info="Max tokens per prompt+response pair. Pairs longer than this are truncated. Longer = more memory.",
                 )
             ft_resume = gr.Dropdown(
-                choices=_ckpts_finetune,
-                value=None,
+                choices=_ckpts_all,
+                value="",
                 label="Resume fine-tune from checkpoint (.pt)",
                 allow_custom_value=True,
                 info="Continue a stopped fine-tuning run. Restores optimizer state and step counter. Leave blank to start from scratch.",
@@ -2036,7 +2036,7 @@ def build_app() -> gr.Blocks:
                 )
                 sc_checkpoint = gr.Dropdown(
                     choices=_ckpts_all,
-                    value=None,
+                    value="",
                     label="Checkpoint (.pt) — optional",
                     allow_custom_value=True,
                     info="Load a checkpoint to read the exact parameter count. Leave blank to use the 25M default.",
@@ -2074,7 +2074,7 @@ def build_app() -> gr.Blocks:
             with gr.Row():
                 ev_checkpoint = gr.Dropdown(
                     choices=_ckpts_all,
-                    value=None,
+                    value="",
                     label="Checkpoint (.pt)",
                     allow_custom_value=True,
                     info="Model to evaluate.",
@@ -2087,7 +2087,7 @@ def build_app() -> gr.Blocks:
             with gr.Row():
                 ev_corpus_dir = gr.Dropdown(
                     choices=_corpus_dirs,
-                    value=None,
+                    value="",
                     label="Corpus directory — retrieval eval (optional)",
                     allow_custom_value=True,
                     info="Directory of .txt files. Required for retrieval hit-rate.",
@@ -2244,14 +2244,14 @@ def build_app() -> gr.Blocks:
             with gr.Row():
                 ci_corpus_dir = gr.Dropdown(
                     choices=_corpus_dirs,
-                    value=_corpus_dirs[0] if _corpus_dirs else None,
+                    value=_corpus_dirs[0] if _corpus_dirs else "",
                     label="Corpus directory (.txt files)",
                     allow_custom_value=True,
                     info="Directory of plain-text corpus files.  The index is stored inside it as .semantic_index/.",
                 )
                 ci_checkpoint = gr.Dropdown(
                     choices=_ckpts_all,
-                    value=None,
+                    value="",
                     label="Checkpoint (.pt)",
                     allow_custom_value=True,
                     info="Model checkpoint used to embed passages.  Must match the checkpoint you will load in Chat.",
@@ -2354,7 +2354,7 @@ def build_app() -> gr.Blocks:
                 with gr.Row():
                     chat_ckpt = gr.Dropdown(
                         choices=_ckpts_all,
-                        value=None,
+                        value="",
                         label="Checkpoint path (.pt)",
                         allow_custom_value=True,
                     )
