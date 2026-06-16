@@ -171,15 +171,17 @@ Analyse the user's message text before generation and adjust generation defaults
 |-----------|-----------|--------|
 | Factual query | Starts with "What", "How many", "List", "When", "Define" | `temp = min(temp, 0.5)` |
 | Creative query | Starts with "Write", "Create", "Design", "Imagine" | `temp = max(temp, 0.9)` |
-| Short query (< 10 words) | — | `max_tokens = 256` |
-| Long query (> 50 words) | — | `max_tokens = 128` |
+| Short query (< 10 words) | — | `max_tokens = max(max_tokens, 256)` — floor at 256 |
+| Long query (> 50 words) | — | `max_tokens = min(max_tokens, 128)` — cap at 128 |
 
 **Implementation notes:**
 - Added `_query_gen_hints(query, temperature, max_new_tokens, adaptive_temperature)` in `app.py`; called inside `chat()` before `GenerationConfig` is constructed — no UI changes required.
-- Temperature hints use clamp semantics (min/max) rather than hard overrides, so a user who has already tuned temperature below 0.5 for a factual query isn't pushed back up.
+- All four hints use clamp semantics (min/max), not hard overrides — agent-configured and user-tuned values are never pushed in the wrong direction.
 - Temperature hints are skipped entirely when `adaptive_temperature=True` (the adaptive schedule supersedes them).
+- Added `_starts_with_word(text, phrase)` helper: checks that the prefix is a complete word/phrase boundary so "listen" doesn't match "list", "definitely" doesn't match "define", "whatever" doesn't match "what", etc.
 - Token-budget hints use word count (whitespace split) as a fast approximation; no tokenizer import needed.
-- `_FACTUAL_PREFIXES` and `_CREATIVE_PREFIXES` are module-level constants so they compile once.
+- `(query or "")` guard at the top of the function prevents `AttributeError` if Gradio passes `None` for an empty textbox.
+- `_FACTUAL_PREFIXES`, `_CREATIVE_PREFIXES` are module-level constants compiled once at import time.
 
 ---
 

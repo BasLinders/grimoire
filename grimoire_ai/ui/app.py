@@ -1143,30 +1143,43 @@ _FACTUAL_PREFIXES = ("what", "how many", "list", "when", "define")
 _CREATIVE_PREFIXES = ("write", "create", "design", "imagine")
 
 
+def _starts_with_word(text: str, phrase: str) -> bool:
+    """Return True when *text* starts with *phrase* as a whole word/phrase.
+
+    Prevents prefix false-positives: "list" must not match "listen", "listless";
+    "define" must not match "definitely"; "what" must not match "whatever".
+    """
+    if not text.startswith(phrase):
+        return False
+    rest = text[len(phrase):]
+    return not rest or not rest[0].isalpha()
+
+
 def _query_gen_hints(query: str, temperature: float, max_new_tokens: int, adaptive_temperature: bool):
     """Adjust temperature and max_new_tokens based on simple query heuristics.
 
     Temperature hints (skipped when adaptive_temperature is True):
-      - Factual opener  → cap temperature at 0.5 (min)
-      - Creative opener → floor temperature at 0.9 (max)
+      - Factual opener  → cap temperature at 0.5   (min — don't raise it if already lower)
+      - Creative opener → floor temperature at 0.9  (max — don't lower it if already higher)
 
     Token-budget hints (word-count approximation for speed):
-      - Short query < 10 words  → set max_new_tokens = 256
-      - Long query  > 50 words  → set max_new_tokens = 128
+      - Short query < 10 words  → floor max_new_tokens at 256 (ensure room to answer)
+      - Long query  > 50 words  → cap max_new_tokens at 128   (concise focused answer)
     """
+    query = (query or "")
     q = query.strip().lower()
     word_count = len(q.split())
 
     if not adaptive_temperature:
-        if any(q.startswith(p) for p in _FACTUAL_PREFIXES):
+        if any(_starts_with_word(q, p) for p in _FACTUAL_PREFIXES):
             temperature = min(temperature, 0.5)
-        elif any(q.startswith(p) for p in _CREATIVE_PREFIXES):
+        elif any(_starts_with_word(q, p) for p in _CREATIVE_PREFIXES):
             temperature = max(temperature, 0.9)
 
     if word_count < 10:
-        max_new_tokens = 256
+        max_new_tokens = max(max_new_tokens, 256)
     elif word_count > 50:
-        max_new_tokens = 128
+        max_new_tokens = min(max_new_tokens, 128)
 
     return temperature, max_new_tokens
 
