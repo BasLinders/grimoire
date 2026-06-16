@@ -770,12 +770,12 @@ def _suggest_preset_from_corpus(corpus_path: str, pt_batch: int, pt_accum: int):
     Also derives pt_steps = round(20 × n_params / (batch × accum × 1024)).
 
     Returns updates for: pt_preset, pt_d_model, pt_n_layers, pt_n_heads,
-    pt_n_kv_heads, pt_d_ff, pt_steps.
+    pt_n_kv_heads, pt_d_ff, pt_steps, pt_warmup, pt_log, pt_save, pt_eval_every.
     """
     from pathlib import Path as _Path
     from grimoire_ai.llm.model.config import MODEL_PRESETS
 
-    _no_update = [gr.update()] * 7
+    _no_update = [gr.update()] * 11
 
     corpus_path = (corpus_path or "").strip()
     if not corpus_path:
@@ -805,6 +805,10 @@ def _suggest_preset_from_corpus(corpus_path: str, pt_batch: int, pt_accum: int):
     tokens_per_step = batch * accum * 1024  # max_seq_len default
     optimal_steps = round(20 * n_params / tokens_per_step)
 
+    # Compute step-derived fields directly rather than relying on pt_steps.change
+    # cascading from a programmatic update, which Gradio does not guarantee.
+    step_updates = _derive_pt_step_params(optimal_steps)
+
     return [
         gr.update(value=preset),
         gr.update(value=cfg.d_model),
@@ -813,6 +817,7 @@ def _suggest_preset_from_corpus(corpus_path: str, pt_batch: int, pt_accum: int):
         gr.update(value=cfg.n_kv_heads),
         gr.update(value=cfg.d_ff),
         gr.update(value=optimal_steps),
+        *step_updates,
     ]
 
 
@@ -1981,7 +1986,7 @@ def build_app() -> gr.Blocks:
 
             _pt_corpus_outputs = [
                 pt_preset, pt_d_model, pt_n_layers, pt_n_heads, pt_n_kv_heads, pt_d_ff,
-                pt_steps,
+                pt_steps, pt_warmup, pt_log, pt_save, pt_eval_every,
             ]
             pt_corpus.change(
                 fn=_suggest_preset_from_corpus,
