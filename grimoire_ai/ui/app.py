@@ -738,6 +738,50 @@ def _load_agent_names() -> list[str]:
         return []
 
 
+def _preview_agent_config(display_name: str) -> tuple:
+    """Pre-fill generation sliders and path fields when an agent is selected.
+
+    Returns updates for:
+      chat_routing_threshold, chat_temp, chat_top_k, chat_top_p,
+      chat_tokens, chat_corpus_dir, chat_lora, chat_ckpt
+    """
+    is_auto_route = display_name == "Auto-route"
+
+    # For Auto-route there is no single agent config to preview.
+    if is_auto_route or not display_name:
+        return (
+            gr.update(visible=is_auto_route),
+            gr.update(), gr.update(), gr.update(), gr.update(),  # sliders unchanged
+            gr.update(), gr.update(), gr.update(),               # paths unchanged
+        )
+
+    try:
+        from grimoire_ai.agents.registry import AgentRegistry
+        cfg = AgentRegistry(_AGENTS_JSON).get_by_display_name(display_name)
+    except Exception:
+        return (
+            gr.update(visible=False),
+            gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(),
+        )
+
+    gc = cfg.gen_config  # may be empty dict
+    corpus_dir = cfg.corpus_dirs[0] if cfg.corpus_dirs else gr.update()
+    lora       = cfg.lora_path or ""
+    ckpt       = cfg.checkpoint or ""
+
+    return (
+        gr.update(visible=False),                                                         # chat_routing_threshold
+        gr.update(value=gc["temperature"])    if "temperature"    in gc else gr.update(), # chat_temp
+        gr.update(value=gc["top_k"])          if "top_k"          in gc else gr.update(), # chat_top_k
+        gr.update(value=gc["top_p"])          if "top_p"          in gc else gr.update(), # chat_top_p
+        gr.update(value=gc["max_new_tokens"]) if "max_new_tokens" in gc else gr.update(), # chat_tokens
+        gr.update(value=corpus_dir)           if isinstance(corpus_dir, str) else gr.update(), # chat_corpus_dir
+        gr.update(value=lora),                                                            # chat_lora
+        gr.update(value=ckpt),                                                            # chat_ckpt
+    )
+
+
 def load_agent(
     display_name: str,
     encoder: str = "Model (decoder embeddings)",
@@ -2492,9 +2536,13 @@ def build_app() -> gr.Blocks:
 
             # ---- Event wiring -------------------------------------------
             agent_dropdown.change(
-                fn=lambda name: gr.update(visible=(name == "Auto-route")),
+                fn=_preview_agent_config,
                 inputs=[agent_dropdown],
-                outputs=[chat_routing_threshold],
+                outputs=[
+                    chat_routing_threshold,
+                    chat_temp, chat_top_k, chat_top_p, chat_tokens,
+                    chat_corpus_dir, chat_lora, chat_ckpt,
+                ],
             )
             agent_load_btn.click(
                 fn=load_agent,
