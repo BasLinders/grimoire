@@ -58,7 +58,10 @@ def _load_vocab(vocab_path: str) -> dict:
 def _add_tokenizer_kv(writer: GGUFWriter, vocab_data: dict) -> None:
     """Write tokenizer KV entries from a loaded BPE vocab dict."""
     vocab: dict[str, int] = vocab_data["vocab"]
-    n = len(vocab)
+    # Use the saved vocab_size (not len(vocab)) so that gaps or out-of-range
+    # indices in a hand-edited file are caught as IndexError rather than
+    # silently producing empty-string token entries.
+    n: int = vocab_data["vocab_size"]
     id_to_token = [""] * n
     for tok, idx in vocab.items():
         id_to_token[idx] = tok
@@ -71,8 +74,10 @@ def _add_tokenizer_kv(writer: GGUFWriter, vocab_data: dict) -> None:
         merges = [f"{a} {b}" for a, b in vocab_data["merges"]]
         writer.add_kv_array_str("tokenizer.ggml.merges", merges)
 
-    # Token types: 3=control/special (ids 0–5), 1=normal otherwise.
-    token_types = [3 if i < 6 else 1 for i in range(n)]
+    # Token types: 3=control/special, 1=normal.
+    # _N_SPECIAL_TOKENS must equal _N_SPECIAL in grimoire_ai/llm/tokenizer/bpe.py.
+    _N_SPECIAL_TOKENS = 6
+    token_types = [3 if i < _N_SPECIAL_TOKENS else 1 for i in range(n)]
     writer.add_kv_array_int32("tokenizer.ggml.token_type", token_types)
 
 
@@ -152,11 +157,44 @@ def export_gguf(
     writer.add_kv_float32("llama.attention.layer_norm_rms_epsilon", _NORM_EPS)
 
     # Tokenizer metadata
-    if vocab_path and Path(vocab_path).is_file():
-        print(f"Embedding tokenizer metadata from: {vocab_path}")
-        _add_tokenizer_kv(writer, _load_vocab(vocab_path))
+    if vocab_path:
+        if Path(vocab_path).is_file():
+            print(f"Embedding tokenizer metadata from: {vocab_path}")
+            _add_tokenizer_kv(writer, _load_vocab(vocab_path))
+        else:
+            print(f"WARNING: --vocab path not found: {vocab_path!r} — "
+                  "tokenizer metadata not embedded; llama.cpp will not be able to decode output")
+            writer.add_kv_str("tokenizer.ggml.model", "gpt2")
     else:
         writer.add_kv_str("tokenizer.ggml.model", "gpt2")
+
+    # Validate that cfg["n_layers"] matches the actual block count in the checkpoint.
+    _per_block_suffixes = [
+        "attn_norm.weight", "attn.q_proj.weight", "attn.k_proj.weight",
+        "attn.v_proj.weight", "attn.o_proj.weight", "ffn_norm.weight",
+        "ffn.gate_proj.weight", "ffn.up_proj.weight", "ffn.down_proj.weight",
+    ]
+    missing_block_keys = [
+        f"blocks.{i}.{s}"
+        for i in range(n_layers)
+        for s in _per_block_suffixes
+        if f"blocks.{i}.{s}" not in state_dict
+    ]
+    if missing_block_keys:
+        raise ValueError(
+            f"Checkpoint config says n_layers={n_layers} but "
+            f"{len(missing_block_keys)} expected block key(s) are absent, e.g. "
+            f"{missing_block_keys[0]!r}. Is this the right checkpoint?"
+        )
+
+    # Validate that cfg["vocab_size"] matches the actual embedding weight shape.
+    actual_vocab = state_dict["embedding._embed.weight"].shape[0]
+    if actual_vocab != vocab_size:
+        raise ValueError(
+            f"cfg['vocab_size']={vocab_size} does not match "
+            f"embedding._embed.weight.shape[0]={actual_vocab}. "
+            "The checkpoint config is inconsistent with its weights."
+        )
 
     # Tensors — exported in canonical llama.cpp order.
     def sd_np(key: str) -> np.ndarray:

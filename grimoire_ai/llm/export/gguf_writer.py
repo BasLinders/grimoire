@@ -97,9 +97,8 @@ def grimoire_to_gguf_name(sd_key: str) -> Optional[str]:
         The GGUF tensor name, or ``None`` if the tensor should not be exported
         (RoPE buffers, attention mask, or any unrecognised key).
     """
-    for suffix in _SKIP_SUFFIXES:
-        if suffix in sd_key:
-            return None
+    if any(sd_key.endswith(s) for s in _SKIP_SUFFIXES):
+        return None
 
     if sd_key == "embedding._embed.weight":
         return "token_embd.weight"
