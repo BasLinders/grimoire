@@ -743,42 +743,41 @@ def _preview_agent_config(display_name: str) -> tuple:
 
     Returns updates for:
       chat_routing_threshold, chat_temp, chat_top_k, chat_top_p,
-      chat_tokens, chat_corpus_dir, chat_lora, chat_ckpt
+      chat_tokens, chat_corpus_dir, chat_lora, chat_ckpt, chat_adaptive_temp
     """
+    _no_change = (
+        gr.update(), gr.update(), gr.update(), gr.update(),
+        gr.update(), gr.update(), gr.update(), gr.update(),
+    )
+
     is_auto_route = display_name == "Auto-route"
 
     # For Auto-route there is no single agent config to preview.
     if is_auto_route or not display_name:
-        return (
-            gr.update(visible=is_auto_route),
-            gr.update(), gr.update(), gr.update(), gr.update(),  # sliders unchanged
-            gr.update(), gr.update(), gr.update(),               # paths unchanged
-        )
+        return (gr.update(visible=is_auto_route),) + _no_change
 
     try:
         from grimoire_ai.agents.registry import AgentRegistry
         cfg = AgentRegistry(_AGENTS_JSON).get_by_display_name(display_name)
     except Exception:
-        return (
-            gr.update(visible=False),
-            gr.update(), gr.update(), gr.update(), gr.update(),
-            gr.update(), gr.update(), gr.update(),
-        )
+        return (gr.update(visible=False),) + _no_change
 
     gc = cfg.gen_config  # may be empty dict
-    corpus_dir = cfg.corpus_dirs[0] if cfg.corpus_dirs else gr.update()
-    lora       = cfg.lora_path or ""
-    ckpt       = cfg.checkpoint or ""
+
+    def _from_gc(key):
+        return gr.update(value=gc[key]) if key in gc else gr.update()
 
     return (
-        gr.update(visible=False),                                                         # chat_routing_threshold
-        gr.update(value=gc["temperature"])    if "temperature"    in gc else gr.update(), # chat_temp
-        gr.update(value=gc["top_k"])          if "top_k"          in gc else gr.update(), # chat_top_k
-        gr.update(value=gc["top_p"])          if "top_p"          in gc else gr.update(), # chat_top_p
-        gr.update(value=gc["max_new_tokens"]) if "max_new_tokens" in gc else gr.update(), # chat_tokens
-        gr.update(value=corpus_dir)           if isinstance(corpus_dir, str) else gr.update(), # chat_corpus_dir
-        gr.update(value=lora),                                                            # chat_lora
-        gr.update(value=ckpt),                                                            # chat_ckpt
+        gr.update(visible=False),                                   # chat_routing_threshold
+        _from_gc("temperature"),                                    # chat_temp
+        _from_gc("top_k"),                                         # chat_top_k
+        _from_gc("top_p"),                                         # chat_top_p
+        _from_gc("max_new_tokens"),                                 # chat_tokens
+        gr.update(value=cfg.corpus_dirs[0]) if cfg.corpus_dirs     # chat_corpus_dir
+            else gr.update(),
+        gr.update(value=cfg.lora_path or ""),                      # chat_lora
+        gr.update(value=cfg.checkpoint),                           # chat_ckpt
+        _from_gc("adaptive_temperature"),                           # chat_adaptive_temp
     )
 
 
@@ -2535,14 +2534,21 @@ def build_app() -> gr.Blocks:
             dataset_state = gr.State(value=[])
 
             # ---- Event wiring -------------------------------------------
+            _preview_outputs = [
+                chat_routing_threshold,
+                chat_temp, chat_top_k, chat_top_p, chat_tokens,
+                chat_corpus_dir, chat_lora, chat_ckpt,
+                chat_adaptive_temp,
+            ]
             agent_dropdown.change(
                 fn=_preview_agent_config,
                 inputs=[agent_dropdown],
-                outputs=[
-                    chat_routing_threshold,
-                    chat_temp, chat_top_k, chat_top_p, chat_tokens,
-                    chat_corpus_dir, chat_lora, chat_ckpt,
-                ],
+                outputs=_preview_outputs,
+            )
+            app.load(
+                fn=_preview_agent_config,
+                inputs=[agent_dropdown],
+                outputs=_preview_outputs,
             )
             agent_load_btn.click(
                 fn=load_agent,
