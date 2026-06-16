@@ -10,7 +10,7 @@ from bs4 import BeautifulSoup
 
 # --- CONFIGURATION ---
 # OUTPUT_DIR is defined at the module level for consistency
-OUTPUT_DIR = Path("data/corpus/github_harvest/")
+OUTPUT_DIR = Path("data/corpus/saga/")
 HEADERS = {"Accept": "application/vnd.github.v3+json"}
 
 def get_raw_content(url: str):
