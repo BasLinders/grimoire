@@ -99,7 +99,7 @@ Dynamic int8 quantization via `torch.quantization.quantize_dynamic` / `torchao`.
 - UI: **Auto-route** option prepended to agent selector; **Routing threshold** slider revealed on Auto-route selection and passed to `build_multi_agent_engine(threshold=)`; routing label in "Routed to" textbox preserved mid-stream via `gr.update()` no-op yields (was cleared to `""` on every token)
 - 18-test suite covering `AgentRouter`, `_RoutingStateWrapper`, `ConversationState.routing_log`, and `MultiAgentEngine` (`tests/agents/test_router.py`)
 
-### 7. Persistent RAG Index
+### 7. Persistent RAG Index ✓ done
 
 **Why seventh:** Semantic embeddings are recomputed from scratch every session. As corpus grows toward 500M tokens this becomes a minutes-long blocking startup.
 
@@ -108,14 +108,16 @@ Dynamic int8 quantization via `torch.quantization.quantize_dynamic` / `torchao`.
 - Optional FAISS index for approximate nearest-neighbour at scale (replaces brute-force cosine)
 - Expose "Rebuild index" button in the Corpus tab
 
-### 8. GGUF Export
+### 8. GGUF Export ✓ done
 
 **Why last:** The long-term deployment story — no Python dependency, 4-bit quantization, widest hardware support via llama.cpp.
 
-- Write `scripts/export_gguf.py`: map GrimoireTransformer weight names to GGUF tensor layout, write header + tensors
-- Support Q4_K_M quantization in the export (strongest quality/size tradeoff in llama.cpp)
-- Validate round-trip: load exported GGUF in llama.cpp, confirm perplexity within 5% of fp32 baseline
-- Document deployment instructions (`llama-cli`, `llama-server`)
+- `grimoire_ai/llm/export/gguf_writer.py`: `GGUFWriter` class — GGUF v3 binary format (header, KV metadata, tensor info, tensor data); `grimoire_to_gguf_name()` maps all GrimoireTransformer state_dict keys to GGUF tensor names
+- `scripts/export_gguf.py`: CLI — loads a `.pt` checkpoint, writes F16 or F32 GGUF with architecture metadata and optional BPE tokenizer embedding; Q4_K_M quantization is done post-export via `llama-quantize grimoire-f16.gguf grimoire-q4km.gguf Q4_K_M`
+- RoPE buffers (`_cos`, `_sin`) and attention mask are not exported; llama.cpp recomputes them from `rope_theta` and context length
+- Weight-tied `output_head.weight` exported once as `output.weight`; 1-D norm weights always stored as F32 for numerical stability
+- 42-test suite: name mapping, binary header correctness, dtype selection, alignment, end-to-end export with synthetic checkpoints (`tests/llm/test_export_gguf.py`)
+- Deploy: `llama-cli -m grimoire-f16.gguf -p "You are a D&D assistant." -n 256`
 
 ---
 
@@ -129,5 +131,5 @@ Dynamic int8 quantization via `torch.quantization.quantize_dynamic` / `torchao`.
 | 4 | Math → Python CLI | Medium | ✓ done | Closing the tool-call loop from fine-tune data |
 | 5 | LoRA adapters | Medium | ✓ done | Per-agent specialization without catastrophic forgetting |
 | 6 | Agent routing | Low (after 5) | ✓ done | Automatic multi-domain dispatch |
-| 7 | Persistent RAG index | Medium | — | Startup time at 500M token corpus scale |
-| 8 | GGUF export | High | — | Widest deployment, no Python dependency |
+| 7 | Persistent RAG index | Medium | ✓ done | Startup time at 500M token corpus scale |
+| 8 | GGUF export | High | ✓ done | Widest deployment, no Python dependency |
