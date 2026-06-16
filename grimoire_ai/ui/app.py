@@ -402,6 +402,16 @@ def run_finetune(
     stop_event = threading.Event()
     _stop_events["finetune"] = stop_event
     resume = resume_from.strip() or None
+    pretrain_ckpt = (pretrain_ckpt or "").strip()
+    data_path = (data_path or "").strip()
+
+    _btn_idle = (gr.update(interactive=True), gr.update(interactive=False))
+    if not pretrain_ckpt:
+        yield "Error: No pre-trained checkpoint selected.", *_btn_idle
+        return
+    if not data_path:
+        yield "Error: No fine-tune data file selected.", *_btn_idle
+        return
 
     def _train(on_log, on_save, on_done, on_eval):
         import os
@@ -1039,6 +1049,10 @@ def load_engine(
     from grimoire_ai.llm.inference.engine import InferenceEngine
     from grimoire_ai.llm.inference.semantic import EXTERNAL_ENCODERS, SemanticRetriever, make_external_embed_fn
     from grimoire_ai.state.conversation import ConversationState
+
+    checkpoint_path = (checkpoint_path or "").strip()
+    if not checkpoint_path:
+        return None, None, "No checkpoint path specified.", gr.update()
 
     corpus_dir = (corpus_dir or "").strip()
     use_lexical = encoder == "Lexical (Jaccard)"
