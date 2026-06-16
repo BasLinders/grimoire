@@ -1051,7 +1051,7 @@ def load_engine(
     if corpus_dir:
         path = Path(corpus_dir)
         if not path.is_dir():
-            return None, None, f"Corpus directory not found: {corpus_dir}"
+            return None, None, f"Corpus directory not found: {corpus_dir}", gr.update()
         for txt_file in sorted(path.glob("*.txt")):
             text = txt_file.read_text(encoding="utf-8")
             documents.append((text, txt_file.stem))
@@ -1060,7 +1060,7 @@ def load_engine(
                     lexical_corpus = GrimoireCorpus()
                 lexical_corpus.add_text(text, source=txt_file.stem)
         if not documents:
-            return None, None, f"No .txt files found in {corpus_dir}"
+            return None, None, f"No .txt files found in {corpus_dir}", gr.update()
 
     math_tool = None
     if math_tool_enabled:
@@ -1087,7 +1087,7 @@ def load_engine(
             try:
                 embed_fn = make_external_embed_fn(EXTERNAL_ENCODERS[encoder])
             except ImportError as e:
-                return None, None, str(e)
+                return None, None, str(e), gr.update()
             retriever = SemanticRetriever(embed_fn=embed_fn)
             for text, source in documents:
                 retriever.add_text(text, source=source)
@@ -1133,10 +1133,10 @@ def load_engine(
             engine.load_lora(lora_path)
             status_suffix += f" | LoRA adapter: {lora_path}"
         except Exception as exc:
-            return None, None, f"Failed to load LoRA adapter: {exc}"
+            return None, None, f"Failed to load LoRA adapter: {exc}", gr.update()
 
     state = ConversationState()
-    return engine, state, f"Model loaded from {checkpoint_path}{status_suffix}"
+    return engine, state, f"Model loaded from {checkpoint_path}{status_suffix}", quantize
 
 
 _FACTUAL_PREFIXES = ("what", "how many", "list", "when", "define")
@@ -2750,7 +2750,7 @@ def build_app() -> gr.Blocks:
             load_btn.click(
                 fn=load_engine,
                 inputs=[chat_ckpt, chat_vocab, chat_corpus_dir, chat_encoder, chat_threshold, chat_quantize, chat_lora, chat_math_tool],
-                outputs=[engine_state, conv_state, load_status],
+                outputs=[engine_state, conv_state, load_status, chat_quantize],
             )
             chat_btn.click(
                 fn=chat,
