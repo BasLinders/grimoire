@@ -10,7 +10,7 @@ Assessment of ~75 UI parameters across Chat, Pre-train, Fine-tune, Scale, Evalua
 | 2 — Filesystem discovery | **Complete** |
 | 3 — agents.json config | **Complete** |
 | 4 — Device-aware suggestions | **Complete** |
-| 5 — Corpus-size-aware model preset | Pending |
+| 5 — Corpus-size-aware model preset | **Complete** |
 | 6 — Query-aware generation | Pending |
 
 ---
@@ -131,7 +131,7 @@ Use `torch.cuda.is_available()` and `torch.cuda.get_device_properties()` at star
 
 ---
 
-## Phase 5 — Corpus-size-aware model preset
+## Phase 5 — Corpus-size-aware model preset ✓
 
 On Pre-train tab load (or when `pt_corpus` changes), read the binary's token count and suggest a preset. Rules already documented in `config.py:173–182`.
 
@@ -151,6 +151,15 @@ Also derive `pt_steps` via Chinchilla scaling (reference: Scale tab logic):
 optimal_tokens = 20 × n_params
 optimal_steps  = optimal_tokens / (batch × accum × seq_len)
 ```
+
+**Implementation notes:**
+- Added `_suggest_preset_from_corpus(corpus_path, pt_batch, pt_accum)` helper in `app.py`.
+- Token count is read from file size (`int32` = 4 bytes each) — no numpy or torch import needed; very cheap.
+- Added `_PRESET_PARAMS` dict mapping preset names to approximate param counts for Chinchilla math.
+- Returns 7 `gr.update()` values covering `pt_preset`, all 5 arch fields, and `pt_steps` atomically — bypasses the `pt_preset.change` cascade since arch fields are returned directly.
+- Wired to `pt_corpus.change` (inputs: `pt_corpus`, `pt_batch`, `pt_accum`) and `app.load` using a shared `_pt_corpus_outputs` list.
+- `pt_steps` update cascades through the existing `pt_steps.change` handler to auto-update warmup, log, save, and eval_every.
+- Guards: missing path, non-existent file, zero batch/accum → all-no-op returns; no crash.
 
 ---
 
