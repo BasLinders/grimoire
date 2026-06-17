@@ -48,12 +48,12 @@ class QueryResult:
         multi_token: The matching n-gram tuple from the corpus index,
             e.g. ``("grappl", "creatur", "speed", "reduc")``.
         next_token: The stemmed word that followed this multi-token in
-            the source text. Forms the basis of next-token prediction
-            once the RBF kernel is in place. May be ``None`` if the
-            multi-token ends a document.
+            the source text. May be ``None`` if the multi-token ends a
+            document.
         score: Relevance score relative to the query. Higher is more
-            relevant. Currently Jaccard-based; will become the RBF
-            interpolation value ``f_pred(x)`` in Phase 2.
+            relevant. Jaccard-based for this lexical matcher; semantic
+            retrieval (see module docstring) scores by cosine similarity
+            instead.
         source: Label of the document this multi-token was ingested from,
             or ``None`` if no source was provided at ingestion time.
         excerpt: A short window of the original unstemmed text surrounding
@@ -140,8 +140,8 @@ class GrimoireCorpus:
         """Initialise an empty corpus with a given n-gram window size.
 
         Args:
-            n: Number of stemmed tokens per multi-token. Defaults to 4,
-                matching Granville's case study. Must be a positive integer.
+            n: Number of stemmed tokens per multi-token. Defaults to 4.
+                Must be a positive integer.
         """
         self.n = n
         self._stemmer = GrimoireStemmer()
@@ -201,7 +201,8 @@ class GrimoireCorpus:
             Jaccard similarity measures the overlap between two token sets
             as ``|A ∩ B| / |A ∪ B|``. It is multiplied by the entry's
             frequency so that common corpus phrases rank higher than rare
-            ones. This formula is a placeholder for the RBF kernel in Phase 2.
+            ones. See ``SemanticRetriever`` for cosine-similarity scoring
+            over the model's own embeddings as a semantic alternative.
 
         Args:
             text: The query string in plain language, e.g.
@@ -231,7 +232,7 @@ class GrimoireCorpus:
         for mt, entry in self._index.all_entries().items():
             overlap = len(set(mt) & query_set)
             if overlap > 0:
-                # Jaccard similarity weighted by frequency — replaced by RBF kernel in Phase 2
+                # Jaccard similarity weighted by frequency
                 union = len(set(mt) | query_set)
                 scores[mt] = (overlap / union) * entry.frequency
 

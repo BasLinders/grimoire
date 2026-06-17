@@ -38,9 +38,6 @@ encoder = [
 quantize = [
     "torchao>=0.9",
 ]
-tools = [
-    "asteval>=0.9",
-]
 stats = [
     "scipy>=1.10",
 ]

@@ -1,14 +1,16 @@
 """Hash-map index that stores the corpus multi-tokens.
 
-Granville replaces vector databases with nested hashes for three reasons:
+A nested hash map serves as the lexical retrieval index for three reasons:
 1. Multi-tokens are variable-length strings — hashes handle this natively.
 2. Lookup is O(1) per key rather than O(n) for a linear scan.
 3. No embedding step is needed: the stemmed word itself is the key.
 
 Each entry in the index maps a multi-token (an n-gram tuple) to metadata:
 the token that followed it in the corpus, how many times it appeared, and
-which source document it came from. This metadata is used by the RBF
-interpolator in Phase 2 to compute f(β_k) and weight the predictions.
+which source document it came from. ``GrimoireCorpus.query`` uses this
+metadata for Jaccard-weighted lexical scoring; semantic retrieval (see
+``grimoire_ai.llm.inference.semantic.SemanticRetriever``) does not use
+this index at all — it embeds passages directly with the trained model.
 """
 
 from dataclasses import dataclass
@@ -21,8 +23,7 @@ class IndexEntry:
 
     Attributes:
         next_token: The stemmed word that immediately followed this
-            multi-token in the source text. Used by the RBF interpolator
-            for next-token prediction. ``None`` when the multi-token
+            multi-token in the source text. ``None`` when the multi-token
             ends at the last word of a document.
         frequency: Number of times this exact multi-token was observed
             across all ingested texts. Higher frequency signals a more
