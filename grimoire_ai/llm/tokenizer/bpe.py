@@ -243,6 +243,98 @@ class BytePairEncoder:
         self._word_cache = {}
         self._trained = True
 
+    def extend(
+        self,
+        corpus_texts: list[str],
+        vocab_size: int,
+        on_progress: Optional[Callable[[int, int], None]] = None,
+    ) -> None:
+        """Grow an already-trained vocabulary without disturbing existing ids.
+
+        Unlike calling ``train`` again on a larger corpus — which recomputes
+        merge ranks from scratch and silently reassigns every token id — this
+        replays the existing merge rules first, then learns only *new* merges
+        on top.  Every id already in the vocabulary keeps its exact meaning,
+        so checkpoints trained against the old vocabulary stay valid: their
+        embedding rows can be copied straight into a model with the larger
+        vocab_size, with only the newly appended ids needing fresh (randomly
+        initialised) rows.
+
+        This is an explicit opt-in alternative to retraining from scratch.
+        It produces a slightly different (and very slightly worse) merge
+        sequence than training fresh on the full combined corpus, because
+        the first ``len(self._merges)`` merges are frozen rather than
+        re-derived — that's the price of id stability.
+
+        Args:
+            corpus_texts: Text documents to learn additional merges from.
+                Should be representative of the corpus as it stands now
+                (old + new content), not just the newly added text.
+            vocab_size: New target vocabulary size.  Must be greater than
+                the current ``len(self)``; merges are added until this size
+                is reached or the corpus has no more frequent pairs.
+            on_progress: Optional callable invoked every 200 merge steps with
+                ``(current_merge, total_merges)`` counted from zero for this
+                call (not from the original training run).
+
+        Raises:
+            RuntimeError: If the encoder has not been trained or loaded.
+            ValueError: If ``vocab_size`` is not greater than the current
+                vocabulary size.
+        """
+        self._require_trained()
+        if vocab_size <= self.vocab_size:
+            raise ValueError(
+                f"extend() vocab_size ({vocab_size}) must be greater than "
+                f"the current vocabulary size ({self.vocab_size})."
+            )
+
+        # Rebuild word frequencies from the (now larger) corpus, then replay
+        # every existing merge so the words are in the same intermediate
+        # state training would have left them in — this is what lets the
+        # next merge step continue seamlessly from where training stopped.
+        word_freqs: dict[tuple[str, ...], int] = defaultdict(int)
+        for text in corpus_texts:
+            for word in re.findall(_WORD_SPLIT_RE, text):
+                chars = _bytes_to_chars(word.encode("utf-8"))
+                word_freqs[tuple(chars)] += 1
+
+        for pair in self._merges:
+            merged_symbol = pair[0] + pair[1]
+            word_freqs = self._apply_merge(word_freqs, pair, merged_symbol)
+
+        vocab = dict(self._encoder)
+        merges = list(self._merges)
+        n_new_merges = vocab_size - self.vocab_size
+        special_strings = set(SPECIAL_TOKEN_TO_ID)
+
+        for merge_step in range(n_new_merges):
+            pair_freqs = self._count_pairs(word_freqs)
+            if not pair_freqs:
+                break
+            best_pair: Optional[tuple[str, str]] = None
+            while pair_freqs:
+                candidate = max(pair_freqs, key=lambda p: pair_freqs[p])
+                if candidate[0] + candidate[1] not in special_strings:
+                    best_pair = candidate
+                    break
+                del pair_freqs[candidate]
+            if best_pair is None:
+                break
+            merged_symbol = best_pair[0] + best_pair[1]
+            vocab[merged_symbol] = len(vocab)
+            merges.append(best_pair)
+            word_freqs = self._apply_merge(word_freqs, best_pair, merged_symbol)
+            if on_progress is not None and merge_step % 200 == 0:
+                on_progress(merge_step, n_new_merges)
+
+        self.vocab_size = len(vocab)
+        self._encoder = vocab
+        self._decoder = {v: k for k, v in vocab.items()}
+        self._merges = merges
+        self._merge_ranks = {pair: rank for rank, pair in enumerate(merges)}
+        self._word_cache = {}
+
     @staticmethod
     def _count_pairs(
         word_freqs: dict[tuple[str, ...], int],
