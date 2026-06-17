@@ -107,11 +107,11 @@ def _extract_posts_xml(archive_path: Path, xml_dest: Path) -> None:
     """Extract only Posts.xml from the .7z archive to *xml_dest*."""
     print(f"Extracting Posts.xml …")
     with py7zr.SevenZipFile(archive_path, mode="r") as z:
-        # read() returns {filename: BytesIO}
-        content = z.read(targets=["Posts.xml"])
-    data = content["Posts.xml"].read()
-    xml_dest.write_bytes(data)
-    print(f"  {len(data) / 1_048_576:.1f} MB uncompressed")
+        # py7zr 1.0 dropped read() (in-memory BytesIO); extract() writes
+        # straight to disk under xml_dest.parent, named after its archive
+        # entry — i.e. exactly xml_dest, since the dump stores it at the root.
+        z.extract(path=xml_dest.parent, targets=["Posts.xml"])
+    print(f"  {xml_dest.stat().st_size / 1_048_576:.1f} MB uncompressed")
 
 
 # ---------------------------------------------------------------------------
