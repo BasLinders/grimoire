@@ -1,7 +1,7 @@
 """N-gram builder for the Grimoire corpus pipeline.
 
-An n-gram (or "multi-token" in Granville's terminology) is a contiguous
-sequence of n stemmed words. For example, with n=4 the sentence:
+An n-gram ("multi-token") is a contiguous sequence of n stemmed words. For
+example, with n=4 the sentence:
 
     ["grappl", "creatur", "speed", "reduc", "zero"]
 
@@ -10,9 +10,9 @@ produces two 4-grams:
     ("grappl", "creatur", "speed", "reduc")
     ("creatur", "speed", "reduc", "zero")
 
-These multi-tokens serve as the atomic units stored in the corpus index and
-used as keys in the RBF interpolator. Using n=4 matches the setting from
-Granville's NVIDIA case study, which achieved 96 % next-token accuracy.
+These multi-tokens are the atomic units stored in the corpus index and used
+as keys for lexical (Jaccard) retrieval — see ``grimoire_ai.corpus.index``
+and ``GrimoireCorpus.query``.
 """
 
 
@@ -25,7 +25,7 @@ class GrimoireTokenizer:
 
     Attributes:
         n: The window size (number of stemmed words per multi-token).
-            Granville's default is 4.
+            Defaults to 4.
     """
 
     def __init__(self, n: int = 4) -> None:
@@ -33,7 +33,7 @@ class GrimoireTokenizer:
 
         Args:
             n: Number of stemmed tokens per multi-token. Must be a positive
-                integer. Defaults to 4, matching Granville's case study.
+                integer. Defaults to 4.
         """
         self.n = n
 
