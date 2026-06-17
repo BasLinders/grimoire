@@ -133,3 +133,33 @@ Dynamic int8 quantization via `torch.quantization.quantize_dynamic` / `torchao`.
 | 6 | Agent routing | Low (after 5) | ✓ done | Automatic multi-domain dispatch |
 | 7 | Persistent RAG index | Medium | ✓ done | Startup time at 500M token corpus scale |
 | 8 | GGUF export | High | ✓ done | Widest deployment, no Python dependency |
+
+---
+
+## Phase 2.5 — Further Optimization (Planned)
+
+### Context
+
+GGUF export covers one deployment path (llama.cpp), but it's an outlier in scope — a single export format rather than a general optimization. The items below are the remaining levers for compute, payload size, and training efficiency that Phase 2 didn't cover. None are started; this section is a reference for prioritizing future work, not a commitment.
+
+### Items
+
+#### 1. Knowledge Distillation
+
+Train Grimoire against a larger teacher model's logits (or soft targets) instead of, or alongside, raw corpus text. Highest potential quality-per-parameter payoff of the three, since it transfers a teacher's learned distribution rather than just token statistics — but requires access to a larger teacher model and a heavier training pipeline (forward pass through both models, KL-divergence loss term). Worth prioritizing only if teacher access becomes available.
+
+#### 2. Pruning / Sparsity
+
+Zero out low-magnitude weights post-training to shrink the payload further than int8 quantization alone. Low effort — a single post-training pass, no architecture changes — but gains are modest at this model scale (25M–250M params) and accuracy can degrade without careful calibration (iterative pruning + fine-tune recovery). Lowest-effort next step if a smaller checkpoint is needed soon.
+
+#### 3. Speculative Decoding
+
+Use a small draft model to propose multiple tokens, verified in a single forward pass by the full model, to speed up autoregressive generation. Real wall-clock latency win at inference time, but adds a second model to build/maintain and only pays off if generation speed (not retrieval or model load time) is the actual bottleneck — not yet measured as one.
+
+### Priority Table
+
+| # | Item | Effort | Status | Unblocks |
+|---|---|---|---|---|
+| 1 | Knowledge distillation | High | not started | Quality-per-parameter, if a teacher model is available |
+| 2 | Pruning / sparsity | Low | not started | Smaller payload beyond int8 quantization |
+| 3 | Speculative decoding | Medium | not started | Faster generation, if latency becomes the bottleneck |
