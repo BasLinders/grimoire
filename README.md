@@ -24,21 +24,21 @@ grimoire/
 │   ├── agents/             # Agent registry — loads agents.json, builds InferenceEngine
 │   ├── corpus/             # Corpus ingestion, stemming, n-gram index, Jaccard retrieval
 │   ├── llm/                # Scratch-built transformer LLM
-│   │   ├── tokenizer/      # Byte-level BPE tokenizer (vocab size 16 384)
+│   │   ├── tokenizer/      # Byte-level BPE tokenizer (default vocab size 16 384; extend() grows it without retraining)
 │   │   ├── model/          # Decoder-only transformer (GQA, RoPE, SwiGLU, RMSNorm)
 │   │   ├── data/           # TokenizedDataset, PaddingCollator, ConversationDataset
 │   │   ├── training/       # Trainer, checkpointing, pretrain + finetune entry points
 │   │   └── inference/      # PromptBuilder, KV-cache sampler, InferenceEngine, SemanticRetriever
 │   ├── state/              # ConversationState — rolling multi-turn history + prompt build
 │   ├── cli/                # Interactive terminal chat loop
-│   └── ui/                 # Gradio app — Pre-train, Fine-tune, Ingest, Chat tabs
+│   └── ui/                 # Gradio app — Preprocess, Pre-train, Fine-tune, Scale, Evaluate, Ingest, Corpus, Chat tabs
 ├── agents.json             # Named agent configurations (checkpoint, vocab, corpus, gen defaults)
 ├── scripts/
 │   ├── build_saga_corpus.py        # Download D&D 5e SRD + copy math references
 │   ├── finetune_saga.py            # Fine-tune a checkpoint on the Saga dataset
 │   ├── validate_finetune_data.py   # Pre-flight check on any JSONL dataset
 │   ├── finetune_data/
-│   │   └── saga_v1.jsonl           # 30 Q&A examples (D&D rules, encounter math, probability)
+│   │   └── saga_v1.jsonl           # 31 Q&A examples (D&D rules, encounter math, probability)
 │   └── saga_references/            # Hand-authored math/probability reference .txt files
 ├── docs/                   # Setup guides (training, inference)
 ├── data/                   # Runtime data — gitignored (corpus bins, tokenizer, checkpoints)
@@ -81,8 +81,8 @@ Both halves run the same model, in the same learned representation space. There 
 
 | Component | Role | Status |
 |---|---|---|
-| **BPE Tokenizer** | Byte-level Byte-Pair Encoding; vocab 16 384; lossless round-trip for any Unicode | ✓ done |
-| **Corpus Scrapers** | `ingest()` dispatcher (web / PDF / DOCX / Markdown / OCR); dedicated scrapers for Wikipedia, Wikibooks, and arXiv abstracts | ✓ done |
+| **BPE Tokenizer** | Byte-level Byte-Pair Encoding; default vocab 16 384; lossless round-trip for any Unicode; opt-in `extend()` grows an existing vocabulary with new merges while preserving every existing token id, so old checkpoints stay loadable | ✓ done |
+| **Corpus Scrapers** | `ingest()` dispatcher (web / PDF / DOCX / Markdown / OCR); dedicated scrapers for Wikipedia, Wikibooks, arXiv abstracts, Gutenberg, D&D Wiki, GitHub D&D repos, Fandom wikis, Open5e, Internet Archive Dragon/Dungeon magazines, and Stack Exchange RPG | ✓ done |
 | **Near-Duplicate Dedup** | MinHash + LSH near-duplicate removal; word 5-gram shingling, SHA-1 hashing, union-find clustering, longest-kept policy | ✓ done |
 | **Corpus Engine** | Ingests text, indexes stemmed 4-gram multi-tokens, retrieves top-k passages by Jaccard similarity (lexical fallback) | ✓ done |
 | **Semantic Retriever** | Chunks documents into passages, embeds each with the model's own representations, and ranks by cosine similarity — the primary retrieval path | ✓ done |
@@ -96,10 +96,10 @@ Both halves run the same model, in the same learned representation space. There 
 | **Conversation State** | `ConversationState` packs rolling history newest-first within the token budget, then fills remaining space with corpus context | ✓ done |
 | **Evaluation Harness** | Perplexity / BPC on held-out corpus, retrieval hit-rate over a fixed query set, keyword-recall + token-F1 Q&A quiz; `run_eval()` harness writes timestamped JSON to `data/eval/`; CLI at `scripts/evaluate.py` | ✓ done |
 | **Math Tool** | `MathTool` detects arithmetic in queries, evaluates safely via pure-`ast` visitor (no `eval()`), injects result as context; resolves `<TOOL:python>…</TOOL>` tags from fine-tuned models; stdlib functions (factorial, exp, comb, hypot, trig, …) + scipy stats (norm_cdf, binom_pmf, t_ppf, …) with graceful fallback; `--math-tool` CLI flag; UI checkbox in Chat tab | ✓ done |
-| **Training UI** | Gradio app: Preprocess, Pre-train (size presets, gradient checkpointing), Fine-tune (LoRA rank/alpha/targets), Ingest, Chat (int8 toggle, adaptive temperature, retrieval controls, math tool), Scale, Evaluate tabs | ✓ done |
+| **Training UI** | Gradio app: Preprocess, Pre-train (size presets, gradient checkpointing), Fine-tune (LoRA rank/alpha/targets), Scale (Chinchilla calculator), Evaluate, Ingest, Corpus (pre-build semantic index), Chat (int8 toggle, adaptive temperature, retrieval controls, math tool) tabs | ✓ done |
 | **Agent Registry** | `AgentRegistry` reads `agents.json`; `build_engine(key, quantize=)` returns a ready `InferenceEngine` with corpus auto-loaded | ✓ done |
 | **Saga Corpus** | 24 D&D 5e SRD sections + 4 hand-authored math/probability reference files; built by `scripts/build_saga_corpus.py` | ✓ done |
-| **Saga Fine-tune Dataset** | 59 Q&A examples (D&D rules, encounter math, probability, D&D math concepts) in `scripts/finetune_data/` | ✓ done |
+| **Saga Fine-tune Dataset** | 31 Q&A examples (D&D rules, encounter math, probability) in `scripts/finetune_data/` | ✓ done |
 | **Integration Tests** | End-to-end: BPE train → corpus build → model pretrain → checkpoint → engine load → multi-turn `chat()` | ✓ done |
 
 ### Multi-turn prompt format
@@ -209,6 +209,8 @@ python -m grimoire_ai.llm.data.preprocessing \
     --vocab  data/tokenizer/bpe.json
 ```
 
+When the corpus grows and `data/tokenizer/bpe.json` already exists, add `--extend-vocab --vocab-size <larger>` to grow the vocabulary with new merges instead of retraining from scratch — existing token ids are preserved, so old checkpoints stay loadable after resizing their embedding/output layers (`--resume` in `train.py`/`finetune.py` does this automatically).
+
 ### Pre-train
 
 ```bash
@@ -284,7 +286,7 @@ python -m grimoire_ai.ui
 # open http://localhost:7860
 ```
 
-Six tabs: **Preprocess**, **Pre-train** (with model size presets), **Fine-tune**, **Ingest** (multi-file upload), **Chat** (streaming responses, corpus directory, semantic toggle, retrieval threshold slider, dataset builder), **Scale** (Chinchilla scaling calculator).
+Eight tabs: **Preprocess** (BPE training, `--extend-vocab`), **Pre-train** (model size presets, gradient checkpointing), **Fine-tune** (LoRA rank/alpha/targets), **Scale** (Chinchilla scaling calculator), **Evaluate** (perplexity, retrieval hit-rate, Q&A quiz), **Ingest** (multi-file upload), **Corpus** (pre-build the semantic embedding index), **Chat** (streaming responses, corpus directory, semantic toggle, retrieval threshold slider, math tool).
 
 ## Development
 
