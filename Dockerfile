@@ -14,6 +14,11 @@
 # For CUDA, install a matching torch build on top of this image (see
 # docs/setup-training.md) or swap the base image for an nvidia/cuda one
 # and reinstall torch with a cu12x index URL before `pip install -e .`.
+#
+# Built and tested on linux/amd64. On linux/arm64 some of gradio's
+# transitive dependencies may lack prebuilt wheels for this slim base
+# image; if the `pip install ".[ui]"` step fails on that platform, add
+# `build-essential` via `apt-get install` before it.
 
 FROM python:3.11-slim
 

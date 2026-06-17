@@ -7,15 +7,23 @@ and the original defaults apply.
 """
 
 import os
-
-from grimoire_ai.ui.app import launch
+import sys
 
 
 def main() -> None:
+    try:
+        from grimoire_ai.ui.app import launch
+    except ImportError:
+        sys.exit(
+            "The training UI requires the 'ui' extra. Install it with:\n"
+            '    pip install -e ".[ui]"'
+        )
+
+    inbrowser_env = os.environ.get("GRIMOIRE_UI_INBROWSER", "1").strip().lower()
     launch(
         server_name=os.environ.get("GRIMOIRE_UI_HOST", "127.0.0.1"),
         port=int(os.environ.get("GRIMOIRE_UI_PORT", "7860")),
-        inbrowser=os.environ.get("GRIMOIRE_UI_INBROWSER", "1") not in ("0", "false", "False"),
+        inbrowser=inbrowser_env not in ("0", "false", "no"),
     )
 
 
