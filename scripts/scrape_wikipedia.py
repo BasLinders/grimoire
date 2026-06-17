@@ -1,14 +1,17 @@
 """Download Wikipedia articles via the MediaWiki action API.
 
 Recursively traverses subcategories from a set of seed categories and writes
-one .txt file per article to the output directory.  Two topic groups are
-covered: mathematics/data-science and fantasy/mythology.
+one .txt file per article to the output directory.  Three topic groups are
+covered: mathematics/data-science, fantasy/mythology, and Dungeons & Dragons
+(5e-specific: rulebooks, classes, deities, monsters, races, settings,
+modules, and the Forgotten Realms).  All content is CC-BY-SA via Wikipedia.
 
 Usage
 -----
     python scripts/scrape_wikipedia.py
     python scripts/scrape_wikipedia.py --output data/corpus/saga/ --depth 2
     python scripts/scrape_wikipedia.py --group math --max-articles 2000
+    python scripts/scrape_wikipedia.py --group dnd
 
 The script is idempotent: already-downloaded files are skipped.  Respect
 Wikipedia's rate limits — do not set --delay below 0.1.
@@ -119,9 +122,25 @@ FANTASY_CATEGORIES = [
     "Egyptian mythology",
 ]
 
+DND_CATEGORIES = [
+    "Dungeons & Dragons",
+    "Dungeons & Dragons rulebooks",
+    "Dungeons & Dragons classes",
+    "Dungeons & Dragons deities",
+    "Dungeons & Dragons monsters",
+    "Dungeons & Dragons races",
+    "Dungeons & Dragons campaign settings",
+    "Dungeons & Dragons modules",
+    "Dungeons & Dragons supplements",
+    "Forgotten Realms",
+    "Forgotten Realms characters",
+    "Forgotten Realms locations",
+]
+
 ALL_GROUPS = {
     "math":    MATH_CATEGORIES,
     "fantasy": FANTASY_CATEGORIES,
+    "dnd":     DND_CATEGORIES,
 }
 
 # ---------------------------------------------------------------------------
@@ -314,7 +333,7 @@ if __name__ == "__main__":
         help="Output directory (default: data/corpus/saga/)",
     )
     parser.add_argument(
-        "--group", choices=["math", "fantasy", "all"], default="all",
+        "--group", choices=["math", "fantasy", "dnd", "all"], default="all",
         help="Topic group to fetch (default: all)",
     )
     parser.add_argument(
@@ -335,7 +354,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    groups = ["math", "fantasy"] if args.group == "all" else [args.group]
+    groups = ["math", "fantasy", "dnd"] if args.group == "all" else [args.group]
     scrape(
         output_dir=args.output,
         groups=groups,
