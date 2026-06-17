@@ -2827,7 +2827,12 @@ def build_app() -> gr.Blocks:
 # Entry point
 # ---------------------------------------------------------------------------
 
-def launch(share: bool = False, port: int = 7860, inbrowser: bool = True) -> None:
+def launch(
+    share: bool = False,
+    port: int = 7860,
+    inbrowser: bool = True,
+    server_name: str = "127.0.0.1",
+) -> None:
     """Build and launch the Gradio app.
 
     Args:
@@ -2835,9 +2840,13 @@ def launch(share: bool = False, port: int = 7860, inbrowser: bool = True) -> Non
         port: Local port to serve the app on.
         inbrowser: If ``True`` (default), open the default browser automatically
             when the server is ready.
+        server_name: Host to bind to. Defaults to localhost-only; pass
+            ``"0.0.0.0"`` to accept connections from outside the local
+            machine (e.g. when running inside a Docker container).
     """
     build_app().queue().launch(
-        server_port=port, share=share, inbrowser=inbrowser, theme=_THEME, css=_CSS
+        server_name=server_name, server_port=port, share=share,
+        inbrowser=inbrowser, theme=_THEME, css=_CSS,
     )
 
 

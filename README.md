@@ -288,6 +288,53 @@ python -m grimoire_ai.ui
 
 Eight tabs: **Preprocess** (BPE training, `--extend-vocab`), **Pre-train** (model size presets, gradient checkpointing), **Fine-tune** (LoRA rank/alpha/targets), **Scale** (Chinchilla scaling calculator), **Evaluate** (perplexity, retrieval hit-rate, Q&A quiz), **Ingest** (multi-file upload), **Corpus** (pre-build the semantic embedding index), **Chat** (streaming responses, corpus directory, semantic toggle, retrieval threshold slider, math tool).
 
+### Console scripts
+
+`pip install -e .` registers entry points for the package's CLI tools, so the `python -m ...` invocations above can be replaced with short commands on `PATH`:
+
+| Command | Equivalent to |
+|---|---|
+| `grimoire-chat` | `python -m grimoire_ai.cli.chat` |
+| `grimoire-ui` | `python -m grimoire_ai.ui` |
+| `grimoire-train` | `python -m grimoire_ai.llm.training.train` |
+| `grimoire-finetune` | `python -m grimoire_ai.llm.training.finetune` |
+| `grimoire-preprocess` | `python -m grimoire_ai.llm.data.preprocessing` |
+
+Standalone scripts in `scripts/` (corpus scrapers, `evaluate.py`, `export_gguf.py`, `build_saga_corpus.py`, …) are invoked directly with `python scripts/<name>.py` — they live outside the installed package and are not registered as console scripts.
+
+## Deployment
+
+### Docker (Training UI)
+
+```bash
+docker build -t grimoire-ai .
+docker run --rm -p 7860:7860 \
+    -v "$(pwd)/data:/app/data" \
+    -v "$(pwd)/checkpoints:/app/checkpoints" \
+    -v "$(pwd)/agents.json:/app/agents.json" \
+    grimoire-ai
+# open http://localhost:7860
+```
+
+The image is CPU-only (`python:3.11-slim` base, CPU build of torch) and runs the same Gradio UI as `grimoire-ui` / `python -m grimoire_ai.ui`, bound to `0.0.0.0` instead of localhost so it's reachable from outside the container. Mount `data/`, `checkpoints/`, and `agents.json` from the host so corpora, checkpoints, and agent configs persist across container restarts and survive image rebuilds. For CUDA, see the comments at the top of the `Dockerfile`.
+
+### GGUF export (llama.cpp)
+
+```bash
+python scripts/export_gguf.py \
+    --checkpoint checkpoints/pretrain/step_0010000.pt \
+    --output     models/grimoire-f16.gguf \
+    --vocab      data/tokenizer/bpe.json
+
+# Optional: quantize to 4-bit
+llama-quantize models/grimoire-f16.gguf models/grimoire-q4km.gguf Q4_K_M
+
+# Run with llama.cpp — Grimoire's architecture (GQA, RoPE, SwiGLU, RMSNorm)
+# matches the "llama" GGUF architecture exactly, so no custom llama.cpp
+# build is required.
+llama-cli -m models/grimoire-q4km.gguf -p "You are a D&D assistant." -n 256
+```
+
 ## Development
 
 ```bash
