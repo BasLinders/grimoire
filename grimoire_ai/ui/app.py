@@ -1,6 +1,6 @@
 """Grimoire training UI.
 
-A five-tab Gradio web app for managing the full Grimoire workflow without
+An eight-tab Gradio web app for managing the full Grimoire workflow without
 touching the CLI.
 
 Tabs
@@ -18,10 +18,21 @@ Fine-tune
     Continue from a pre-trained checkpoint on a JSONL conversation dataset.
     Hyperparameters mirror ``grimoire.llm.training.finetune``.
 
+Scale
+    Chinchilla scaling-law calculator for choosing model size vs. corpus size.
+
+Evaluate
+    Run the evaluation harness (perplexity/BPC, retrieval hit-rate, Q&A quiz)
+    against a checkpoint and write timestamped results to ``data/eval/``.
+
 Ingest
     Scrape and convert content into corpus ``.txt`` files.  Supports web
     URLs, PDF, DOCX, Markdown, plain text, and images (OCR).  Three cleaning
     presets control how aggressively boilerplate is stripped.
+
+Corpus
+    Pre-build the semantic embedding index for a corpus directory so the
+    Chat tab loads in seconds instead of re-embedding on every session start.
 
 Chat
     Load any checkpoint and query the model interactively via
