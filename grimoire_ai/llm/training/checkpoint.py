@@ -75,6 +75,100 @@ def save_checkpoint(
     torch.save(checkpoint, str(p))
 
 
+def resize_checkpoint_vocab(ckpt: dict, new_vocab_size: int) -> dict:
+    """Grow a checkpoint's embedding / output_head weight to a larger vocab.
+
+    Lets ``--resume`` work after the BPE vocabulary has been extended (see
+    ``BytePairEncoder.extend``) instead of requiring a full retrain. Existing
+    rows are copied verbatim — the ids they represent keep their learned
+    meaning exactly — and the newly added rows are randomly initialised with
+    the same ``std=0.02`` scheme ``GrimoireTransformer._init_weights`` uses,
+    so they look like any other freshly-initialised weight to the optimizer.
+
+    ``embedding._embed.weight`` and ``output_head.weight`` are weight-tied,
+    so both keys are present in ``state_dict()`` and both are resized
+    identically here (using the same new rows) to preserve that tie.
+
+    Args:
+        ckpt: A checkpoint dict as returned by ``load_checkpoint``.  Mutated
+            in place and also returned for convenience.
+        new_vocab_size: Target vocabulary size.  Must be greater than or
+            equal to the checkpoint's current vocabulary size.
+
+    Returns:
+        ``ckpt``, with ``ckpt["model"]`` and ``ckpt["config"]`` updated to
+        the new vocabulary size.  Returned unchanged if the sizes already
+        match.
+
+    Raises:
+        ValueError: If ``new_vocab_size`` is smaller than the checkpoint's
+            current vocabulary size — shrinking would discard learned rows
+            and is not supported.
+    """
+    model_sd = ckpt["model"]
+    vocab_keys = [k for k in ("embedding._embed.weight", "output_head.weight") if k in model_sd]
+    if not vocab_keys:
+        return ckpt
+
+    old_weight = model_sd[vocab_keys[0]]
+    old_vocab_size, d_model = old_weight.shape
+    if new_vocab_size == old_vocab_size:
+        return ckpt
+    if new_vocab_size < old_vocab_size:
+        raise ValueError(
+            f"Cannot resize checkpoint vocabulary from {old_vocab_size} down "
+            f"to {new_vocab_size} — shrinking would discard learned rows. "
+            "Use a vocab_size >= the checkpoint's existing size."
+        )
+
+    extra = torch.empty(new_vocab_size - old_vocab_size, d_model, dtype=old_weight.dtype)
+    nn.init.normal_(extra, mean=0.0, std=0.02)
+    new_weight = torch.cat([old_weight, extra], dim=0)
+    for key in vocab_keys:
+        model_sd[key] = new_weight.clone()
+
+    cfg = ckpt.get("config")
+    if isinstance(cfg, dict) and "vocab_size" in cfg:
+        cfg["vocab_size"] = new_vocab_size
+
+    return ckpt
+
+
+def resize_optimizer_vocab_state(
+    optimizer: Optimizer,
+    embedding_weight: torch.Tensor,
+    new_vocab_size: int,
+) -> None:
+    """Pad an AdamW optimizer's momentum buffers for a grown embedding.
+
+    ``Optimizer.load_state_dict`` does not validate that restored state
+    tensors (``exp_avg``, ``exp_avg_sq``) match the current parameter shape
+    — the mismatch only surfaces as a runtime error on the first ``step()``.
+    Call this right after loading optimizer state for a resumed checkpoint
+    whose embedding was grown by ``resize_checkpoint_vocab``: it pads each
+    momentum buffer with zero rows for the newly added vocabulary ids, which
+    is the standard "no momentum yet" initial state for a fresh parameter.
+
+    Args:
+        optimizer: The optimizer, after ``load_state_dict`` has already run.
+        embedding_weight: The model's current (already-resized) embedding
+            weight tensor — used only as the dict key under which AdamW
+            stores this parameter's state.
+        new_vocab_size: The embedding's current row count.  Rows are padded
+            up to this size; if the existing state already has this many
+            rows (e.g. the parameter was never resized), this is a no-op.
+    """
+    state = optimizer.state.get(embedding_weight)
+    if not state:
+        return
+    for key in ("exp_avg", "exp_avg_sq"):
+        buf = state.get(key)
+        if buf is None or buf.shape[0] >= new_vocab_size:
+            continue
+        pad = torch.zeros(new_vocab_size - buf.shape[0], *buf.shape[1:], dtype=buf.dtype)
+        state[key] = torch.cat([buf, pad], dim=0)
+
+
 def load_checkpoint(path: str) -> dict:
     """Load a checkpoint from disk.
 

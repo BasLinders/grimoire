@@ -230,3 +230,112 @@ def test_vocab_size_at_most_requested() -> None:
     enc = BytePairEncoder()
     enc.train(SMALL_CORPUS, vocab_size=300)
     assert len(enc) <= 300
+
+
+# ---------------------------------------------------------------------------
+# extend() — growing a vocabulary without disturbing existing ids
+# ---------------------------------------------------------------------------
+
+def test_extend_preserves_existing_token_ids(trained_encoder: BytePairEncoder) -> None:
+    """Encoding old text must produce byte-identical ids before and after extend()."""
+    enc = BytePairEncoder()
+    enc.train(SMALL_CORPUS, vocab_size=trained_encoder.vocab_size)
+    sample_text = SMALL_CORPUS[0]
+    ids_before = enc.encode(sample_text)
+
+    new_corpus = SMALL_CORPUS + [
+        "Resistance halves damage from a particular type.",
+        "A familiar can deliver touch spells on the caster's behalf.",
+    ]
+    enc.extend(new_corpus, vocab_size=enc.vocab_size + 32)
+
+    assert enc.encode(sample_text) == ids_before
+
+
+def test_extend_increases_vocab_size() -> None:
+    """extend() must grow the vocabulary, not just reorder it."""
+    enc = BytePairEncoder()
+    enc.train(SMALL_CORPUS, vocab_size=300)
+    old_size = len(enc)
+    enc.extend(SMALL_CORPUS, vocab_size=old_size + 20)
+    assert len(enc) > old_size
+
+
+def test_extend_new_text_round_trips() -> None:
+    """Newly learned merges must still encode/decode losslessly."""
+    enc = BytePairEncoder()
+    enc.train(SMALL_CORPUS, vocab_size=300)
+    new_corpus = SMALL_CORPUS + [
+        "Resistance halves damage from a particular type. " * 10,
+    ]
+    enc.extend(new_corpus, vocab_size=len(enc) + 20)
+    text = "Resistance halves damage from a particular type."
+    assert enc.decode(enc.encode(text)) == text
+
+
+def test_extend_rejects_smaller_or_equal_vocab_size() -> None:
+    """extend() must reject a vocab_size that doesn't actually grow anything."""
+    enc = BytePairEncoder()
+    enc.train(SMALL_CORPUS, vocab_size=300)
+    with pytest.raises(ValueError):
+        enc.extend(SMALL_CORPUS, vocab_size=len(enc))
+    with pytest.raises(ValueError):
+        enc.extend(SMALL_CORPUS, vocab_size=len(enc) - 10)
+
+
+def test_extend_without_training_raises() -> None:
+    """extend() on an untrained encoder must raise, like train()/encode()."""
+    enc = BytePairEncoder()
+    with pytest.raises(RuntimeError, match="no vocabulary"):
+        enc.extend(SMALL_CORPUS, vocab_size=512)
+
+
+def test_extend_empty_corpus_is_a_noop() -> None:
+    """An empty corpus has no pairs to learn from — extend() must not raise,
+    and the vocabulary must simply stay at its pre-extend size."""
+    enc = BytePairEncoder()
+    enc.train(SMALL_CORPUS, vocab_size=300)
+    old_size = len(enc)
+    enc.extend([], vocab_size=old_size + 50)
+    assert len(enc) == old_size
+
+
+def test_extend_merges_list_is_append_only() -> None:
+    """All original merge rules must still be present, in their original
+    order, after extend() — only new merges may be appended."""
+    enc = BytePairEncoder()
+    enc.train(SMALL_CORPUS, vocab_size=300)
+    original_merges = list(enc._merges)
+    enc.extend(SMALL_CORPUS, vocab_size=len(enc) + 20)
+    assert enc._merges[: len(original_merges)] == original_merges
+
+
+# ---------------------------------------------------------------------------
+# save() — atomic write
+# ---------------------------------------------------------------------------
+
+def test_save_does_not_leave_tmp_file(trained_encoder: BytePairEncoder) -> None:
+    """save() must clean up its temp file and leave only the final path."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "bpe.json"
+        trained_encoder.save(str(path))
+        assert path.exists()
+        assert list(Path(tmp).iterdir()) == [path]
+
+
+def test_save_overwrite_round_trips(trained_encoder: BytePairEncoder) -> None:
+    """Overwriting an existing vocab file (the extend() workflow) must
+    still round-trip correctly — this is the in-place rewrite path that
+    motivated making save() atomic."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "bpe.json"
+        trained_encoder.save(str(path))
+
+        enc2 = BytePairEncoder()
+        enc2.train(SMALL_CORPUS, vocab_size=trained_encoder.vocab_size)
+        enc2.extend(SMALL_CORPUS, vocab_size=enc2.vocab_size + 10)
+        enc2.save(str(path))  # overwrite
+
+        reloaded = BytePairEncoder.load(str(path))
+        assert reloaded.vocab_size == enc2.vocab_size
+        assert reloaded._merges == enc2._merges

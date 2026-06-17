@@ -116,6 +116,7 @@ def preprocess(
     dedup: bool = False,
     dedup_threshold: float = 0.8,
     bpe_sample_size: Optional[int] = 500,
+    extend_vocab: bool = False,
     on_progress: Optional[Callable[[str], None]] = None,
 ) -> int:
     """Tokenize text files and write a flat binary array of token ids.
@@ -147,7 +148,16 @@ def preprocess(
         bpe_sample_size: Maximum number of files loaded into RAM for BPE
             vocabulary training.  A random sample is drawn when the corpus is
             larger.  ``None`` loads all files (original behaviour).  Ignored
-            when ``vocab_path`` already exists.
+            when ``vocab_path`` already exists and ``extend_vocab`` is False.
+        extend_vocab: When ``True`` and ``vocab_path`` already exists, grow
+            the existing vocabulary up to ``vocab_size`` by learning
+            additional merges (see ``BytePairEncoder.extend``) instead of
+            using it unchanged.  Existing token ids are preserved exactly,
+            so checkpoints trained against the old vocabulary remain valid —
+            only the newly appended ids need fresh embedding rows.  This is
+            an explicit opt-in; the default behaviour (load as-is) is
+            unchanged.  Ignored if ``vocab_size`` is not larger than the
+            existing vocabulary.
         on_progress: Optional callable invoked with a progress message string
             at each major step and during BPE merge iterations.  When
             ``None`` messages are printed to stdout — existing CLI behaviour
@@ -205,6 +215,24 @@ def preprocess(
         _emit(f"[2/3] Loading existing vocabulary from {vocab_p} ...")
         encoder = BytePairEncoder.load(str(vocab_p))
         _emit(f"      Vocabulary size: {len(encoder):,}")
+
+        if extend_vocab and vocab_size > len(encoder):
+            _emit(f"      Extending vocabulary to {vocab_size:,} "
+                  f"(existing token ids are preserved) ...")
+
+            def _bpe_progress(step: int, total: int) -> None:
+                pct = 100 * step // total
+                _emit(f"      New merges: {step:,} / {total:,}  ({pct}%)")
+
+            sample = _sample_texts_for_bpe(files, texts, bpe_sample_size, encoding)
+            encoder.extend(
+                sample,
+                vocab_size=vocab_size,
+                on_progress=_bpe_progress if on_progress is not None else None,
+            )
+            encoder.save(str(vocab_p))
+            _emit(f"      Vocabulary size: {len(encoder):,}")
+            _emit(f"      Saved to {vocab_p}")
     else:
         _emit(f"[2/3] Training BPE encoder (vocab_size={vocab_size:,}) ...")
         _emit(f"      This may take several minutes on CPU.")
@@ -293,6 +321,14 @@ def main() -> None:
         "--bpe-sample", type=int, default=500, metavar="N",
         help="Max files sampled for BPE vocabulary training (0 = all files).",
     )
+    parser.add_argument(
+        "--extend-vocab", action="store_true",
+        help="If --vocab already exists, grow it to --vocab-size by learning "
+             "new merges instead of using it unchanged. Existing token ids "
+             "are preserved, so old checkpoints stay loadable (just resize "
+             "the embedding/output layers and randomly init the new rows). "
+             "Opt-in only — default behaviour loads the existing vocab as-is.",
+    )
     args = parser.parse_args()
 
     try:
@@ -305,6 +341,7 @@ def main() -> None:
             dedup=args.dedup,
             dedup_threshold=args.dedup_threshold,
             bpe_sample_size=args.bpe_sample,
+            extend_vocab=args.extend_vocab,
         )
         print("\nPreprocessing complete.")
     except (FileNotFoundError, ValueError) as exc:
