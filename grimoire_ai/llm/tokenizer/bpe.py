@@ -550,6 +550,12 @@ class BytePairEncoder:
         - ``"merges"``: a list of ``[a, b]`` pairs in training order.
         - ``"vocab_size"``: the total vocabulary size as an integer.
 
+        Writes to a sibling temp file and renames it into place, so a crash
+        or power loss mid-write never leaves a truncated/corrupt vocabulary
+        at ``path`` — this matters most when ``path`` is an existing,
+        in-use vocabulary being overwritten (e.g. after ``extend()``),
+        since unlike a fresh save there is no other copy to fall back on.
+
         Args:
             path: File path to write. Parent directories are created if
                 they do not exist.
@@ -565,7 +571,9 @@ class BytePairEncoder:
             "vocab": self._encoder,
             "merges": list(self._merges),
         }
-        p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_p = p.with_suffix(p.suffix + ".tmp")
+        tmp_p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_p.replace(p)
 
     @classmethod
     def load(cls, path: str) -> "BytePairEncoder":
