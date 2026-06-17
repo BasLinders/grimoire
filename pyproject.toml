@@ -5,12 +5,21 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "grimoire-ai"
 version = "0.1.0"
+description = "Hybrid semantic-retrieval + scratch-built transformer SLM engine, designed to run on consumer hardware."
+readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "nltk>=3.8",
     "torch>=2.0",
     "numpy>=1.24",
 ]
+
+[project.scripts]
+grimoire-chat = "grimoire_ai.cli.chat:main"
+grimoire-ui = "grimoire_ai.ui.__main__:main"
+grimoire-train = "grimoire_ai.llm.training.train:main"
+grimoire-finetune = "grimoire_ai.llm.training.finetune:main"
+grimoire-preprocess = "grimoire_ai.llm.data.preprocessing:main"
 
 [project.optional-dependencies]
 dev = [
