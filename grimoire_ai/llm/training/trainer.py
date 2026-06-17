@@ -56,7 +56,12 @@ from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from grimoire_ai.llm.data.collator import PaddingCollator
 from grimoire_ai.llm.model.transformer import GrimoireTransformer
 from grimoire_ai.llm.tokenizer.special_tokens import PAD_ID
-from grimoire_ai.llm.training.checkpoint import load_checkpoint, save_checkpoint
+from grimoire_ai.llm.training.checkpoint import (
+    load_checkpoint,
+    resize_checkpoint_vocab,
+    resize_optimizer_vocab_state,
+    save_checkpoint,
+)
 
 
 class Trainer:
@@ -710,8 +715,24 @@ class Trainer:
         print(f"Resuming from checkpoint: {path}")
         ckpt = load_checkpoint(path)
 
+        new_vocab_size = self.model.config.vocab_size
+        ckpt_cfg = ckpt.get("config")
+        ckpt_vocab_size = ckpt_cfg.get("vocab_size") if isinstance(ckpt_cfg, dict) else None
+        vocab_grew = ckpt_vocab_size is not None and new_vocab_size != ckpt_vocab_size
+        if vocab_grew:
+            print(f"  Vocabulary size changed ({ckpt_vocab_size:,} -> "
+                  f"{new_vocab_size:,}); resizing checkpoint embeddings ...")
+            ckpt = resize_checkpoint_vocab(ckpt, new_vocab_size)
+
         self.model.load_state_dict(ckpt["model"])
         self._optimizer.load_state_dict(ckpt["optimizer"])
+        if vocab_grew:
+            # AdamW's restored momentum buffers still have the checkpoint's
+            # old (smaller) row count; pad them with zeros for the newly
+            # added vocabulary ids before any optimizer.step() runs.
+            resize_optimizer_vocab_state(
+                self._optimizer, self.model.embedding.weight, new_vocab_size
+            )
         # Checkpoints are always loaded with map_location="cpu"; move optimizer
         # state tensors (momentum, variance buffers) to the training device so
         # AdamW doesn't mix CPU state with CUDA parameters on the first step.

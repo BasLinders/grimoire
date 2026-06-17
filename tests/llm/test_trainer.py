@@ -19,7 +19,12 @@ import torch
 from grimoire_ai.llm.data.dataset import TokenizedDataset
 from grimoire_ai.llm.model.config import TransformerConfig
 from grimoire_ai.llm.model.transformer import GrimoireTransformer
-from grimoire_ai.llm.training.checkpoint import load_checkpoint, save_checkpoint
+from grimoire_ai.llm.training.checkpoint import (
+    load_checkpoint,
+    resize_checkpoint_vocab,
+    resize_optimizer_vocab_state,
+    save_checkpoint,
+)
 from grimoire_ai.llm.training.trainer import Trainer
 
 
@@ -224,6 +229,174 @@ def test_checkpoint_missing_file_raises() -> None:
     """Loading from a non-existent path must raise FileNotFoundError."""
     with pytest.raises(FileNotFoundError):
         load_checkpoint("/tmp/grimoire_no_such_checkpoint.pt")
+
+
+# ---------------------------------------------------------------------------
+# Vocabulary resize (resume after BPE extend())
+# ---------------------------------------------------------------------------
+
+def test_resize_checkpoint_vocab_preserves_existing_rows() -> None:
+    """Old token rows must survive a vocab resize byte-for-byte."""
+    cfg = _tiny_config()
+    model = GrimoireTransformer(cfg)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = str(Path(tmp) / "ckpt.pt")
+        save_checkpoint(
+            path=path, model=model, optimizer=optimizer,
+            step=10, config_dict=cfg.to_dict(),
+        )
+        ckpt = load_checkpoint(path)
+
+    old_weight = ckpt["model"]["embedding._embed.weight"].clone()
+    new_vocab_size = cfg.vocab_size + 16
+    resized = resize_checkpoint_vocab(ckpt, new_vocab_size)
+
+    new_weight = resized["model"]["embedding._embed.weight"]
+    assert new_weight.shape == (new_vocab_size, cfg.d_model)
+    assert torch.equal(new_weight[: cfg.vocab_size], old_weight)
+    assert resized["config"]["vocab_size"] == new_vocab_size
+    # Tied output_head weight resized identically.
+    assert torch.equal(resized["model"]["output_head.weight"], new_weight)
+
+
+def test_resize_checkpoint_vocab_noop_when_unchanged() -> None:
+    """Resizing to the same vocab_size must be a no-op."""
+    cfg = _tiny_config()
+    model = GrimoireTransformer(cfg)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = str(Path(tmp) / "ckpt.pt")
+        save_checkpoint(
+            path=path, model=model, optimizer=optimizer,
+            step=10, config_dict=cfg.to_dict(),
+        )
+        ckpt = load_checkpoint(path)
+
+    original_weight = ckpt["model"]["embedding._embed.weight"].clone()
+    resized = resize_checkpoint_vocab(ckpt, cfg.vocab_size)
+    assert torch.equal(resized["model"]["embedding._embed.weight"], original_weight)
+
+
+def test_resize_checkpoint_vocab_rejects_shrink() -> None:
+    """Shrinking the vocabulary would discard learned rows — must raise."""
+    cfg = _tiny_config()
+    model = GrimoireTransformer(cfg)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = str(Path(tmp) / "ckpt.pt")
+        save_checkpoint(
+            path=path, model=model, optimizer=optimizer,
+            step=10, config_dict=cfg.to_dict(),
+        )
+        ckpt = load_checkpoint(path)
+
+    with pytest.raises(ValueError):
+        resize_checkpoint_vocab(ckpt, cfg.vocab_size - 8)
+
+
+def test_resize_optimizer_vocab_state_pads_with_zeros() -> None:
+    """Momentum buffers for the grown embedding gain zero-filled new rows."""
+    cfg = _tiny_config()
+    model = GrimoireTransformer(cfg)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+
+    # Take one optimizer step so exp_avg/exp_avg_sq buffers actually exist.
+    input_ids = torch.randint(0, cfg.vocab_size, (1, 8))
+    loss = model(input_ids).sum()
+    loss.backward()
+    optimizer.step()
+
+    new_vocab_size = cfg.vocab_size + 16
+    # Simulate the resumed model's (already-resized) embedding parameter.
+    grown_weight = torch.zeros(new_vocab_size, cfg.d_model)
+    old_state = optimizer.state[model.embedding.weight]
+    old_exp_avg = old_state["exp_avg"].clone()
+
+    resize_optimizer_vocab_state(optimizer, model.embedding.weight, new_vocab_size)
+
+    new_state = optimizer.state[model.embedding.weight]
+    assert new_state["exp_avg"].shape == (new_vocab_size, cfg.d_model)
+    assert torch.equal(new_state["exp_avg"][: cfg.vocab_size], old_exp_avg)
+    assert torch.equal(
+        new_state["exp_avg"][cfg.vocab_size :],
+        torch.zeros(new_vocab_size - cfg.vocab_size, cfg.d_model),
+    )
+
+
+def test_resize_optimizer_vocab_state_noop_without_state() -> None:
+    """A parameter with no optimizer state yet (no step taken) is left alone."""
+    cfg = _tiny_config()
+    model = GrimoireTransformer(cfg)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    # No optimizer.step() has been called — state dict is empty.
+    resize_optimizer_vocab_state(optimizer, model.embedding.weight, cfg.vocab_size + 16)
+    assert model.embedding.weight not in optimizer.state or not optimizer.state[model.embedding.weight]
+
+
+def test_trainer_resumes_after_vocab_growth() -> None:
+    """End-to-end: resume training against a larger vocab_size than the
+    checkpoint was originally trained with, as produced by extending the
+    BPE vocabulary instead of retraining it from scratch."""
+    old_cfg = _tiny_config()
+    model = GrimoireTransformer(old_cfg)
+    token_ids = np.random.randint(0, old_cfg.vocab_size, size=200).astype(np.int32)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus_path = Path(tmp) / "old_corpus.bin"
+        token_ids.tofile(corpus_path)
+        old_dataset = TokenizedDataset(corpus_path=str(corpus_path), seq_len=old_cfg.max_seq_len)
+
+        # Use a real Trainer to produce the checkpoint, so its optimizer
+        # param groups, scheduler, and momentum buffers are all populated
+        # exactly as they would be in a real training run.
+        old_trainer = Trainer(
+            model=model,
+            train_dataset=old_dataset,
+            checkpoint_dir=tmp,
+            peak_lr=1e-3,
+            warmup_steps=1,
+            total_steps=5,
+            batch_size=2,
+            accumulate_steps=1,
+        )
+        old_trainer.train()
+
+        ckpt_path = str(Path(tmp) / "ckpt.pt")
+        save_checkpoint(
+            path=ckpt_path, model=model, optimizer=old_trainer._optimizer,
+            step=old_trainer._step, config_dict=old_cfg.to_dict(),
+            scheduler=old_trainer._scheduler,
+        )
+
+        new_cfg = TransformerConfig(
+            **{**old_cfg.to_dict(), "vocab_size": old_cfg.vocab_size + 16}
+        )
+        new_model = GrimoireTransformer(new_cfg)
+        token_ids = np.random.randint(0, new_cfg.vocab_size, size=200).astype(np.int32)
+        corpus_path = Path(tmp) / "corpus.bin"
+        token_ids.tofile(corpus_path)
+        dataset = TokenizedDataset(corpus_path=str(corpus_path), seq_len=new_cfg.max_seq_len)
+
+        trainer = Trainer(
+            model=new_model,
+            train_dataset=dataset,
+            checkpoint_dir=tmp,
+            peak_lr=1e-3,
+            warmup_steps=1,
+            total_steps=1,
+            batch_size=2,
+            accumulate_steps=1,
+        )
+        # Must not raise — old rows resized into the new embedding, old
+        # optimizer momentum padded with zeros for the new ids.
+        trainer.train(resume_from=ckpt_path)
+
+    assert new_model.embedding.weight.shape[0] == new_cfg.vocab_size
+    assert trainer._step == 5  # resumed step count carried over correctly
 
 
 # ---------------------------------------------------------------------------
