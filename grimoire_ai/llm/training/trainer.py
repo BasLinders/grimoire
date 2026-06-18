@@ -42,6 +42,7 @@ Mixed precision (fp16 AMP)
     On CPU the scaler is a no-op and the autocast context is skipped.
 """
 
+import logging
 import math
 import threading
 import time
@@ -265,6 +266,14 @@ class Trainer:
             if hasattr(torch, "_dynamo"):
                 torch._dynamo.config.suppress_errors = True
                 torch._dynamo.config.verbose = False
+                # ``suppress_errors`` only stops the BackendCompilerFailed
+                # exception from propagating — dynamo still unconditionally
+                # logs a WARNING with the full traceback for every frame it
+                # falls back on (e.g. one per Triton-less Windows compile
+                # failure).  Raise the logger level so the fallback is truly
+                # silent; ``suppress_errors`` already guarantees correctness.
+                if hasattr(torch, "_logging"):
+                    torch._logging.set_logs(dynamo=logging.ERROR, inductor=logging.ERROR)
             self._forward_model = torch.compile(self.model)
 
         # GradScaler is a no-op on CPU but we instantiate it uniformly
