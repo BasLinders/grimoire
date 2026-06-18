@@ -524,9 +524,11 @@ class Trainer:
                     elapsed_interval = time.time() - t0
                     elapsed_total    = time.time() - t_start
                     lr_now    = self._scheduler.get_last_lr()[0]
-                    # running_loss is the sum of per-optimizer-step losses
-                    # since the last log point; divide to report the mean.
-                    self._last_avg_loss = running_loss / self.log_every
+                    # running_loss is the sum of per-micro-batch losses since
+                    # the last log point — log_every optimizer steps each
+                    # comprising accumulate_steps micro-batches — so divide
+                    # by their product to report the true mean cross-entropy.
+                    self._last_avg_loss = running_loss / (self.log_every * self.accumulate_steps)
                     print(
                         f"step {self._step:>6} / {self.total_steps} | "
                         f"loss {self._last_avg_loss:.4f} | "
