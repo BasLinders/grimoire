@@ -443,6 +443,7 @@ class Trainer:
         data_iter   = iter(self._loader)
         micro_count = 0
         running_loss = 0.0
+        steps_since_log = 0
         t_start = time.time()
         t0 = t_start
 
@@ -512,6 +513,7 @@ class Trainer:
 
                 self._step  += 1
                 micro_count  = 0
+                steps_since_log += 1
 
                 # --- SWA snapshot --------------------------------------
                 # Fold the current weights into the running average once we
@@ -525,10 +527,13 @@ class Trainer:
                     elapsed_total    = time.time() - t_start
                     lr_now    = self._scheduler.get_last_lr()[0]
                     # running_loss is the sum of per-micro-batch losses since
-                    # the last log point — log_every optimizer steps each
-                    # comprising accumulate_steps micro-batches — so divide
-                    # by their product to report the true mean cross-entropy.
-                    self._last_avg_loss = running_loss / (self.log_every * self.accumulate_steps)
+                    # the last log point — steps_since_log optimizer steps
+                    # each comprising accumulate_steps micro-batches — so
+                    # divide by their product to report the true mean
+                    # cross-entropy.  steps_since_log is usually log_every,
+                    # but can be smaller right after a resume (the counter
+                    # restarts at 0 while self._step starts mid-interval).
+                    self._last_avg_loss = running_loss / (steps_since_log * self.accumulate_steps)
                     print(
                         f"step {self._step:>6} / {self.total_steps} | "
                         f"loss {self._last_avg_loss:.4f} | "
@@ -538,6 +543,7 @@ class Trainer:
                     if self._on_log is not None:
                         self._on_log(self._step, self._last_avg_loss, lr_now, elapsed_total)
                     running_loss = 0.0
+                    steps_since_log = 0
                     t0 = time.time()
 
                 # --- Checkpointing -------------------------------------
