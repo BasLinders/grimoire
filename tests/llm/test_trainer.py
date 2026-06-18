@@ -442,6 +442,50 @@ def test_on_log_callback_fires() -> None:
         assert elapsed >= 0
 
 
+def test_logged_loss_not_inflated_by_accumulate_steps() -> None:
+    """Logged loss must be the true mean cross-entropy, independent of
+    ``accumulate_steps``.
+
+    Regression test: ``running_loss`` accumulates once per micro-batch
+    (``accumulate_steps`` of them per optimizer step), so dividing it by
+    ``log_every`` alone — instead of ``log_every * accumulate_steps`` —
+    silently inflated every logged/checkpointed loss value by a factor of
+    ``accumulate_steps``.
+    """
+    accumulate_steps = 4
+    log_calls: list[float] = []
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = _tiny_config()
+        model = GrimoireTransformer(cfg)
+        corpus_path = _write_corpus(2000, cfg.vocab_size, tmp)
+        dataset = TokenizedDataset(corpus_path, seq_len=cfg.max_seq_len, stride=cfg.max_seq_len)
+        trainer = Trainer(
+            model=model,
+            train_dataset=dataset,
+            val_dataset=dataset,
+            total_steps=2,
+            warmup_steps=1,
+            peak_lr=1e-3,
+            batch_size=2,
+            accumulate_steps=accumulate_steps,
+            log_every=1,
+            save_every=999,
+            checkpoint_dir=tmp,
+            device="cpu",
+            on_log=lambda step, loss, lr, elapsed: log_calls.append(loss),
+        )
+        trainer.train()
+        true_loss = trainer.evaluate()
+
+    # The logged loss should be in the same ballpark as the true mean CE —
+    # not inflated by ~accumulate_steps (4x).
+    assert log_calls[-1] < true_loss * 2, (
+        f"Logged loss {log_calls[-1]:.4f} looks inflated relative to the "
+        f"true mean cross-entropy {true_loss:.4f}."
+    )
+
+
 def test_on_log_none_does_not_raise() -> None:
     """Omitting on_log (default None) must produce no error."""
     with tempfile.TemporaryDirectory() as tmp:
