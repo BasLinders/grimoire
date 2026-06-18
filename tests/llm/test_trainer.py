@@ -486,6 +486,77 @@ def test_logged_loss_not_inflated_by_accumulate_steps() -> None:
     )
 
 
+def test_logged_loss_not_skewed_by_partial_window_after_resume() -> None:
+    """The first logged loss after a resume must not be skewed low.
+
+    Regression test: ``running_loss``/the step counter reset to zero on
+    each ``train()`` call, but ``self._step`` resumes mid-interval (not a
+    multiple of ``log_every``), so the first post-resume log point covers
+    fewer than ``log_every`` optimizer steps. Dividing by a hardcoded
+    ``log_every`` instead of the actual number of steps elapsed silently
+    deflated that one logged value.
+    """
+    log_every = 5
+    accumulate_steps = 2
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = _tiny_config()
+        model = GrimoireTransformer(cfg)
+        corpus_path = _write_corpus(4000, cfg.vocab_size, tmp)
+        dataset = TokenizedDataset(corpus_path, seq_len=cfg.max_seq_len, stride=cfg.max_seq_len)
+
+        # Train to step 3 — NOT a multiple of log_every (5) — and checkpoint.
+        trainer = Trainer(
+            model=model,
+            train_dataset=dataset,
+            total_steps=3,
+            warmup_steps=1,
+            peak_lr=1e-3,
+            batch_size=2,
+            accumulate_steps=accumulate_steps,
+            log_every=999,
+            save_every=999,
+            checkpoint_dir=tmp,
+            device="cpu",
+        )
+        trainer.train()
+        ckpt_path = str(Path(tmp) / "ckpt.pt")
+        save_checkpoint(
+            path=ckpt_path, model=model, optimizer=trainer._optimizer,
+            step=trainer._step, config_dict=cfg.to_dict(), scheduler=trainer._scheduler,
+        )
+
+        # Resume and run 2 more steps (steps 4-5) — the first log point
+        # after resume covers only 2 optimizer steps, not log_every (5).
+        log_calls: list[float] = []
+        resumed = Trainer(
+            model=GrimoireTransformer(cfg),
+            train_dataset=dataset,
+            val_dataset=dataset,
+            total_steps=5,
+            warmup_steps=1,
+            peak_lr=1e-3,
+            batch_size=2,
+            accumulate_steps=accumulate_steps,
+            log_every=log_every,
+            save_every=999,
+            checkpoint_dir=tmp,
+            device="cpu",
+            on_log=lambda step, loss, lr, elapsed: log_calls.append(loss),
+        )
+        resumed.train(resume_from=ckpt_path)
+        true_loss = resumed.evaluate()
+
+    assert len(log_calls) == 1
+    # The post-resume logged value should be close to the true mean CE, not
+    # skewed down by the partial-window bug (which would deflate it by
+    # roughly (steps_since_resume / log_every) = 2/5 = 0.4x).
+    assert log_calls[0] > true_loss * 0.5, (
+        f"Post-resume logged loss {log_calls[0]:.4f} looks skewed low "
+        f"relative to the true mean cross-entropy {true_loss:.4f}."
+    )
+
+
 def test_on_log_none_does_not_raise() -> None:
     """Omitting on_log (default None) must produce no error."""
     with tempfile.TemporaryDirectory() as tmp:

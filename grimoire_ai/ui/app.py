@@ -2089,7 +2089,7 @@ def build_app() -> gr.Blocks:
                 interactive=False,
                 autoscroll=True,
             )
-            pt_event = pt_run_btn.click(
+            pt_run_btn.click(
                 fn=run_pretrain,
                 inputs=[
                     pt_corpus, pt_ckpt_dir, pt_resume,
@@ -2101,7 +2101,12 @@ def build_app() -> gr.Blocks:
                 ],
                 outputs=[pt_log_box, pt_run_btn, pt_stop_btn],
             )
-            pt_stop_btn.click(fn=stop_pretrain, inputs=[], outputs=[], cancels=[pt_event])
+            # No ``cancels=`` here: Trainer already polls ``stop_event`` and
+            # exits its loop gracefully, which lets this generator reach its
+            # final cleanup yield and re-enable the Start button. Cancelling
+            # the Gradio event outright would kill the generator mid-stream,
+            # leaving Start permanently disabled until the app restarts.
+            pt_stop_btn.click(fn=stop_pretrain, inputs=[], outputs=[])
 
         # ----------------------------------------------------------------
         with gr.Tab("Fine-tune"):
@@ -2267,7 +2272,7 @@ def build_app() -> gr.Blocks:
                 inputs=[ft_lora_rank],
                 outputs=[ft_lora_alpha],
             )
-            ft_event = ft_run_btn.click(
+            ft_run_btn.click(
                 fn=run_finetune,
                 inputs=[
                     ft_pretrain_ckpt, ft_resume, ft_data, ft_vocab, ft_ckpt_dir,
@@ -2280,7 +2285,10 @@ def build_app() -> gr.Blocks:
                 ],
                 outputs=[ft_log_box, ft_run_btn, ft_stop_btn],
             )
-            ft_stop_btn.click(fn=stop_finetune, inputs=[], outputs=[], cancels=[ft_event])
+            # See the pretrain tab's stop button wiring for why ``cancels=``
+            # is intentionally omitted: Trainer's stop_event polling already
+            # lets this generator shut down gracefully and re-enable Start.
+            ft_stop_btn.click(fn=stop_finetune, inputs=[], outputs=[])
 
         # ----------------------------------------------------------------
         with gr.Tab("Scale"):
