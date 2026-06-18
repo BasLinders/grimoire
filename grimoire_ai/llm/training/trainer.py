@@ -42,6 +42,7 @@ Mixed precision (fp16 AMP)
     On CPU the scaler is a no-op and the autocast context is skipped.
 """
 
+import logging
 import math
 import threading
 import time
@@ -62,6 +63,16 @@ from grimoire_ai.llm.training.checkpoint import (
     resize_optimizer_vocab_state,
     save_checkpoint,
 )
+
+
+def _torch_has_triton() -> bool:
+    """Best-effort check for a working Triton backend (private torch API)."""
+    try:
+        from torch.utils._triton import has_triton
+
+        return bool(has_triton())
+    except Exception:
+        return False
 
 
 class Trainer:
@@ -265,6 +276,22 @@ class Trainer:
             if hasattr(torch, "_dynamo"):
                 torch._dynamo.config.suppress_errors = True
                 torch._dynamo.config.verbose = False
+                # ``suppress_errors`` only stops the BackendCompilerFailed
+                # exception from propagating — dynamo still unconditionally
+                # logs a WARNING with the full traceback for every frame it
+                # falls back on.  This is expected and harmless when Triton
+                # itself isn't installed (e.g. Windows), so raise the logger
+                # level only in that known case — leave it untouched
+                # otherwise so a *genuine* compile regression on a working
+                # Triton setup still surfaces a visible warning instead of
+                # silently degrading to eager.
+                if not _torch_has_triton():
+                    try:
+                        torch._logging.set_logs(
+                            dynamo=logging.ERROR, inductor=logging.ERROR
+                        )
+                    except Exception:
+                        pass
             self._forward_model = torch.compile(self.model)
 
         # GradScaler is a no-op on CPU but we instantiate it uniformly
