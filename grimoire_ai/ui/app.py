@@ -725,7 +725,12 @@ def _toggle_finetune_mode(mode: str):
         gr.update(value="checkpoints/lora/" if is_agent else "checkpoints/finetune/"),  # ft_ckpt_dir
         gr.update(value=""),                                                              # ft_resume
         gr.update(value=float(rank) if rank > 0 else 16.0),                             # ft_lora_alpha
+        # LoRA only updates ~0.5% of parameters, so the same 5e-5 peak LR used
+        # for full fine-tuning barely moves the adapter weights in a handful
+        # of steps. Use a higher LR for the adapter's much smaller update.
+        gr.update(value=2e-4 if is_agent else 5e-5),                                     # ft_lr
     )
+
 
 
 def _toggle_ingest_inputs(mode: str):
@@ -858,13 +863,28 @@ _FT_EPOCH_TIERS: tuple[tuple[int, int], ...] = (
 )
 _FT_EPOCHS_DEFAULT = 6
 
+# LoRA only updates the adapter's ~0.5% of parameters with the base frozen,
+# so it carries much less overfitting risk than full fine-tuning — that's
+# the whole point of the design (see docs/PLAN.md). A 111-example LoRA run
+# at the full-fine-tune tiers (4 epochs, 28 steps) showed flat, noisy loss
+# with no learning trend, i.e. underfitting, not overfitting. LoRA gets
+# roughly double the epochs of the full fine-tune tiers.
+_FT_LORA_EPOCH_TIERS: tuple[tuple[int, int], ...] = (
+    (20, 4),
+    (100, 6),
+    (500, 8),
+)
+_FT_LORA_EPOCHS_DEFAULT = 12
 
-def _suggest_ft_steps_from_data(data_path: str, ft_batch: int, ft_accum: int):
+
+def _suggest_ft_steps_from_data(data_path: str, ft_batch: int, ft_accum: int, ft_mode: str):
     """Suggest a total fine-tune step count from the dataset's example count.
 
     Counts non-empty lines in the JSONL dataset and targets a number of
     epochs that shrinks for smaller datasets, to avoid the overfitting seen
-    when running hundreds of steps over a handful of examples.
+    when running hundreds of steps over a handful of examples. LoRA adapter
+    runs use a separate, more generous set of tiers since freezing the base
+    weights makes overfitting far less likely than with full fine-tuning.
 
     Returns updates for: ft_steps, ft_warmup, ft_log, ft_save, ft_eval_every.
     """
@@ -888,8 +908,10 @@ def _suggest_ft_steps_from_data(data_path: str, ft_batch: int, ft_accum: int):
     if n_examples == 0:
         return _no_update
 
-    epochs = _FT_EPOCHS_DEFAULT
-    for threshold, tier_epochs in _FT_EPOCH_TIERS:
+    is_agent = ft_mode == "Agent (LoRA adapter)"
+    tiers = _FT_LORA_EPOCH_TIERS if is_agent else _FT_EPOCH_TIERS
+    epochs = _FT_LORA_EPOCHS_DEFAULT if is_agent else _FT_EPOCHS_DEFAULT
+    for threshold, tier_epochs in tiers:
         if n_examples <= threshold:
             epochs = tier_epochs
             break
@@ -2324,7 +2346,7 @@ def build_app() -> gr.Blocks:
             ft_mode.change(
                 fn=_toggle_finetune_mode,
                 inputs=[ft_mode],
-                outputs=[ft_agent_name, ft_lora_rank, ft_ckpt_dir, ft_resume, ft_lora_alpha],
+                outputs=[ft_agent_name, ft_lora_rank, ft_ckpt_dir, ft_resume, ft_lora_alpha, ft_lr],
             )
             ft_steps.change(
                 fn=_derive_ft_step_params,
@@ -2334,7 +2356,12 @@ def build_app() -> gr.Blocks:
             _ft_data_outputs = [ft_steps, ft_warmup, ft_log, ft_save, ft_eval_every]
             ft_data.change(
                 fn=_suggest_ft_steps_from_data,
-                inputs=[ft_data, ft_batch, ft_accum],
+                inputs=[ft_data, ft_batch, ft_accum, ft_mode],
+                outputs=_ft_data_outputs,
+            )
+            ft_mode.change(
+                fn=_suggest_ft_steps_from_data,
+                inputs=[ft_data, ft_batch, ft_accum, ft_mode],
                 outputs=_ft_data_outputs,
             )
             ft_lora_rank.change(
