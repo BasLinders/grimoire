@@ -842,6 +842,67 @@ def _suggest_preset_from_corpus(corpus_path: str, pt_batch: int, pt_accum: int):
     ]
 
 
+# Target epochs over the fine-tune dataset, tiered by example count. Chinchilla's
+# 20-tokens-per-parameter ratio governs pre-training a model from scratch and
+# doesn't transfer to fine-tuning an already-trained checkpoint — there, the
+# binding constraint is overfitting a small example set (as few as a dozen
+# examples), not undertraining, so step count is derived from epochs over the
+# dataset instead. Smaller datasets get fewer epochs to limit memorisation.
+_FT_EPOCH_TIERS: tuple[tuple[int, int], ...] = (
+    (20, 3),
+    (100, 5),
+    (500, 8),
+)
+_FT_EPOCHS_DEFAULT = 10
+
+
+def _suggest_ft_steps_from_data(data_path: str, ft_batch: int, ft_accum: int):
+    """Suggest a total fine-tune step count from the dataset's example count.
+
+    Counts non-empty lines in the JSONL dataset and targets a number of
+    epochs that shrinks for smaller datasets, to avoid the overfitting seen
+    when running hundreds of steps over a handful of examples.
+
+    Returns updates for: ft_steps, ft_warmup, ft_log, ft_save, ft_eval_every.
+    """
+    from pathlib import Path as _Path
+
+    _no_update = [gr.update()] * 5
+
+    data_path = (data_path or "").strip()
+    if not data_path:
+        return _no_update
+
+    p = _Path(data_path)
+    if not p.is_file():
+        return _no_update
+
+    try:
+        n_examples = sum(1 for line in p.read_text(encoding="utf-8").splitlines() if line.strip())
+    except OSError:
+        return _no_update
+
+    if n_examples == 0:
+        return _no_update
+
+    epochs = _FT_EPOCHS_DEFAULT
+    for threshold, tier_epochs in _FT_EPOCH_TIERS:
+        if n_examples <= threshold:
+            epochs = tier_epochs
+            break
+
+    batch = max(int(ft_batch or 1), 1)
+    accum = max(int(ft_accum or 1), 1)
+    effective_batch = batch * accum
+    steps = max(10, round(epochs * n_examples / effective_batch))
+
+    # Compute step-derived fields directly rather than relying on ft_steps.change
+    # cascading from a programmatic update, which Gradio does not guarantee.
+    step_updates = _derive_ft_step_params(steps)
+
+    return [gr.update(value=steps), *step_updates]
+
+
 # ---------------------------------------------------------------------------
 # Chat tab logic
 # ---------------------------------------------------------------------------
@@ -2266,6 +2327,12 @@ def build_app() -> gr.Blocks:
                 fn=_derive_ft_step_params,
                 inputs=[ft_steps],
                 outputs=[ft_warmup, ft_log, ft_save, ft_eval_every],
+            )
+            _ft_data_outputs = [ft_steps, ft_warmup, ft_log, ft_save, ft_eval_every]
+            ft_data.change(
+                fn=_suggest_ft_steps_from_data,
+                inputs=[ft_data, ft_batch, ft_accum],
+                outputs=_ft_data_outputs,
             )
             ft_lora_rank.change(
                 fn=_derive_lora_alpha,
