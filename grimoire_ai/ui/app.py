@@ -60,6 +60,7 @@ _stop_events: dict[str, Optional[threading.Event]] = {
     "pretrain": None,
     "finetune": None,
     "corpus": None,
+    "eval": None,
 }
 
 
@@ -1364,6 +1365,9 @@ def run_eval_ui(
         yield from _wrap_with_buttons(_stream_task(_task))
         return
 
+    stop_event = threading.Event()
+    _stop_events["eval"] = stop_event
+
     def _task(on_progress):
         on_progress("Loading model …")
         engine = InferenceEngine(
@@ -1400,7 +1404,7 @@ def run_eval_ui(
                             f"No cached index — embedding {len(documents)} file(s) "
                             "(this can take a while on CPU) …"
                         )
-                        retriever = engine.build_semantic_corpus(documents)
+                        retriever = engine.build_semantic_corpus(documents, stop_event=stop_event)
                         if index_dir:
                             try:
                                 from grimoire_ai.llm.inference.rag_index import RagIndex
@@ -1424,9 +1428,17 @@ def run_eval_ui(
             output_dir="data/eval",
             max_perplexity_batches=int(max_ppl_batches),
             on_progress=on_progress,
+            stop_event=stop_event,
         )
 
     yield from _wrap_with_buttons(_stream_task(_task))
+
+
+def stop_eval() -> None:
+    """Signal the running evaluation task to stop."""
+    ev = _stop_events.get("eval")
+    if ev is not None:
+        ev.set()
 
 
 # ---------------------------------------------------------------------------
@@ -2532,7 +2544,7 @@ def build_app() -> gr.Blocks:
                 ],
                 outputs=[ev_log, ev_run_btn, ev_stop_btn],
             )
-            ev_stop_btn.click(fn=None, cancels=[ev_event])
+            ev_stop_btn.click(fn=stop_eval, inputs=[], outputs=[], cancels=[ev_event])
 
         # ----------------------------------------------------------------
         with gr.Tab("Ingest"):

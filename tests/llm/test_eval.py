@@ -137,6 +137,28 @@ class TestPerplexityEval:
             )
         assert not model.training, "eval() model should still be in eval mode after perplexity eval"
 
+    def test_stop_event_halts_before_any_batch(self) -> None:
+        import threading
+        from grimoire_ai.llm.eval.perplexity import eval_perplexity
+
+        cfg = _tiny_config()
+        model = _tiny_model()
+        stop_event = threading.Event()
+        stop_event.set()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write_corpus(tmp, cfg, n_tokens=512)
+            result = eval_perplexity(
+                model=model,
+                corpus_path=path,
+                seq_len=cfg.max_seq_len,
+                batch_size=2,
+                max_batches=10,
+                val_split=0.5,
+                device="cpu",
+                stop_event=stop_event,
+            )
+        assert result["n_batches"] == 0
+
 
 # ---------------------------------------------------------------------------
 # Retrieval evaluator
@@ -203,6 +225,23 @@ class TestRetrievalEval:
         result = eval_retrieval(engine=engine, queries=queries)
         assert len(result["per_query"]) == 2
 
+    def test_stop_event_halts_before_any_query(self) -> None:
+        import threading
+        from grimoire_ai.llm.eval.retrieval import eval_retrieval
+
+        engine = self._make_engine_with_corpus([
+            ("advantage means rolling twice taking the higher", "rules"),
+        ])
+        queries = [
+            {"query": "advantage roll", "keywords": ["twice"]},
+            {"query": "grapple speed", "keywords": ["zero"]},
+        ]
+        stop_event = threading.Event()
+        stop_event.set()
+        result = eval_retrieval(engine=engine, queries=queries, stop_event=stop_event)
+        assert result["total"] == 0
+        assert result["per_query"] == []
+
 
 # ---------------------------------------------------------------------------
 # Quiz evaluator
@@ -267,6 +306,21 @@ class TestQuizEval:
         assert len(result["results"]) == 2
         assert result["results"][0]["pass"] is True
         assert result["results"][1]["pass"] is False
+
+    def test_stop_event_halts_before_any_question(self) -> None:
+        import threading
+        from grimoire_ai.llm.eval.quiz import eval_quiz
+
+        engine = self._make_engine(lambda q, gen_config=None: "speed zero")
+        examples = [
+            {"user": "q1?", "keywords": ["speed"]},
+            {"user": "q2?", "keywords": ["zero"]},
+        ]
+        stop_event = threading.Event()
+        stop_event.set()
+        result = eval_quiz(engine=engine, examples=examples, stop_event=stop_event)
+        assert result["total"] == 0
+        assert result["results"] == []
 
     def test_load_quiz_file(self) -> None:
         from grimoire_ai.llm.eval.quiz import load_quiz
@@ -364,3 +418,38 @@ class TestHarness:
             )
         assert "perplexity" in results["evals"]
         assert math.isfinite(results["evals"]["perplexity"]["perplexity"])
+
+    def test_stop_event_set_before_run_skips_all_evals(self) -> None:
+        """A stop_event already set when run_eval starts should skip every
+        evaluator entirely, but still write a report with stopped_early=True."""
+        import threading
+        from grimoire_ai.llm.eval.harness import run_eval
+
+        cfg = _tiny_config()
+        engine = self._make_engine()
+        engine.model = _tiny_model()
+        engine.model.config = cfg
+        engine.corpus = MagicMock()  # would normally trigger retrieval eval
+
+        stop_event = threading.Event()
+        stop_event.set()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            corpus_path = _write_corpus(tmp, cfg, n_tokens=512)
+            quiz_path = Path(tmp) / "quiz.jsonl"
+            quiz_path.write_text(
+                '{"user": "q?", "keywords": ["proficiency"]}\n', encoding="utf-8",
+            )
+            results = run_eval(
+                engine=engine,
+                corpus_bin=corpus_path,
+                quiz_path=str(quiz_path),
+                output_dir=tmp,
+                stop_event=stop_event,
+            )
+            written = list(Path(tmp).glob("eval_*.json"))
+            assert len(written) == 1
+
+        assert results["evals"] == {}
+        assert results["stopped_early"] is True
+        assert results["summary"] == "No evals ran."

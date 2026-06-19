@@ -30,6 +30,7 @@ With corpus grounding
     print(engine.respond("grapple speed movement", top_k_corpus=5))
 """
 
+import threading
 from typing import TYPE_CHECKING, Iterable, Optional, Union
 
 import torch
@@ -360,6 +361,7 @@ class InferenceEngine:
         chunk_chars: int = 400,
         batch_size: int = 32,
         attach: bool = True,
+        stop_event: Optional[threading.Event] = None,
     ) -> SemanticRetriever:
         """Build a semantic retriever from documents and (optionally) attach it.
 
@@ -376,6 +378,9 @@ class InferenceEngine:
             batch_size: Embedding batch size.
             attach: When ``True`` (default), set ``self.corpus`` to the new
                 retriever so subsequent ``respond``/``chat`` calls use it.
+            stop_event: Forwarded to ``SemanticRetriever.index`` — when set,
+                embedding stops before the next batch, leaving unembedded
+                passages queued for a future ``index()`` call.
 
         Returns:
             The populated, indexed ``SemanticRetriever``.
@@ -387,7 +392,7 @@ class InferenceEngine:
             else:
                 text, source = doc, None
             retriever.add_text(text, source=source)
-        retriever.index(batch_size=batch_size)
+        retriever.index(batch_size=batch_size, stop_event=stop_event)
 
         if attach:
             self.corpus = retriever

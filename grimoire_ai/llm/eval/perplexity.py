@@ -13,6 +13,7 @@ normalises by token count rather than vocabulary size.
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Callable, Optional
 
 import math
@@ -37,6 +38,7 @@ def eval_perplexity(
     val_split: float = 0.1,
     device: str = "cpu",
     on_progress: Optional[Callable[[str], None]] = None,
+    stop_event: Optional[threading.Event] = None,
 ) -> dict:
     """Compute perplexity and BPC on a held-out slice of a corpus binary.
 
@@ -53,6 +55,8 @@ def eval_perplexity(
             the training pipeline's train/val split).
         device: PyTorch device string.
         on_progress: Optional callback for log lines.
+        stop_event: When set, the batch loop exits early and returns the
+            metrics accumulated so far rather than running to completion.
 
     Returns:
         Dict with keys ``perplexity``, ``bpc``, ``mean_loss``, ``n_batches``.
@@ -97,6 +101,9 @@ def eval_perplexity(
     with torch.no_grad():
         for input_ids, target_ids, attention_mask in loader:
             if max_batches and n_batches >= max_batches:
+                break
+            if stop_event is not None and stop_event.is_set():
+                _log(f"  ⏹  Stopped early at batch {n_batches}.")
                 break
             input_ids      = input_ids.to(device, non_blocking=non_blocking)
             target_ids     = target_ids.to(device, non_blocking=non_blocking)

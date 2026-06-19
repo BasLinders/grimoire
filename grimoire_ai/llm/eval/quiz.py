@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
@@ -105,6 +106,7 @@ def eval_quiz(
     gen_config: Optional["GenerationConfig"] = None,
     pass_threshold: float = 0.5,
     on_progress: Optional[Callable[[str], None]] = None,
+    stop_event: Optional[threading.Event] = None,
 ) -> dict:
     """Run the model on each quiz question and score the responses.
 
@@ -116,6 +118,10 @@ def eval_quiz(
             default (128 new tokens) to keep evaluation fast.
         pass_threshold: Minimum keyword_recall to count as a pass.
         on_progress: Optional callback for log lines.
+        stop_event: When set, the question loop exits early and returns the
+            results accumulated so far rather than running to completion.
+            Checked between questions — generation for the current question
+            still runs to completion since it's a single blocking call.
 
     Returns:
         Dict with aggregate metrics and per-question ``results`` list.
@@ -150,6 +156,10 @@ def eval_quiz(
     n_f1 = 0
 
     for i, ex in enumerate(examples):
+        if stop_event is not None and stop_event.is_set():
+            _log(f"  ⏹  Stopped early at question {i}/{len(examples)}.")
+            break
+
         question   = ex["user"]
         reference  = ex.get("assistant", "")
         keywords   = ex.get("keywords", [])
@@ -184,7 +194,9 @@ def eval_quiz(
                 f"kw_recall: {total_kw_recall/(i+1):.2%}"
             )
 
-    total = len(examples)
+    # Use len(results) rather than len(examples) so a stop_event that cuts
+    # the loop short doesn't divide by the original (larger) question count.
+    total = len(results)
     mean_kw = total_kw_recall / total if total else 0.0
     mean_f1 = total_f1 / n_f1 if n_f1 else float("nan")
     pass_rate = passes / total if total else 0.0

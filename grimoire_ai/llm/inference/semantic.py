@@ -33,6 +33,7 @@ Pipeline
 """
 
 import re
+import threading
 from typing import TYPE_CHECKING, Callable, Optional
 
 import torch
@@ -210,7 +211,7 @@ class SemanticRetriever:
             self._pending.append((chunk, source))
         return len(chunks)
 
-    def index(self, batch_size: int = 32) -> int:
+    def index(self, batch_size: int = 32, stop_event: Optional[threading.Event] = None) -> int:
         """Embed all queued passages and build the searchable vector matrix.
 
         Safe to call repeatedly: passages queued since the last call are
@@ -218,6 +219,10 @@ class SemanticRetriever:
 
         Args:
             batch_size: Number of passages embedded per forward pass.
+            stop_event: When set, embedding stops before the next batch.
+                Already-embedded passages are kept; the rest stay queued in
+                ``self._pending`` so a later call to ``index()`` resumes
+                rather than re-embedding everything.
 
         Returns:
             The total number of indexed passages after this call.
@@ -227,22 +232,29 @@ class SemanticRetriever:
             sources = [s for _, s in self._pending]
 
             new_vectors: list[torch.Tensor] = []
+            n_embedded = 0
             for start in range(0, len(texts), batch_size):
+                if stop_event is not None and stop_event.is_set():
+                    break
                 batch = texts[start : start + batch_size]
                 new_vectors.append(self._embed_fn(batch))
-            stacked = torch.cat(new_vectors, dim=0)
+                n_embedded = start + len(batch)
 
-            if self._vectors is None:
-                self._vectors = stacked
-            else:
-                self._vectors = torch.cat([self._vectors, stacked], dim=0)
-            self._excerpts.extend(texts)
-            self._sources.extend(sources)
-            self._pending.clear()
-            # Invalidate any attached RagIndex: its FAISS index no longer
-            # covers the newly-added passages, so queries must fall back to
-            # brute-force until save_index()/from_index() is called again.
-            self._rag_index = None
+            if new_vectors:
+                stacked = torch.cat(new_vectors, dim=0)
+                if self._vectors is None:
+                    self._vectors = stacked
+                else:
+                    self._vectors = torch.cat([self._vectors, stacked], dim=0)
+                self._excerpts.extend(texts[:n_embedded])
+                self._sources.extend(sources[:n_embedded])
+                # Invalidate any attached RagIndex: its FAISS index no longer
+                # covers the newly-added passages, so queries must fall back
+                # to brute-force until save_index()/from_index() is called
+                # again.
+                self._rag_index = None
+
+            self._pending = list(zip(texts[n_embedded:], sources[n_embedded:]))
 
         return self.size
 

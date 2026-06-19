@@ -17,6 +17,7 @@ Pass your own list to override it.
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Callable, Optional
 
 if TYPE_CHECKING:
@@ -59,6 +60,7 @@ def eval_retrieval(
     queries: Optional[list[dict]] = None,
     top_k: int = 1,
     on_progress: Optional[Callable[[str], None]] = None,
+    stop_event: Optional[threading.Event] = None,
 ) -> dict:
     """Measure retrieval hit-rate over a fixed query set.
 
@@ -73,6 +75,8 @@ def eval_retrieval(
         top_k: Number of passages to retrieve per query.  Hit is counted
             when any passage in the top-k contains all keywords.
         on_progress: Optional callback for log lines.
+        stop_event: When set, the query loop exits early and returns the
+            results accumulated so far.
 
     Returns:
         Dict with keys ``hit_rate``, ``hits``, ``total``, ``per_query``.
@@ -99,6 +103,10 @@ def eval_retrieval(
     per_query: list[dict] = []
 
     for i, item in enumerate(queries):
+        if stop_event is not None and stop_event.is_set():
+            _log(f"  ⏹  Stopped early at query {i}/{len(queries)}.")
+            break
+
         query = item["query"]
         keywords = [kw.lower() for kw in item["keywords"]]
 
@@ -124,7 +132,9 @@ def eval_retrieval(
         if (i + 1) % 5 == 0:
             _log(f"  {i+1}/{len(queries)} queries  hits so far: {hits}")
 
-    total = len(queries)
+    # Use len(per_query) rather than len(queries) so a stop_event that cuts
+    # the loop short doesn't divide by the original (larger) query count.
+    total = len(per_query)
     hit_rate = hits / total if total else 0.0
     _log(f"  hit-rate {hit_rate:.1%}  ({hits}/{total})")
 
