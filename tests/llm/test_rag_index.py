@@ -108,6 +108,59 @@ class TestStaleness:
         h2 = RagIndex.compute_source_hashes([tmp_path])
         assert h1 != h2
 
+    def test_compute_source_hashes_includes_lora(self, tmp_path):
+        lora = tmp_path / "adapter.lora"
+        lora.write_bytes(b"\x00" * 32)
+        hashes = RagIndex.compute_source_hashes([], lora_path=lora)
+        assert "__lora__" in hashes
+
+    def test_lora_presence_changes_staleness(self, tmp_path):
+        """An index built without a LoRA adapter must be considered stale
+        once an adapter is introduced — the embeddings it holds are no
+        longer representative of the now-active weights."""
+        idx = _make_index()
+        idx.save(tmp_path)
+
+        lora = tmp_path.parent / "adapter.lora"
+        lora.write_bytes(b"\x00" * 32)
+        with_lora_hashes = dict(idx._source_hashes, **RagIndex.compute_source_hashes([], lora_path=lora))
+        assert RagIndex.is_stale(tmp_path, with_lora_hashes) is True
+
+    def test_hash_cache_reuses_digest_for_unchanged_file(self, tmp_path):
+        """A cache_dir lets compute_source_hashes skip re-reading a file
+        whose (mtime, size) fingerprint hasn't changed since last call."""
+        corpus_dir = tmp_path / "corpus"
+        corpus_dir.mkdir()
+        f = corpus_dir / "doc.txt"
+        f.write_text("hello world", encoding="utf-8")
+        cache_dir = tmp_path / "cache"
+
+        h1 = RagIndex.compute_source_hashes([corpus_dir], cache_dir=cache_dir)
+        assert (cache_dir / ".hash_cache.json").is_file()
+
+        # Tamper with the file's content without touching mtime/size — the
+        # cache should still report the *original* digest since it trusts
+        # the stat fingerprint rather than re-reading content.
+        import os
+        st = f.stat()
+        f.write_text("HELLO WORLD", encoding="utf-8")  # same length
+        os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns))
+
+        h2 = RagIndex.compute_source_hashes([corpus_dir], cache_dir=cache_dir)
+        assert h2 == h1
+
+    def test_hash_cache_rehashes_after_mtime_change(self, tmp_path):
+        corpus_dir = tmp_path / "corpus"
+        corpus_dir.mkdir()
+        f = corpus_dir / "doc.txt"
+        f.write_text("version 1", encoding="utf-8")
+        cache_dir = tmp_path / "cache"
+
+        h1 = RagIndex.compute_source_hashes([corpus_dir], cache_dir=cache_dir)
+        f.write_text("version 2", encoding="utf-8")
+        h2 = RagIndex.compute_source_hashes([corpus_dir], cache_dir=cache_dir)
+        assert h1 != h2
+
 
 # ---------------------------------------------------------------------------
 # Save / load round-trip

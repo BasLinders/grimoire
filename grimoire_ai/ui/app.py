@@ -640,7 +640,7 @@ def corpus_index_status(corpus_dir: str, checkpoint_path: str) -> str:
         return "Index present but unreadable — click Build to recreate it."
     if not checkpoint_path:
         return f"Index found  |  {index_info}  |  Enter a checkpoint path to check freshness."
-    hashes = RagIndex.compute_source_hashes([corpus_dir], checkpoint_path)
+    hashes = RagIndex.compute_source_hashes([corpus_dir], checkpoint_path, cache_dir=index_dir)
     stale = RagIndex.is_stale(index_dir, hashes)
     return f"{'STALE — rebuild needed' if stale else 'Fresh'}  |  {index_info}"
 
@@ -687,8 +687,8 @@ def run_build_index(
         retriever = engine.build_semantic_corpus(documents)
         on_progress(f"Indexed {retriever.size} passage(s).  Saving index …")
 
-        hashes = RagIndex.compute_source_hashes([corpus_dir], checkpoint_path)
         index_dir = p / ".semantic_index"
+        hashes = RagIndex.compute_source_hashes([corpus_dir], checkpoint_path, cache_dir=index_dir)
         retriever.save_index(index_dir, source_hashes=hashes)
 
         faiss_built = (index_dir / "faiss.index").is_file()
@@ -946,10 +946,20 @@ def _semantic_index_dir(corpus_dirs: list[str]) -> Optional[Path]:
     return first_dir / ".semantic_index"
 
 
-def _index_is_fresh(index_dir: Path, corpus_dirs: list[str], checkpoint: str) -> bool:
-    """Return True when the on-disk RagIndex is up to date (content-hash based)."""
+def _index_is_fresh(
+    index_dir: Path, corpus_dirs: list[str], checkpoint: str, lora_path: str = "",
+) -> bool:
+    """Return True when the on-disk RagIndex is up to date (content-hash based).
+
+    ``lora_path`` is folded into the hash so an index built from base-model
+    embeddings is never silently reused once a LoRA adapter is active (or
+    vice versa) — the embeddings differ depending on which weights produced
+    them.
+    """
     from grimoire_ai.llm.inference.rag_index import RagIndex
-    hashes = RagIndex.compute_source_hashes(corpus_dirs, checkpoint)
+    hashes = RagIndex.compute_source_hashes(
+        corpus_dirs, checkpoint, lora_path=lora_path or None, cache_dir=index_dir,
+    )
     return not RagIndex.is_stale(index_dir, hashes)
 
 
@@ -1088,9 +1098,10 @@ def load_agent(
                 engine.corpus = retriever
             else:
                 resolved_ckpt = str(registry._resolve(cfg.checkpoint))
+                resolved_lora = str(registry._resolve(cfg.lora_path)) if cfg.lora_path else ""
                 index_dir = _semantic_index_dir(resolved_dirs)
                 loaded_ok = False
-                if index_dir and _index_is_fresh(index_dir, resolved_dirs, resolved_ckpt):
+                if index_dir and _index_is_fresh(index_dir, resolved_dirs, resolved_ckpt, resolved_lora):
                     try:
                         engine.corpus = SemanticRetriever.from_index(index_dir, embed_fn=engine.embed)
                         loaded_ok = engine.corpus.size > 0
@@ -1101,7 +1112,10 @@ def load_agent(
                     retriever = engine.build_semantic_corpus(documents)
                     if index_dir:
                         try:
-                            hashes = RagIndex.compute_source_hashes(resolved_dirs, resolved_ckpt)
+                            hashes = RagIndex.compute_source_hashes(
+                                resolved_dirs, resolved_ckpt, lora_path=resolved_lora or None,
+                                cache_dir=index_dir,
+                            )
                             retriever.save_index(index_dir, source_hashes=hashes)
                         except Exception:
                             pass
@@ -1194,6 +1208,12 @@ def load_engine(
         math_tool=math_tool,
     )
 
+    if lora_path:
+        try:
+            engine.load_lora(lora_path)
+        except Exception as exc:
+            return None, None, f"Failed to load LoRA adapter: {exc}", gr.update()
+
     if corpus_dir and not use_lexical:
         if use_external:
             try:
@@ -1214,7 +1234,7 @@ def load_engine(
             # Default: model's own decoder embeddings — use persistent index when fresh.
             index_dir = _semantic_index_dir([corpus_dir])
             loaded_ok = False
-            if index_dir and _index_is_fresh(index_dir, [corpus_dir], checkpoint_path):
+            if index_dir and _index_is_fresh(index_dir, [corpus_dir], checkpoint_path, lora_path):
                 try:
                     retriever = SemanticRetriever.from_index(index_dir, embed_fn=engine.embed)
                     engine.corpus = retriever
@@ -1227,7 +1247,10 @@ def load_engine(
                 retriever = engine.build_semantic_corpus(documents)
                 if index_dir:
                     try:
-                        hashes = RagIndex.compute_source_hashes([corpus_dir], checkpoint_path)
+                        hashes = RagIndex.compute_source_hashes(
+                            [corpus_dir], checkpoint_path, lora_path=lora_path or None,
+                            cache_dir=index_dir,
+                        )
                         retriever.save_index(index_dir, source_hashes=hashes)
                     except Exception:
                         pass
@@ -1241,11 +1264,7 @@ def load_engine(
         status_suffix = f" | lexical (Jaccard): {len(documents)} file(s)"
 
     if lora_path:
-        try:
-            engine.load_lora(lora_path)
-            status_suffix += f" | LoRA adapter: {lora_path}"
-        except Exception as exc:
-            return None, None, f"Failed to load LoRA adapter: {exc}", gr.update()
+        status_suffix += f" | LoRA adapter: {lora_path}"
 
     state = ConversationState()
     return engine, state, f"Model loaded from {checkpoint_path}{status_suffix}", quantize
@@ -1349,6 +1368,7 @@ def run_eval_ui(
     quantize: bool,
     max_ppl_batches: int,
     device: str = "Auto",
+    lora_path: str = "",
 ) -> Generator[tuple, None, None]:
     """Run the evaluation harness and stream progress."""
     from grimoire_ai.llm.inference.engine import InferenceEngine
@@ -1359,7 +1379,12 @@ def run_eval_ui(
     corpus_dir = corpus_dir.strip()
     corpus_bin = corpus_bin.strip()
     quiz_path = quiz_path.strip()
+    lora_path = (lora_path or "").strip()
     device_arg = None if device == "Auto" else device.lower()
+    # LoRA adapters are incompatible with int8-quantized engines; silently
+    # disable quantization when a LoRA path is provided so load_lora() succeeds.
+    if lora_path:
+        quantize = False
 
     if not checkpoint_path or not vocab_path:
         def _task(on_progress):
@@ -1380,6 +1405,10 @@ def run_eval_ui(
         )
         on_progress(f"Model loaded on {engine.device}  ({engine.model.num_parameters():,} params)")
 
+        if lora_path:
+            engine.load_lora(lora_path)
+            on_progress(f"LoRA adapter loaded: {lora_path}")
+
         if corpus_dir and Path(corpus_dir).is_dir():
             documents: list[tuple[str, str]] = []
             for txt in sorted(Path(corpus_dir).glob("*.txt")):
@@ -1394,7 +1423,7 @@ def run_eval_ui(
                     # doesn't pay that cost every time.
                     index_dir = _semantic_index_dir([corpus_dir])
                     loaded_ok = False
-                    if index_dir and _index_is_fresh(index_dir, [corpus_dir], checkpoint_path):
+                    if index_dir and _index_is_fresh(index_dir, [corpus_dir], checkpoint_path, lora_path):
                         on_progress("Loading cached semantic index …")
                         try:
                             from grimoire_ai.llm.inference.semantic import SemanticRetriever
@@ -1411,7 +1440,10 @@ def run_eval_ui(
                         if index_dir:
                             try:
                                 from grimoire_ai.llm.inference.rag_index import RagIndex
-                                hashes = RagIndex.compute_source_hashes([corpus_dir], checkpoint_path)
+                                hashes = RagIndex.compute_source_hashes(
+                                    [corpus_dir], checkpoint_path, lora_path=lora_path or None,
+                                    cache_dir=index_dir,
+                                )
                                 retriever.save_index(index_dir, source_hashes=hashes)
                                 on_progress("Semantic index cached for future runs.")
                             except Exception:
@@ -2492,6 +2524,11 @@ def build_app() -> gr.Blocks:
                     value="data/tokenizer/bpe.json",
                     info="BPE vocabulary used at training time.",
                 )
+                ev_lora = gr.Textbox(
+                    label="LoRA adapter (.lora) — optional",
+                    placeholder="checkpoints/finetune/step_0000500.lora",
+                    info="Apply a LoRA adapter on top of the checkpoint before evaluating.",
+                )
             with gr.Row():
                 ev_corpus_dir = gr.Dropdown(
                     choices=_corpus_dirs,
@@ -2549,7 +2586,7 @@ def build_app() -> gr.Blocks:
                 fn=run_eval_ui,
                 inputs=[
                     ev_checkpoint, ev_vocab, ev_corpus_dir, ev_corpus_bin,
-                    ev_quiz, ev_semantic, ev_quantize, ev_max_ppl, ev_device,
+                    ev_quiz, ev_semantic, ev_quantize, ev_max_ppl, ev_device, ev_lora,
                 ],
                 outputs=[ev_log, ev_run_btn, ev_stop_btn],
             )
