@@ -94,6 +94,27 @@ def test_retriever_incremental_index() -> None:
     assert retriever.size == 2
 
 
+def test_retriever_index_stops_early_and_keeps_progress() -> None:
+    """A stop_event set before indexing leaves nothing embedded but the
+    queued passages intact for a later index() call to resume."""
+    import threading
+
+    retriever = SemanticRetriever(embed_fn=_keyword_embed)
+    retriever.add_text("A grappled creature is held fast.")
+    retriever.add_text("The fire spreads quickly.")
+
+    stop_event = threading.Event()
+    stop_event.set()
+    retriever.index(batch_size=1, stop_event=stop_event)
+
+    assert retriever.size == 0
+    assert len(retriever._pending) == 2
+
+    # A later call without the stop_event resumes from where it left off.
+    retriever.index(batch_size=1)
+    assert retriever.size == 2
+
+
 # ---------------------------------------------------------------------------
 # End-to-end with a tiny real model
 # ---------------------------------------------------------------------------

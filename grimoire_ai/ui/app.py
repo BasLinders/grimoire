@@ -60,6 +60,7 @@ _stop_events: dict[str, Optional[threading.Event]] = {
     "pretrain": None,
     "finetune": None,
     "corpus": None,
+    "eval": None,
 }
 
 
@@ -1364,6 +1365,9 @@ def run_eval_ui(
         yield from _wrap_with_buttons(_stream_task(_task))
         return
 
+    stop_event = threading.Event()
+    _stop_events["eval"] = stop_event
+
     def _task(on_progress):
         on_progress("Loading model …")
         engine = InferenceEngine(
@@ -1379,8 +1383,36 @@ def run_eval_ui(
                 documents.append((txt.read_text(encoding="utf-8"), txt.stem))
             if documents:
                 if semantic:
-                    on_progress(f"Building semantic corpus from {len(documents)} file(s) …")
-                    engine.build_semantic_corpus(documents)
+                    # Embedding every passage in a large corpus from scratch is
+                    # the slowest step in this pipeline (one forward pass per
+                    # batch, no progress callback inside build_semantic_corpus).
+                    # Reuse the same on-disk RagIndex + staleness check as the
+                    # Chat tab so re-running eval against an unchanged corpus
+                    # doesn't pay that cost every time.
+                    index_dir = _semantic_index_dir([corpus_dir])
+                    loaded_ok = False
+                    if index_dir and _index_is_fresh(index_dir, [corpus_dir], checkpoint_path):
+                        on_progress("Loading cached semantic index …")
+                        try:
+                            from grimoire_ai.llm.inference.semantic import SemanticRetriever
+                            engine.corpus = SemanticRetriever.from_index(index_dir, embed_fn=engine.embed)
+                            loaded_ok = engine.corpus.size > 0
+                        except Exception:
+                            loaded_ok = False
+                    if not loaded_ok:
+                        on_progress(
+                            f"No cached index — embedding {len(documents)} file(s) "
+                            "(this can take a while on CPU) …"
+                        )
+                        retriever = engine.build_semantic_corpus(documents, stop_event=stop_event)
+                        if index_dir:
+                            try:
+                                from grimoire_ai.llm.inference.rag_index import RagIndex
+                                hashes = RagIndex.compute_source_hashes([corpus_dir], checkpoint_path)
+                                retriever.save_index(index_dir, source_hashes=hashes)
+                                on_progress("Semantic index cached for future runs.")
+                            except Exception:
+                                pass
                 else:
                     from grimoire_ai.corpus.corpus import GrimoireCorpus
                     corpus = GrimoireCorpus()
@@ -1396,9 +1428,17 @@ def run_eval_ui(
             output_dir="data/eval",
             max_perplexity_batches=int(max_ppl_batches),
             on_progress=on_progress,
+            stop_event=stop_event,
         )
 
     yield from _wrap_with_buttons(_stream_task(_task))
+
+
+def stop_eval() -> None:
+    """Signal the running evaluation task to stop."""
+    ev = _stop_events.get("eval")
+    if ev is not None:
+        ev.set()
 
 
 # ---------------------------------------------------------------------------
@@ -2496,7 +2536,7 @@ def build_app() -> gr.Blocks:
                 interactive=False,
                 autoscroll=True,
             )
-            ev_run_btn.click(
+            ev_event = ev_run_btn.click(
                 fn=run_eval_ui,
                 inputs=[
                     ev_checkpoint, ev_vocab, ev_corpus_dir, ev_corpus_bin,
@@ -2504,6 +2544,7 @@ def build_app() -> gr.Blocks:
                 ],
                 outputs=[ev_log, ev_run_btn, ev_stop_btn],
             )
+            ev_stop_btn.click(fn=stop_eval, inputs=[], outputs=[], cancels=[ev_event])
 
         # ----------------------------------------------------------------
         with gr.Tab("Ingest"):

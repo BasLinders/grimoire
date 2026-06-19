@@ -26,6 +26,7 @@ Typical usage (Python)
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
@@ -43,6 +44,7 @@ def run_eval(
     max_perplexity_batches: int = 50,
     perplexity_batch_size: int = 4,
     on_progress: Optional[Callable[[str], None]] = None,
+    stop_event: Optional[threading.Event] = None,
 ) -> dict:
     """Run enabled evaluators and write a JSON report.
 
@@ -62,6 +64,10 @@ def run_eval(
         max_perplexity_batches: Cap on batches for perplexity eval.
         perplexity_batch_size: Batch size for perplexity eval.
         on_progress: Optional progress callback.
+        stop_event: When set, each evaluator stops as soon as it notices
+            (between batches/questions/queries) and any evaluator not yet
+            started is skipped entirely. The report is still written with
+            whatever evaluators completed or partially completed.
 
     Returns:
         Full results dict including ``summary`` and ``timestamp``.
@@ -69,6 +75,9 @@ def run_eval(
     def _log(msg: str) -> None:
         if on_progress:
             on_progress(msg)
+
+    def _stopped() -> bool:
+        return stop_event is not None and stop_event.is_set()
 
     if engine is None and corpus_bin is None:
         raise ValueError("Provide at least one of 'engine' or 'corpus_bin'.")
@@ -79,7 +88,9 @@ def run_eval(
     # -----------------------------------------------------------------------
     # 1. Perplexity
     # -----------------------------------------------------------------------
-    if corpus_bin and Path(corpus_bin).is_file():
+    if _stopped():
+        _log("⏹  Stopped before perplexity eval.")
+    elif corpus_bin and Path(corpus_bin).is_file():
         _log("─── Perplexity eval ───────────────────────────────────")
         from grimoire_ai.llm.eval.perplexity import eval_perplexity
         import torch
@@ -98,6 +109,7 @@ def run_eval(
                 max_batches=max_perplexity_batches,
                 device=device,
                 on_progress=on_progress,
+                stop_event=stop_event,
             )
             results["evals"]["perplexity"] = ppl_result
     else:
@@ -107,13 +119,16 @@ def run_eval(
     # -----------------------------------------------------------------------
     # 2. Retrieval hit-rate
     # -----------------------------------------------------------------------
-    if engine is not None and engine.corpus is not None:
+    if _stopped():
+        _log("⏹  Stopped before retrieval eval.")
+    elif engine is not None and engine.corpus is not None:
         _log("─── Retrieval eval ────────────────────────────────────")
         from grimoire_ai.llm.eval.retrieval import eval_retrieval
         ret_result = eval_retrieval(
             engine=engine,
             queries=retrieval_queries,
             on_progress=on_progress,
+            stop_event=stop_event,
         )
         results["evals"]["retrieval"] = ret_result
     elif engine is not None:
@@ -122,7 +137,9 @@ def run_eval(
     # -----------------------------------------------------------------------
     # 3. Quiz
     # -----------------------------------------------------------------------
-    if engine is not None:
+    if _stopped():
+        _log("⏹  Stopped before quiz eval.")
+    elif engine is not None:
         # Resolve quiz path: explicit → default saga quiz → skip.
         _quiz_path = quiz_path
         if not _quiz_path:
@@ -134,7 +151,9 @@ def run_eval(
             _log("─── Quiz eval ─────────────────────────────────────────")
             from grimoire_ai.llm.eval.quiz import eval_quiz, load_quiz
             examples = load_quiz(_quiz_path)
-            quiz_result = eval_quiz(engine=engine, examples=examples, on_progress=on_progress)
+            quiz_result = eval_quiz(
+                engine=engine, examples=examples, on_progress=on_progress, stop_event=stop_event,
+            )
             results["evals"]["quiz"] = quiz_result
         else:
             _log("  ⚠  No quiz file found — skipping quiz eval.")
@@ -157,6 +176,7 @@ def run_eval(
                 f"quiz pass-rate={res['pass_rate']:.1%}  kw-recall={res['mean_keyword_recall']:.2%}"
             )
     results["summary"] = "  |  ".join(summary_lines) if summary_lines else "No evals ran."
+    results["stopped_early"] = _stopped()
 
     # -----------------------------------------------------------------------
     # Write report
