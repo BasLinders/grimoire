@@ -39,15 +39,15 @@ def test_missing_file_returns_no_update(tmp_path):
 def test_small_dataset_uses_fewer_epochs(tmp_path):
     path = _write_jsonl(tmp_path, 10)
     steps_update, *_ = app._suggest_ft_steps_from_data(path, 1, 1)
-    # 10 examples, 3-epoch tier, effective batch 1 -> 30 steps.
-    assert steps_update["value"] == 30
+    # 10 examples, 2-epoch tier, effective batch 1 -> 20 steps.
+    assert steps_update["value"] == 20
 
 
 def test_large_dataset_uses_more_epochs(tmp_path):
     path = _write_jsonl(tmp_path, 1000)
     steps_update, *_ = app._suggest_ft_steps_from_data(path, 4, 4)
-    # 1000 examples, 10-epoch tier (>500), effective batch 16 -> 625 steps.
-    assert steps_update["value"] == 625
+    # 1000 examples, 6-epoch tier (>500), effective batch 16 -> 375 steps.
+    assert steps_update["value"] == 375
 
 
 def test_step_floor_is_respected(tmp_path):

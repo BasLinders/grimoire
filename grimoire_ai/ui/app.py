@@ -848,12 +848,15 @@ def _suggest_preset_from_corpus(corpus_path: str, pt_batch: int, pt_accum: int):
 # binding constraint is overfitting a small example set (as few as a dozen
 # examples), not undertraining, so step count is derived from epochs over the
 # dataset instead. Smaller datasets get fewer epochs to limit memorisation.
+# Tuned down from an earlier, more generous set of tiers after a 133-example
+# run still overfit at 8 epochs: val loss plateaued around step 40 of 66
+# while train loss kept falling, the classic overfitting signature.
 _FT_EPOCH_TIERS: tuple[tuple[int, int], ...] = (
-    (20, 3),
-    (100, 5),
-    (500, 8),
+    (20, 2),
+    (100, 3),
+    (500, 4),
 )
-_FT_EPOCHS_DEFAULT = 10
+_FT_EPOCHS_DEFAULT = 6
 
 
 def _suggest_ft_steps_from_data(data_path: str, ft_batch: int, ft_accum: int):
