@@ -115,6 +115,8 @@ def run_eval(
     else:
         if corpus_bin:
             _log(f"  ⚠  Corpus binary not found: {corpus_bin} — skipping perplexity.")
+        else:
+            _log("  ⚠  No corpus binary provided — skipping perplexity eval.")
 
     # -----------------------------------------------------------------------
     # 2. Retrieval hit-rate
