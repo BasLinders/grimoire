@@ -37,6 +37,7 @@ import numpy as np
 _META_FILE = "meta.json"
 _VEC_FILE = "vectors.dat"
 _FAISS_FILE = "faiss.index"
+_HASH_CACHE_FILE = ".hash_cache.json"
 _VERSION = 1
 
 
@@ -47,6 +48,12 @@ def _md5(path: "str | Path") -> str:
         for block in iter(lambda: f.read(1 << 16), b""):
             h.update(block)
     return h.hexdigest()
+
+
+def _stat_stamp(path: "Path") -> str:
+    """Return a cheap (mtime, size) fingerprint for a file, no content read."""
+    st = path.stat()
+    return f"{st.st_mtime_ns}:{st.st_size}"
 
 
 class RagIndex:
@@ -103,24 +110,73 @@ class RagIndex:
     def compute_source_hashes(
         corpus_dirs: "list[str | Path]",
         checkpoint_path: "Optional[str | Path]" = None,
+        lora_path: "Optional[str | Path]" = None,
+        cache_dir: "Optional[str | Path]" = None,
     ) -> "dict[str, str]":
-        """Compute MD5 hashes for every ``.txt`` file and the checkpoint.
+        """Compute MD5 hashes for every ``.txt`` file, the checkpoint, and a LoRA adapter.
+
+        Hashing thousands of corpus files (plus a multi-hundred-MB checkpoint)
+        on every freshness check is expensive even when nothing changed. When
+        *cache_dir* is given, a small ``(mtime, size) -> md5`` cache is kept
+        alongside the index so a file is only re-read when its mtime or size
+        has actually changed; an unchanged file reuses its last-known digest.
 
         Args:
             corpus_dirs: Directories whose ``.txt`` files form the corpus.
             checkpoint_path: Model checkpoint to include in the hash so that
                 switching checkpoints automatically invalidates the index.
+            lora_path: LoRA adapter file to include in the hash, stored under
+                ``"__lora__"``, so loading/changing/removing an adapter also
+                invalidates an index built from a different set of weights.
+            cache_dir: Directory to read/write the stat-based hash cache from.
+                Typically the same directory the index itself lives in.
 
         Returns:
-            A ``{filename: md5_hex}`` dict.  The checkpoint is stored under
-            the key ``"__checkpoint__"``.
+            A ``{filename: md5_hex}`` dict.  The checkpoint and LoRA adapter
+            are stored under the fixed keys ``"__checkpoint__"`` / ``"__lora__"``.
         """
+        cache_path = Path(cache_dir) / _HASH_CACHE_FILE if cache_dir else None
+        stat_cache: dict = {}
+        if cache_path and cache_path.is_file():
+            try:
+                stat_cache = json.loads(cache_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                stat_cache = {}
+
+        new_cache: dict = {}
+
+        def _hash_with_cache(path: Path, key: str) -> str:
+            stamp = _stat_stamp(path)
+            cached = stat_cache.get(key)
+            digest = cached["md5"] if cached and cached.get("stamp") == stamp else _md5(path)
+            new_cache[key] = {"stamp": stamp, "md5": digest}
+            return digest
+
+        # The stat cache is keyed by resolved absolute path, not by basename:
+        # the returned `hashes` dict groups files by `f.name` (so corpus_dirs
+        # containing same-named files collapse to one entry, as before this
+        # cache existed), but two *different* files that happen to share a
+        # name across different corpus_dirs must never share a cache entry —
+        # otherwise a coincidental (mtime, size) match on one file could
+        # return a cached digest that actually belongs to the other file.
         hashes: "dict[str, str]" = {}
         for d in corpus_dirs:
             for f in sorted(Path(d).glob("*.txt")):
-                hashes[f.name] = _md5(f)
+                hashes[f.name] = _hash_with_cache(f, str(f.resolve()))
         if checkpoint_path and Path(checkpoint_path).is_file():
-            hashes["__checkpoint__"] = _md5(checkpoint_path)
+            ckpt = Path(checkpoint_path)
+            hashes["__checkpoint__"] = _hash_with_cache(ckpt, str(ckpt.resolve()))
+        if lora_path and Path(lora_path).is_file():
+            lora = Path(lora_path)
+            hashes["__lora__"] = _hash_with_cache(lora, str(lora.resolve()))
+
+        if cache_path:
+            try:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_text(json.dumps(new_cache), encoding="utf-8")
+            except OSError:
+                pass
+
         return hashes
 
     @staticmethod

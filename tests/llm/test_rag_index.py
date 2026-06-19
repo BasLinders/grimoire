@@ -108,6 +108,84 @@ class TestStaleness:
         h2 = RagIndex.compute_source_hashes([tmp_path])
         assert h1 != h2
 
+    def test_compute_source_hashes_includes_lora(self, tmp_path):
+        lora = tmp_path / "adapter.lora"
+        lora.write_bytes(b"\x00" * 32)
+        hashes = RagIndex.compute_source_hashes([], lora_path=lora)
+        assert "__lora__" in hashes
+
+    def test_lora_presence_changes_staleness(self, tmp_path):
+        """An index built without a LoRA adapter must be considered stale
+        once an adapter is introduced — the embeddings it holds are no
+        longer representative of the now-active weights."""
+        idx = _make_index()
+        idx.save(tmp_path)
+
+        lora = tmp_path.parent / "adapter.lora"
+        lora.write_bytes(b"\x00" * 32)
+        with_lora_hashes = dict(idx._source_hashes, **RagIndex.compute_source_hashes([], lora_path=lora))
+        assert RagIndex.is_stale(tmp_path, with_lora_hashes) is True
+
+    def test_hash_cache_reuses_digest_for_unchanged_file(self, tmp_path):
+        """A cache_dir lets compute_source_hashes skip re-reading a file
+        whose (mtime, size) fingerprint hasn't changed since last call."""
+        corpus_dir = tmp_path / "corpus"
+        corpus_dir.mkdir()
+        f = corpus_dir / "doc.txt"
+        f.write_text("hello world", encoding="utf-8")
+        cache_dir = tmp_path / "cache"
+
+        h1 = RagIndex.compute_source_hashes([corpus_dir], cache_dir=cache_dir)
+        assert (cache_dir / ".hash_cache.json").is_file()
+
+        # Tamper with the file's content without touching mtime/size — the
+        # cache should still report the *original* digest since it trusts
+        # the stat fingerprint rather than re-reading content.
+        import os
+        st = f.stat()
+        f.write_text("HELLO WORLD", encoding="utf-8")  # same length
+        os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns))
+
+        h2 = RagIndex.compute_source_hashes([corpus_dir], cache_dir=cache_dir)
+        assert h2 == h1
+
+    def test_hash_cache_distinguishes_same_named_files_in_different_dirs(self, tmp_path):
+        """Two different files sharing a basename across corpus_dirs must not
+        share a stat-cache entry: a coincidental (mtime, size) match on one
+        must never return a digest that actually belongs to the other."""
+        import os
+
+        dir_a = tmp_path / "a"
+        dir_b = tmp_path / "b"
+        dir_a.mkdir()
+        dir_b.mkdir()
+        fa = dir_a / "doc.txt"
+        fb = dir_b / "doc.txt"
+        fa.write_text("content A", encoding="utf-8")  # same length as "content B"
+        fb.write_text("content B", encoding="utf-8")
+        # Force identical (mtime, size) fingerprints on both files.
+        same_ns = fa.stat().st_mtime_ns
+        os.utime(fb, ns=(same_ns, same_ns))
+
+        cache_dir = tmp_path / "cache"
+        RagIndex.compute_source_hashes([dir_a], cache_dir=cache_dir)
+        hashes_b = RagIndex.compute_source_hashes([dir_b], cache_dir=cache_dir)
+
+        import hashlib
+        assert hashes_b["doc.txt"] == hashlib.md5(b"content B").hexdigest()
+
+    def test_hash_cache_rehashes_after_mtime_change(self, tmp_path):
+        corpus_dir = tmp_path / "corpus"
+        corpus_dir.mkdir()
+        f = corpus_dir / "doc.txt"
+        f.write_text("version 1", encoding="utf-8")
+        cache_dir = tmp_path / "cache"
+
+        h1 = RagIndex.compute_source_hashes([corpus_dir], cache_dir=cache_dir)
+        f.write_text("version 2", encoding="utf-8")
+        h2 = RagIndex.compute_source_hashes([corpus_dir], cache_dir=cache_dir)
+        assert h1 != h2
+
 
 # ---------------------------------------------------------------------------
 # Save / load round-trip
