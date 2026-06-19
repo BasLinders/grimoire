@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-@dataclass
+@dataclass(slots=True)
 class IndexEntry:
     """Metadata stored for a single multi-token in the corpus index.
 
