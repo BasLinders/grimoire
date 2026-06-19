@@ -66,7 +66,7 @@ Dynamic int8 quantization via `torch.quantization.quantize_dynamic` / `torchao`.
 
 ### 4. Math → Python CLI (Tool Calling) ✓ done
 
-**Why fourth:** The D&D fine-tuning data already trains the model to decline arithmetic and defer to a tool. This closes that loop.
+**Why fourth:** The D&D fine-tuning data originally trained the model to decline arithmetic and defer to a tool that didn't exist yet. This closes that loop — `saga_v1.jsonl` and `saga_dnd_math.jsonl` were since rewritten to use `<TOOL:python>` tags instead of declining.
 
 - **Query-side detection:** `MathTool.detect()` identifies arithmetic in queries via regex (operators, percent-of, Unicode multiply/power); dice notation excluded (`grimoire_ai/tools/math_tool.py`)
 - **Safe evaluator:** pure `ast`-based visitor — no `eval()`, no subprocess needed; supports arithmetic operators, parentheses, and whitelisted math functions (sqrt, sin, cos, log, …)

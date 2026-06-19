@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -173,3 +174,58 @@ def test_validate_script_runs_without_error(tmp_path):
     )
     assert result.returncode == 0, f"Script failed:\n{result.stderr}"
     assert "All examples valid." in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Math tool consistency
+# ---------------------------------------------------------------------------
+#
+# The Saga datasets train arithmetic answers via <TOOL:python> tags, resolved
+# at inference time by MathTool.process_response(). Examples that instead
+# decline to compute or state an unverified number directly contradict that
+# mechanism (see docs/PLAN.md).
+
+_DND_MATH = Path(__file__).parent.parent / "scripts" / "finetune_data" / "saga_dnd_math.jsonl"
+
+_DECLINE_PHRASES = (
+    "i cannot reliably compute",
+    "i am not able to reliably compute",
+    "i cannot do that reliably",
+    "i cannot do dependably",
+    "cannot evaluate it for you",
+    "i should not attempt",
+    "leave the exact figure for you to work out",
+    "i will leave",
+)
+
+
+def _all_examples() -> list[dict]:
+    examples = []
+    for path in (_DATA, _DND_MATH):
+        examples.extend(
+            json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()
+        )
+    return examples
+
+
+def test_no_stale_decline_language():
+    """The model should use the math tool, not refuse to do arithmetic."""
+    for i, ex in enumerate(_all_examples(), 1):
+        text = ex["assistant"].lower()
+        for phrase in _DECLINE_PHRASES:
+            assert phrase not in text, f"Example {i} still declines arithmetic: {phrase!r}"
+
+
+def test_tool_tags_resolve_to_stated_results():
+    """Every <TOOL:python> expression must evaluate and match the text around it."""
+    from grimoire_ai.tools.math_tool import MathTool
+
+    tool = MathTool()
+    tag_re = re.compile(r"<TOOL:python>(.*?)</TOOL>")
+    found_any = False
+    for i, ex in enumerate(_all_examples(), 1):
+        for match in tag_re.finditer(ex["assistant"]):
+            found_any = True
+            resolved = tool.process_response(match.group(0))
+            assert "Error" not in resolved, f"Example {i}: tool tag failed to resolve: {resolved}"
+    assert found_any, "Expected at least one <TOOL:python> tag across the Saga math datasets."
