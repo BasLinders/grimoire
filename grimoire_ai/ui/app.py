@@ -1463,6 +1463,7 @@ def run_eval_ui(
                             except Exception:
                                 pass
                 else:
+                    on_progress(f"Building lexical corpus over {len(documents)} file(s) …")
                     from grimoire_ai.corpus.corpus import GrimoireCorpus
                     corpus = GrimoireCorpus()
                     for text, source in documents:
