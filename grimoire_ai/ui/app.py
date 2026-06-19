@@ -1435,9 +1435,10 @@ def run_eval_ui(
                         except Exception:
                             loaded_ok = False
                     if not loaded_ok:
+                        speed_hint = "this can take a while on CPU" if engine.device == "cpu" else "fast on GPU"
                         on_progress(
                             f"No cached index — embedding {len(documents)} file(s) "
-                            "(this can take a while on CPU) …"
+                            f"({speed_hint}) …"
                         )
                         retriever = engine.build_semantic_corpus(documents, stop_event=stop_event)
                         if index_dir:
