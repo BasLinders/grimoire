@@ -1510,8 +1510,10 @@ def run_eval_ui(
                     on_progress(f"Building lexical corpus over {len(documents)} file(s) …")
                     from grimoire_ai.corpus.corpus import GrimoireCorpus
                     corpus = GrimoireCorpus()
-                    for text, source in documents:
+                    for i, (text, source) in enumerate(documents):
                         corpus.add_text(text, source=source)
+                        if i == 0 or (i + 1) % 20 == 0 or i == len(documents) - 1:
+                            on_progress(f"  {i + 1}/{len(documents)} file(s) indexed …")
                     engine.corpus = corpus
                     on_progress(f"Lexical corpus loaded: {len(documents)} file(s).")
 
