@@ -129,7 +129,7 @@ def eval_retrieval(
             "top_passage_snippet": passages[:120] if passages else "",
         })
 
-        if (i + 1) % 5 == 0:
+        if i == 0 or (i + 1) % 5 == 0:
             _log(f"  {i+1}/{len(queries)} queries  hits so far: {hits}")
 
     # Use len(per_query) rather than len(queries) so a stop_event that cuts

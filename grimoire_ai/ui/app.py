@@ -54,14 +54,36 @@ from typing import Generator, Optional
 
 import gradio as gr
 
-# Per-tab stop events — replaced each time a new run starts.
-_stop_events: dict[str, Optional[threading.Event]] = {
-    "preprocess": None,
-    "pretrain": None,
-    "finetune": None,
-    "corpus": None,
-    "eval": None,
+# Per-tab stop events. Each tab can have more than one live run if an older
+# run's background thread is still alive when a new one starts (e.g. after a
+# page reload rather than a full process restart) — so each key maps to a
+# list of currently-active Events rather than a single overwritable slot.
+# Runs register themselves on start and unregister on completion via
+# _stream_task/_stream_training; stop_*() signals every event still
+# registered under a key, so an orphaned older run remains reachable.
+_stop_events: dict[str, list[threading.Event]] = {
+    "preprocess": [],
+    "pretrain": [],
+    "finetune": [],
+    "corpus": [],
+    "eval": [],
 }
+
+
+def _register_stop_event(key: str, ev: threading.Event) -> None:
+    _stop_events[key].append(ev)
+
+
+def _unregister_stop_event(key: str, ev: threading.Event) -> None:
+    events = _stop_events.get(key)
+    if events and ev in events:
+        events.remove(ev)
+
+
+def _signal_stop(key: str) -> None:
+    """Set every stop event still registered under ``key``."""
+    for ev in _stop_events.get(key, []):
+        ev.set()
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +179,9 @@ def _detect_device_profile() -> dict:
     )
 
 
-def _stream_training(train_fn) -> Generator[str, None, None]:
+def _stream_training(
+    train_fn, stop_key: Optional[str] = None, stop_event: Optional[threading.Event] = None,
+) -> Generator[str, None, None]:
     """Run a training function in a background thread and stream loss lines.
 
     ``train_fn`` receives ``on_log``, ``on_save``, ``on_done``, and ``on_eval``
@@ -180,7 +204,7 @@ def _stream_training(train_fn) -> Generator[str, None, None]:
 
         train_fn(on_log, on_save, on_done, on_eval)
 
-    yield from _stream_task(_wrapped)
+    yield from _stream_task(_wrapped, stop_key=stop_key, stop_event=stop_event)
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +222,6 @@ def run_preprocess(
     from grimoire_ai.llm.data.preprocessing import preprocess
 
     stop_event = threading.Event()
-    _stop_events["preprocess"] = stop_event
 
     n_sample: Optional[int] = int(bpe_sample_size) if bpe_sample_size else None
 
@@ -212,14 +235,12 @@ def run_preprocess(
             on_progress=on_progress,
         )
 
-    yield from _wrap_with_buttons(_stream_task(_task))
+    yield from _wrap_with_buttons(_stream_task(_task, stop_key="preprocess", stop_event=stop_event))
 
 
 def stop_preprocess() -> None:
-    """Signal the running preprocess task to stop."""
-    ev = _stop_events.get("preprocess")
-    if ev is not None:
-        ev.set()
+    """Signal all running preprocess tasks to stop."""
+    _signal_stop("preprocess")
 
 
 # ---------------------------------------------------------------------------
@@ -318,7 +339,6 @@ def run_pretrain(
     from grimoire_ai.llm.training.trainer import Trainer
 
     stop_event = threading.Event()
-    _stop_events["pretrain"] = stop_event
     resume = resume_from.strip() or None
 
     def _train(on_log, on_save, on_done, on_eval):
@@ -360,14 +380,12 @@ def run_pretrain(
             stop_event=stop_event,
         ).train(resume_from=resume)
 
-    yield from _wrap_with_buttons(_stream_training(_train))
+    yield from _wrap_with_buttons(_stream_training(_train, stop_key="pretrain", stop_event=stop_event))
 
 
 def stop_pretrain() -> None:
-    """Signal the running pre-training loop to stop after the current step."""
-    ev = _stop_events.get("pretrain")
-    if ev is not None:
-        ev.set()
+    """Signal all running pre-training loops to stop after their current step."""
+    _signal_stop("pretrain")
 
 
 # ---------------------------------------------------------------------------
@@ -412,7 +430,6 @@ def run_finetune(
     from grimoire_ai.llm.training.trainer import Trainer
 
     stop_event = threading.Event()
-    _stop_events["finetune"] = stop_event
     resume = resume_from.strip() or None
     pretrain_ckpt = (pretrain_ckpt or "").strip()
     data_path = (data_path or "").strip()
@@ -502,14 +519,12 @@ def run_finetune(
             _step, _elapsed = _done_info[0] if _done_info else (int(total_steps), 0.0)
             on_save(_step, _elapsed)
 
-    yield from _wrap_with_buttons(_stream_training(_train))
+    yield from _wrap_with_buttons(_stream_training(_train, stop_key="finetune", stop_event=stop_event))
 
 
 def stop_finetune() -> None:
-    """Signal the running fine-tuning loop to stop after the current step."""
-    ev = _stop_events.get("finetune")
-    if ev is not None:
-        ev.set()
+    """Signal all running fine-tuning loops to stop after their current step."""
+    _signal_stop("finetune")
 
 
 # ---------------------------------------------------------------------------
@@ -530,17 +545,34 @@ def _wrap_with_buttons(gen: Generator) -> Generator[tuple, None, None]:
     yield log_text, gr.update(interactive=True), gr.update(interactive=False)
 
 
-def _stream_task(task_fn) -> Generator[str, None, None]:
+_WATCHDOG_INTERVAL_S = 30.0
+
+
+def _stream_task(
+    task_fn, stop_key: Optional[str] = None, stop_event: Optional[threading.Event] = None,
+) -> Generator[str, None, None]:
     """Run ``task_fn(on_progress)`` in a background thread and stream messages.
 
     ``task_fn`` receives a single ``on_progress(msg: str)`` callback.
     Yields the full accumulated log so the Gradio Textbox always shows
     the complete history.
+
+    When ``stop_key``/``stop_event`` are given, the event is registered under
+    that key for the duration of the run (see ``_stop_events``) and
+    unregistered once the task finishes, so ``stop_*()`` can always reach it
+    even if a previous run under the same key is still alive.
+
+    A watchdog injects a log line if no progress message arrives for
+    ``_WATCHDOG_INTERVAL_S`` seconds, so a genuine hang is visibly distinct
+    from a slow-but-working run instead of both looking like a static log.
     """
     log_q: queue.Queue = queue.Queue()
 
     def on_progress(msg: str) -> None:
         log_q.put(msg)
+
+    if stop_key and stop_event is not None:
+        _register_stop_event(stop_key, stop_event)
 
     def _run() -> None:
         try:
@@ -553,20 +585,36 @@ def _stream_task(task_fn) -> Generator[str, None, None]:
     threading.Thread(target=_run, daemon=True).start()
 
     log_text = ""
-    while True:
-        try:
-            msg = log_q.get(timeout=0.5)
-        except queue.Empty:
-            yield log_text
-            continue
+    last_progress = time.time()
+    next_watchdog = _WATCHDOG_INTERVAL_S
+    try:
+        while True:
+            try:
+                msg = log_q.get(timeout=0.5)
+            except queue.Empty:
+                silence = time.time() - last_progress
+                if silence >= next_watchdog:
+                    log_text += (
+                        f"\n  … no progress for {int(silence)}s — "
+                        f"still running (Stop remains available) …\n"
+                    )
+                    next_watchdog += _WATCHDOG_INTERVAL_S
+                yield log_text
+                continue
 
-        if msg is None:
-            log_text += "\nDone.\n"
-            yield log_text
-            break
+            last_progress = time.time()
+            next_watchdog = _WATCHDOG_INTERVAL_S
 
-        log_text += msg + "\n"
-        yield log_text
+            if msg is None:
+                log_text += "\nDone.\n"
+                yield log_text
+                break
+
+            log_text += msg + "\n"
+            yield log_text
+    finally:
+        if stop_key and stop_event is not None:
+            _unregister_stop_event(stop_key, stop_event)
 
 
 def run_ingest(
@@ -659,7 +707,6 @@ def run_build_index(
     vocab_path = vocab_path.strip()
 
     stop_event = threading.Event()
-    _stop_events["corpus"] = stop_event
 
     def _task(on_progress):
         p = Path(corpus_dir)
@@ -698,14 +745,12 @@ def run_build_index(
             f"  Passages: {retriever.size}  |  Backend: {backend}"
         )
 
-    yield from _wrap_with_buttons(_stream_task(_task))
+    yield from _wrap_with_buttons(_stream_task(_task, stop_key="corpus", stop_event=stop_event))
 
 
 def stop_build_index() -> None:
-    """Signal the index build task to stop."""
-    ev = _stop_events.get("corpus")
-    if ev is not None:
-        ev.set()
+    """Signal all running index build tasks to stop."""
+    _signal_stop("corpus")
 
 
 def _toggle_theme(current: str) -> tuple[str, str]:
@@ -1403,7 +1448,6 @@ def run_eval_ui(
         return
 
     stop_event = threading.Event()
-    _stop_events["eval"] = stop_event
 
     def _task(on_progress):
         on_progress("Loading model …")
@@ -1463,6 +1507,7 @@ def run_eval_ui(
                             except Exception:
                                 pass
                 else:
+                    on_progress(f"Building lexical corpus over {len(documents)} file(s) …")
                     from grimoire_ai.corpus.corpus import GrimoireCorpus
                     corpus = GrimoireCorpus()
                     for text, source in documents:
@@ -1480,14 +1525,12 @@ def run_eval_ui(
             stop_event=stop_event,
         )
 
-    yield from _wrap_with_buttons(_stream_task(_task))
+    yield from _wrap_with_buttons(_stream_task(_task, stop_key="eval", stop_event=stop_event))
 
 
 def stop_eval() -> None:
-    """Signal the running evaluation task to stop."""
-    ev = _stop_events.get("eval")
-    if ev is not None:
-        ev.set()
+    """Signal all running evaluation tasks to stop."""
+    _signal_stop("eval")
 
 
 # ---------------------------------------------------------------------------

@@ -188,7 +188,7 @@ def eval_quiz(
             "pass": passed,
         })
 
-        if (i + 1) % 5 == 0 or i == len(examples) - 1:
+        if i == 0 or (i + 1) % 5 == 0 or i == len(examples) - 1:
             _log(
                 f"  {i+1}/{len(examples)}  passes: {passes}  "
                 f"kw_recall: {total_kw_recall/(i+1):.2%}"
