@@ -870,6 +870,16 @@ _FT_EPOCHS_DEFAULT = 6
 # at the full-fine-tune tiers (4 epochs, 28 steps) showed flat, noisy loss
 # with no learning trend, i.e. underfitting, not overfitting. LoRA gets
 # roughly double the epochs of the full fine-tune tiers.
+#
+# CAVEAT (eval suite, 111-example saga.jsonl run): this tier's own
+# suggestion (8 epochs -> 56 steps) was later found to regress perplexity,
+# retrieval hit-rate, and quiz pass-rate well below the base checkpoint,
+# while a 12-step run on the same data (the tier the calc would pick for
+# ~31 examples) evaluated roughly on par with base. So for this dataset
+# size the assumption that doubled epochs stays safely underfitting-biased
+# did not hold — the actual overfitting onset lies somewhere between 12
+# and 56 steps. Treat these tiers as a starting point, not a guarantee;
+# eval before trusting a checkpoint produced from this suggestion.
 _FT_LORA_EPOCH_TIERS: tuple[tuple[int, int], ...] = (
     (20, 4),
     (100, 6),
