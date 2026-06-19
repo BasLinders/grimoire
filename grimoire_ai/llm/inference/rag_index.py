@@ -152,14 +152,23 @@ class RagIndex:
             new_cache[key] = {"stamp": stamp, "md5": digest}
             return digest
 
+        # The stat cache is keyed by resolved absolute path, not by basename:
+        # the returned `hashes` dict groups files by `f.name` (so corpus_dirs
+        # containing same-named files collapse to one entry, as before this
+        # cache existed), but two *different* files that happen to share a
+        # name across different corpus_dirs must never share a cache entry —
+        # otherwise a coincidental (mtime, size) match on one file could
+        # return a cached digest that actually belongs to the other file.
         hashes: "dict[str, str]" = {}
         for d in corpus_dirs:
             for f in sorted(Path(d).glob("*.txt")):
-                hashes[f.name] = _hash_with_cache(f, f.name)
+                hashes[f.name] = _hash_with_cache(f, str(f.resolve()))
         if checkpoint_path and Path(checkpoint_path).is_file():
-            hashes["__checkpoint__"] = _hash_with_cache(Path(checkpoint_path), "__checkpoint__")
+            ckpt = Path(checkpoint_path)
+            hashes["__checkpoint__"] = _hash_with_cache(ckpt, str(ckpt.resolve()))
         if lora_path and Path(lora_path).is_file():
-            hashes["__lora__"] = _hash_with_cache(Path(lora_path), "__lora__")
+            lora = Path(lora_path)
+            hashes["__lora__"] = _hash_with_cache(lora, str(lora.resolve()))
 
         if cache_path:
             try:

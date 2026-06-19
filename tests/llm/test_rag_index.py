@@ -149,6 +149,31 @@ class TestStaleness:
         h2 = RagIndex.compute_source_hashes([corpus_dir], cache_dir=cache_dir)
         assert h2 == h1
 
+    def test_hash_cache_distinguishes_same_named_files_in_different_dirs(self, tmp_path):
+        """Two different files sharing a basename across corpus_dirs must not
+        share a stat-cache entry: a coincidental (mtime, size) match on one
+        must never return a digest that actually belongs to the other."""
+        import os
+
+        dir_a = tmp_path / "a"
+        dir_b = tmp_path / "b"
+        dir_a.mkdir()
+        dir_b.mkdir()
+        fa = dir_a / "doc.txt"
+        fb = dir_b / "doc.txt"
+        fa.write_text("content A", encoding="utf-8")  # same length as "content B"
+        fb.write_text("content B", encoding="utf-8")
+        # Force identical (mtime, size) fingerprints on both files.
+        same_ns = fa.stat().st_mtime_ns
+        os.utime(fb, ns=(same_ns, same_ns))
+
+        cache_dir = tmp_path / "cache"
+        RagIndex.compute_source_hashes([dir_a], cache_dir=cache_dir)
+        hashes_b = RagIndex.compute_source_hashes([dir_b], cache_dir=cache_dir)
+
+        import hashlib
+        assert hashes_b["doc.txt"] == hashlib.md5(b"content B").hexdigest()
+
     def test_hash_cache_rehashes_after_mtime_change(self, tmp_path):
         corpus_dir = tmp_path / "corpus"
         corpus_dir.mkdir()

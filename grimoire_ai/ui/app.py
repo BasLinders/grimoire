@@ -1406,7 +1406,10 @@ def run_eval_ui(
         on_progress(f"Model loaded on {engine.device}  ({engine.model.num_parameters():,} params)")
 
         if lora_path:
-            engine.load_lora(lora_path)
+            try:
+                engine.load_lora(lora_path)
+            except Exception as exc:
+                raise ValueError(f"Failed to load LoRA adapter: {exc}") from exc
             on_progress(f"LoRA adapter loaded: {lora_path}")
 
         if corpus_dir and Path(corpus_dir).is_dir():
