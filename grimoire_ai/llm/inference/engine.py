@@ -31,7 +31,7 @@ With corpus grounding
 """
 
 import threading
-from typing import TYPE_CHECKING, Iterable, Optional, Union
+from typing import TYPE_CHECKING, Callable, Iterable, Optional, Union
 
 import torch
 
@@ -362,6 +362,7 @@ class InferenceEngine:
         batch_size: int = 32,
         attach: bool = True,
         stop_event: Optional[threading.Event] = None,
+        on_progress: Optional[Callable[[str], None]] = None,
     ) -> SemanticRetriever:
         """Build a semantic retriever from documents and (optionally) attach it.
 
@@ -381,6 +382,8 @@ class InferenceEngine:
             stop_event: Forwarded to ``SemanticRetriever.index`` — when set,
                 embedding stops before the next batch, leaving unembedded
                 passages queued for a future ``index()`` call.
+            on_progress: Forwarded to ``SemanticRetriever.index`` — periodic
+                progress messages during embedding.
 
         Returns:
             The populated, indexed ``SemanticRetriever``.
@@ -392,7 +395,7 @@ class InferenceEngine:
             else:
                 text, source = doc, None
             retriever.add_text(text, source=source)
-        retriever.index(batch_size=batch_size, stop_event=stop_event)
+        retriever.index(batch_size=batch_size, stop_event=stop_event, on_progress=on_progress)
 
         if attach:
             self.corpus = retriever

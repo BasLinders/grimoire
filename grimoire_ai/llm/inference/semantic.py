@@ -211,7 +211,12 @@ class SemanticRetriever:
             self._pending.append((chunk, source))
         return len(chunks)
 
-    def index(self, batch_size: int = 32, stop_event: Optional[threading.Event] = None) -> int:
+    def index(
+        self,
+        batch_size: int = 32,
+        stop_event: Optional[threading.Event] = None,
+        on_progress: Optional[Callable[[str], None]] = None,
+    ) -> int:
         """Embed all queued passages and build the searchable vector matrix.
 
         Safe to call repeatedly: passages queued since the last call are
@@ -223,6 +228,10 @@ class SemanticRetriever:
                 Already-embedded passages are kept; the rest stay queued in
                 ``self._pending`` so a later call to ``index()`` resumes
                 rather than re-embedding everything.
+            on_progress: Optional callback invoked periodically with a
+                progress message. Embedding many passages can take a while
+                with no other observable feedback, so this is reported every
+                few batches rather than only at the start/end.
 
         Returns:
             The total number of indexed passages after this call.
@@ -230,15 +239,18 @@ class SemanticRetriever:
         if self._pending:
             texts = [c for c, _ in self._pending]
             sources = [s for _, s in self._pending]
+            n_batches = (len(texts) + batch_size - 1) // batch_size
 
             new_vectors: list[torch.Tensor] = []
             n_embedded = 0
-            for start in range(0, len(texts), batch_size):
+            for batch_i, start in enumerate(range(0, len(texts), batch_size)):
                 if stop_event is not None and stop_event.is_set():
                     break
                 batch = texts[start : start + batch_size]
                 new_vectors.append(self._embed_fn(batch))
                 n_embedded = start + len(batch)
+                if on_progress is not None and (batch_i == 0 or (batch_i + 1) % 20 == 0 or batch_i + 1 == n_batches):
+                    on_progress(f"  embedded {n_embedded}/{len(texts)} passage(s) …")
 
             if new_vectors:
                 stacked = torch.cat(new_vectors, dim=0)

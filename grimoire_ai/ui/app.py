@@ -731,7 +731,7 @@ def run_build_index(
             raise ValueError(f"No .txt files found in {corpus_dir}")
         on_progress(f"Found {len(documents)} source file(s).  Embedding passages …")
 
-        retriever = engine.build_semantic_corpus(documents)
+        retriever = engine.build_semantic_corpus(documents, on_progress=on_progress)
         on_progress(f"Indexed {retriever.size} passage(s).  Saving index …")
 
         index_dir = p / ".semantic_index"
@@ -1475,10 +1475,9 @@ def run_eval_ui(
                     ]
                     # Embedding every passage in a large corpus from scratch is
                     # the slowest step in this pipeline (one forward pass per
-                    # batch, no progress callback inside build_semantic_corpus).
-                    # Reuse the same on-disk RagIndex + staleness check as the
-                    # Chat tab so re-running eval against an unchanged corpus
-                    # doesn't pay that cost every time.
+                    # batch). Reuse the same on-disk RagIndex + staleness check
+                    # as the Chat tab so re-running eval against an unchanged
+                    # corpus doesn't pay that cost every time.
                     index_dir = _semantic_index_dir([corpus_dir])
                     loaded_ok = False
                     if index_dir and _index_is_fresh(index_dir, [corpus_dir], checkpoint_path, lora_path):
@@ -1495,7 +1494,9 @@ def run_eval_ui(
                             f"No cached index — embedding {len(documents)} file(s) "
                             f"({speed_hint}) …"
                         )
-                        retriever = engine.build_semantic_corpus(documents, stop_event=stop_event)
+                        retriever = engine.build_semantic_corpus(
+                            documents, stop_event=stop_event, on_progress=on_progress,
+                        )
                         if index_dir:
                             try:
                                 from grimoire_ai.llm.inference.rag_index import RagIndex
