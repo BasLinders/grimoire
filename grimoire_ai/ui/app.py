@@ -1348,6 +1348,7 @@ def run_eval_ui(
     semantic: bool,
     quantize: bool,
     max_ppl_batches: int,
+    device: str = "Auto",
 ) -> Generator[tuple, None, None]:
     """Run the evaluation harness and stream progress."""
     from grimoire_ai.llm.inference.engine import InferenceEngine
@@ -1358,6 +1359,7 @@ def run_eval_ui(
     corpus_dir = corpus_dir.strip()
     corpus_bin = corpus_bin.strip()
     quiz_path = quiz_path.strip()
+    device_arg = None if device == "Auto" else device.lower()
 
     if not checkpoint_path or not vocab_path:
         def _task(on_progress):
@@ -1374,8 +1376,9 @@ def run_eval_ui(
             checkpoint_path=checkpoint_path,
             tokenizer_path=vocab_path,
             quantize=quantize,
+            device=device_arg,
         )
-        on_progress(f"Model loaded  ({engine.model.num_parameters():,} params)")
+        on_progress(f"Model loaded on {engine.device}  ({engine.model.num_parameters():,} params)")
 
         if corpus_dir and Path(corpus_dir).is_dir():
             documents: list[tuple[str, str]] = []
@@ -2527,6 +2530,12 @@ def build_app() -> gr.Blocks:
                     precision=0,
                     info="0 = evaluate the full held-out split. 50 batches ≈ 30–60 s on CPU.",
                 )
+                ev_device = gr.Dropdown(
+                    choices=["Auto", "CPU", "CUDA"],
+                    value="Auto",
+                    label="Device",
+                    info="Auto picks CUDA if a GPU is available, otherwise CPU.",
+                )
             with gr.Row():
                 ev_run_btn  = gr.Button("Run evaluation", variant="primary")
                 ev_stop_btn = gr.Button("Stop", interactive=False, elem_classes=["stop-btn"])
@@ -2540,7 +2549,7 @@ def build_app() -> gr.Blocks:
                 fn=run_eval_ui,
                 inputs=[
                     ev_checkpoint, ev_vocab, ev_corpus_dir, ev_corpus_bin,
-                    ev_quiz, ev_semantic, ev_quantize, ev_max_ppl,
+                    ev_quiz, ev_semantic, ev_quantize, ev_max_ppl, ev_device,
                 ],
                 outputs=[ev_log, ev_run_btn, ev_stop_btn],
             )
