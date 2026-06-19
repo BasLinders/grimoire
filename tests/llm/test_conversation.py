@@ -73,6 +73,17 @@ def test_loads_examples(tokenizer: BytePairEncoder) -> None:
     assert len(ds) == 2
 
 
+def test_loads_examples_with_prompt_response_aliases(tokenizer: BytePairEncoder) -> None:
+    """``prompt``/``response`` keys (e.g. from other export tools) must load too."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _write_jsonl(tmp, [
+            {"prompt": "What is grapple?", "response": "It reduces speed to zero."},
+            {"prompt": "What is a fox?",   "response": "A quick brown animal."},
+        ])
+        ds = ConversationDataset(path, tokenizer)
+    assert len(ds) == 2
+
+
 def test_missing_file_raises() -> None:
     enc = BytePairEncoder()
     with pytest.raises(FileNotFoundError):

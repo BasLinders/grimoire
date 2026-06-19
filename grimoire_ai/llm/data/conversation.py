@@ -6,6 +6,10 @@ Each line of the JSONL file is a JSON object with the following fields:
      "assistant": "A grappled creature has its speed reduced to zero.",
      "context": "A grappled creature has its speed reduced to zero."}
 
+``"prompt"``/``"response"`` are also accepted as aliases for
+``"user"``/``"assistant"`` respectively, for compatibility with data
+exported from other tools.
+
 ``"context"`` is optional.  When present it is injected as the corpus
 context block between ``<SEP>`` markers, producing the same prompt format
 the model will see at inference:
@@ -80,8 +84,9 @@ class ConversationDataset(Dataset):
 
         Args:
             path: Path to a ``.jsonl`` file.  Each line must be valid JSON
-                with at least ``"user"`` and ``"assistant"`` string fields.
-                An optional ``"context"`` field may contain a corpus excerpt.
+                with at least ``"user"``/``"assistant"`` (or their
+                ``"prompt"``/``"response"`` aliases) string fields.  An
+                optional ``"context"`` field may contain a corpus excerpt.
             tokenizer: A trained ``BytePairEncoder``.  Must have a vocabulary
                 loaded before this constructor is called.
             max_seq_len: Hard limit on sequence length.  Sequences longer than
@@ -118,16 +123,19 @@ class ConversationDataset(Dataset):
         """Encode one JSONL object into (input_ids, target_ids).
 
         Args:
-            obj: Dict with ``"user"`` and ``"assistant"`` keys; optional
-                ``"context"`` key.
+            obj: Dict with ``"user"``/``"assistant"`` keys (or their
+                ``"prompt"``/``"response"`` aliases); optional ``"context"``
+                key.
             tokenizer: Trained BPE tokenizer.
 
         Returns:
             A ``(input_ids, target_ids)`` tuple of ``torch.long`` tensors,
             or ``None`` if the example is empty after encoding.
         """
-        user_ids = tokenizer.encode(obj.get("user", ""))
-        asst_ids = tokenizer.encode(obj.get("assistant", ""))
+        user_text = obj.get("user") or obj.get("prompt") or ""
+        asst_text = obj.get("assistant") or obj.get("response") or ""
+        user_ids = tokenizer.encode(user_text)
+        asst_ids = tokenizer.encode(asst_text)
         if not user_ids or not asst_ids:
             return None
 
