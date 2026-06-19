@@ -1467,11 +1467,12 @@ def run_eval_ui(
             on_progress(f"LoRA adapter loaded: {lora_path}")
 
         if corpus_dir and Path(corpus_dir).is_dir():
-            documents: list[tuple[str, str]] = []
-            for txt in sorted(Path(corpus_dir).glob("*.txt")):
-                documents.append((txt.read_text(encoding="utf-8"), txt.stem))
-            if documents:
+            txt_files = sorted(Path(corpus_dir).glob("*.txt"))
+            if txt_files:
                 if semantic:
+                    documents: list[tuple[str, str]] = [
+                        (txt.read_text(encoding="utf-8"), txt.stem) for txt in txt_files
+                    ]
                     # Embedding every passage in a large corpus from scratch is
                     # the slowest step in this pipeline (one forward pass per
                     # batch, no progress callback inside build_semantic_corpus).
@@ -1507,15 +1508,20 @@ def run_eval_ui(
                             except Exception:
                                 pass
                 else:
-                    on_progress(f"Building lexical corpus over {len(documents)} file(s) …")
+                    # Read and index one file at a time rather than loading every
+                    # document's full text into memory up front — on large corpora
+                    # (thousands of files) holding the whole batch alongside the
+                    # growing index can exhaust RAM and force the OS to swap,
+                    # which looks identical to a hang from the UI.
+                    on_progress(f"Building lexical corpus over {len(txt_files)} file(s) …")
                     from grimoire_ai.corpus.corpus import GrimoireCorpus
                     corpus = GrimoireCorpus()
-                    for i, (text, source) in enumerate(documents):
-                        corpus.add_text(text, source=source)
-                        if i == 0 or (i + 1) % 20 == 0 or i == len(documents) - 1:
-                            on_progress(f"  {i + 1}/{len(documents)} file(s) indexed …")
+                    for i, txt in enumerate(txt_files):
+                        corpus.add_text(txt.read_text(encoding="utf-8"), source=txt.stem)
+                        if i == 0 or (i + 1) % 20 == 0 or i == len(txt_files) - 1:
+                            on_progress(f"  {i + 1}/{len(txt_files)} file(s) indexed …")
                     engine.corpus = corpus
-                    on_progress(f"Lexical corpus loaded: {len(documents)} file(s).")
+                    on_progress(f"Lexical corpus loaded: {len(txt_files)} file(s).")
 
         run_eval(
             engine=engine,
