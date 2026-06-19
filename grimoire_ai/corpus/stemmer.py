@@ -37,6 +37,11 @@ class GrimoireStemmer:
     def __init__(self) -> None:
         """Initialises the GrimoireStemmer with a Porter stemmer instance."""
         self._stemmer = PorterStemmer()
+        # NLTK's PorterStemmer is pure Python and re-derives the same suffix
+        # rules on every call. Natural-language text is highly Zipfian — a
+        # small vocabulary accounts for most token occurrences — so caching
+        # per-instance cuts repeated work dramatically on large corpora.
+        self._cache: dict[str, str] = {}
 
     def stem(self, word: str) -> str:
         """Reduce a single word to its stem, preserving acronyms.
@@ -60,9 +65,12 @@ class GrimoireStemmer:
             >>> s.stem("AC")
             'ac'
         """
-        if self._ACRONYM_RE.match(word):
-            return word.lower()
-        return self._stemmer.stem(word.lower())
+        cached = self._cache.get(word)
+        if cached is not None:
+            return cached
+        result = word.lower() if self._ACRONYM_RE.match(word) else self._stemmer.stem(word.lower())
+        self._cache[word] = result
+        return result
 
     def tokenize_and_stem(self, text: str) -> list[str]:
         """Extract tokens from raw text and stem each one.
