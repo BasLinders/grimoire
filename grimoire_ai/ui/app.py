@@ -2524,7 +2524,7 @@ def build_app() -> gr.Blocks:
                 interactive=False,
                 autoscroll=True,
             )
-            ev_run_btn.click(
+            ev_event = ev_run_btn.click(
                 fn=run_eval_ui,
                 inputs=[
                     ev_checkpoint, ev_vocab, ev_corpus_dir, ev_corpus_bin,
@@ -2532,6 +2532,7 @@ def build_app() -> gr.Blocks:
                 ],
                 outputs=[ev_log, ev_run_btn, ev_stop_btn],
             )
+            ev_stop_btn.click(fn=None, cancels=[ev_event])
 
         # ----------------------------------------------------------------
         with gr.Tab("Ingest"):
