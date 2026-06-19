@@ -2492,8 +2492,9 @@ def build_app() -> gr.Blocks:
                 ev_stop_btn = gr.Button("Stop", interactive=False, elem_classes=["stop-btn"])
             ev_log = gr.Textbox(
                 label="Evaluation log",
-                lines=20,
+                lines=24,
                 interactive=False,
+                autoscroll=True,
             )
             ev_run_btn.click(
                 fn=run_eval_ui,
