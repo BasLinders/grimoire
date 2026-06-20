@@ -408,7 +408,9 @@ def run_finetune(
     val_split: float,
     eval_every: int,
     eval_batches: int,
-    max_seq_len: int,
+    early_stop_enabled: bool = True,
+    early_stop_patience: int = 2,
+    max_seq_len: int = 512,
     lora_rank: int = 0,
     lora_alpha: float = 16.0,
     lora_targets: str = "q_proj,v_proj",
@@ -419,6 +421,13 @@ def run_finetune(
     When ``val_split`` is greater than 0, that fraction of the examples is
     randomly held out (seeded, no leakage) and a validation loss is logged
     every ``eval_every`` steps.  ``val_split = 0`` disables evaluation.
+
+    When ``early_stop_enabled`` is set, training stops once validation loss
+    fails to improve beyond bootstrap sampling noise for ``early_stop_patience``
+    consecutive evals, instead of always running the full ``total_steps`` —
+    this removes the need to hand-pick a step count from epoch math. It
+    requires a validation set; if ``val_split`` is 0 a 10% split is used
+    automatically so early stopping has data to act on.
     """
     import torch
     from grimoire_ai.llm.data.conversation import ConversationDataset
@@ -458,7 +467,12 @@ def run_finetune(
             tokenizer=tokenizer,
             max_seq_len=min(max_seq_len, config.max_seq_len),
         )
-        train_dataset, val_dataset = split_dataset(dataset, float(val_split))
+        es_enabled = bool(early_stop_enabled)
+        es_patience = max(1, int(early_stop_patience or 1))
+        effective_val_split = float(val_split)
+        if es_enabled and effective_val_split <= 0:
+            effective_val_split = 0.1
+        train_dataset, val_dataset = split_dataset(dataset, effective_val_split)
 
         # LoRA: freeze base weights, wrap target layers.
         lora_rank_int = int(lora_rank)
@@ -496,6 +510,8 @@ def run_finetune(
             save_every=save_every,
             eval_every=int(eval_every),
             eval_batches=int(eval_batches),
+            early_stop_enabled=es_enabled,
+            early_stop_patience=es_patience,
             checkpoint_dir=checkpoint_dir,
             device=device,
             on_log=on_log,
@@ -2442,6 +2458,20 @@ def build_app() -> gr.Blocks:
                     label="Eval batches", value=0, precision=0,
                     info="Max validation batches averaged per eval pass. 0 uses the whole held-out set (recommended for small fine-tune sets).",
                 )
+            with gr.Row():
+                ft_early_stop = gr.Checkbox(
+                    label="Auto-stop on validation plateau", value=True,
+                    info=(
+                        "Stops once validation loss stops improving beyond bootstrap "
+                        "sampling noise for N consecutive evals — removes the need to "
+                        "hand-pick a total step count. Falls back to a 10% validation "
+                        "split automatically if 'Validation split' above is 0."
+                    ),
+                )
+                ft_early_stop_patience = gr.Number(
+                    label="Patience (evals)", value=2, precision=0,
+                    info="Consecutive non-improving evals tolerated before stopping.",
+                )
             ft_agent_name = gr.Textbox(
                 label="Agent name",
                 placeholder="saga",
@@ -2517,6 +2547,7 @@ def build_app() -> gr.Blocks:
                     ft_steps, ft_warmup, ft_lr,
                     ft_batch, ft_accum, ft_log, ft_save,
                     ft_val_split, ft_eval_every, ft_eval_batches,
+                    ft_early_stop, ft_early_stop_patience,
                     ft_max_seq,
                     ft_lora_rank, ft_lora_alpha, ft_lora_targets,
                     ft_agent_name,
