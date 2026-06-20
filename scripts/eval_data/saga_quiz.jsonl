@@ -18,3 +18,32 @@
 {"user": "How does disadvantage affect the chance of a natural 20?", "assistant": "With disadvantage the chance of rolling a natural 20 drops from 5 percent to 0.25 percent (1/400), since both dice must be checked and you use the lower.", "keywords": ["0.25", "lower"]}
 {"user": "What is the difference between a saving throw and an ability check?", "assistant": "A saving throw is reactive, made to resist a threat. An ability check is active, made to accomplish a task.", "keywords": ["reactive", "active"]}
 {"user": "At what levels does the proficiency bonus increase?", "assistant": "The proficiency bonus starts at +2 (levels 1-4), increases to +3 (levels 5-8), then by +1 every four levels, reaching +6 at levels 17-20.", "keywords": ["+2", "+3", "+6"]}
+{"user": "Who orchestrated the ambush on the Triboar Trail?", "assistant": "The ambush was orchestrated by the Black Spider to steal Gundren's map.", "keywords": ["Black Spider", "map"]}
+{"user": "Who is Yeemik and what does he offer the party?", "assistant": "Yeemik is a goblin lieutenant who offers to trade Sildar's safety if the party spares him.", "keywords": ["Yeemik", "Sildar"]}
+{"user": "Where is King Grol's stronghold located?", "assistant": "King Grol rules from Cragmaw Castle, a ruined fortress north of Phandalin.", "keywords": ["Cragmaw Castle", "north"]}
+{"user": "Who is held captive at Cragmaw Castle?", "assistant": "Gundren Rockseeker is held captive at Cragmaw Castle on the Black Spider's orders.", "keywords": ["Gundren", "captive"]}
+{"user": "Who is Mormesk in Wave Echo Cave?", "assistant": "Mormesk is a wraith, the undead remnant of a wizard who died defending Wave Echo Cave.", "keywords": ["Mormesk", "wraith"]}
+{"user": "What does a wraith's attack do besides dealing damage?", "assistant": "A wraith's attack reduces the target's maximum hit points by the damage dealt.", "keywords": ["maximum", "hit points"]}
+{"user": "What does the Aggressive trait let an orc do?", "assistant": "Aggressive lets an orc move toward a hostile creature as a bonus action without provoking opportunity attacks.", "keywords": ["bonus action", "opportunity"]}
+{"user": "What does Pack Tactics grant a creature?", "assistant": "Pack Tactics grants advantage on an attack roll if an ally is within 5 feet of the same target.", "keywords": ["advantage", "5 feet"]}
+{"user": "What happens on a failed save against a ghoul's claw attack?", "assistant": "A failed save against a ghoul's claw paralyzes the target.", "keywords": ["paralyzes", "ghoul"]}
+{"user": "What two attacks make up an owlbear's Multiattack?", "assistant": "An owlbear's Multiattack combines a beak bite and a claw rake.", "keywords": ["beak", "claw"]}
+{"user": "What does Martial Advantage grant a hobgoblin?", "assistant": "Martial Advantage grants a hobgoblin bonus damage when an ally is within 5 feet of the target.", "keywords": ["bonus damage", "5 feet"]}
+{"user": "What happens when a creature is restrained by a giant spider's web?", "assistant": "A restrained creature's speed becomes 0 and attacks against it have advantage.", "keywords": ["speed", "advantage"]}
+{"user": "Who is the central villain of Curse of Strahd?", "assistant": "Strahd von Zarovich, an ancient vampire who rules the demiplane of Barovia.", "keywords": ["Strahd", "Barovia"]}
+{"user": "Why can't people simply leave Barovia?", "assistant": "The mists surrounding Barovia redirect travelers back inward no matter which way they go.", "keywords": ["mists", "redirect"]}
+{"user": "Who performs the Tarokka card reading in Curse of Strahd?", "assistant": "Madam Eva, a Vistani fortune teller, performs the Tarokka reading.", "keywords": ["Madam Eva", "Tarokka"]}
+{"user": "How much gold is hidden in Waterdeep in Dragon Heist?", "assistant": "500,000 gold pieces, embezzled by Dagult Neverember, is hidden somewhere in Waterdeep.", "keywords": ["500,000", "Neverember"]}
+{"user": "Name one of the four villain factions in Dragon Heist.", "assistant": "The Xanathar Guild, led by the beholder Xanathar, is one of the four villain factions.", "keywords": ["Xanathar"]}
+{"user": "What does the death curse prevent?", "assistant": "The death curse prevents anyone who has been resurrected from healing beyond a small fraction of their hit points.", "keywords": ["death curse", "resurrected"]}
+{"user": "Who built the Tomb of the Nine Gods?", "assistant": "Acererak, an ancient lich, built the Tomb of the Nine Gods.", "keywords": ["Acererak", "lich"]}
+{"user": "What device causes the death curse in Tomb of Annihilation?", "assistant": "The Soulmonger, hidden in the Tomb of the Nine Gods, causes the death curse.", "keywords": ["Soulmonger"]}
+{"user": "What is the Ordning in Storm King's Thunder?", "assistant": "The Ordning is the rigid social hierarchy among giant-kind, with storm giants at the top.", "keywords": ["Ordning", "storm giants"]}
+{"user": "Who has cursed Icewind Dale with endless night?", "assistant": "Auril, the Frostmaiden, an evil deity of winter, has cursed the region with endless night.", "keywords": ["Auril", "Frostmaiden"]}
+{"user": "What happens to the city of Elturel in Descent into Avernus?", "assistant": "Elturel is dragged down into Avernus, the first layer of the Nine Hells.", "keywords": ["Elturel", "Avernus"]}
+{"user": "Who rules Avernus in Descent into Avernus?", "assistant": "Zariel, an archdevil and former fallen celestial, rules Avernus.", "keywords": ["Zariel", "archdevil"]}
+{"user": "What ritual does the Cult of the Dragon pursue in Tyranny of Dragons?", "assistant": "The Cult of the Dragon pursues a ritual to summon the goddess Tiamat into the material plane.", "keywords": ["Tiamat", "ritual"]}
+{"user": "How many magic items can a character be attuned to at once?", "assistant": "A character can be attuned to a maximum of three magic items at once.", "keywords": ["three", "attuned"]}
+{"user": "How much damage does a creature take per 10 feet fallen?", "assistant": "A falling creature takes 1d6 bludgeoning damage for every 10 feet fallen.", "keywords": ["1d6", "10 feet"]}
+{"user": "Does Counterspell automatically work against a 3rd-level spell?", "assistant": "Yes, Counterspell automatically succeeds against a spell of 3rd level or lower.", "keywords": ["automatically", "3rd level"]}
+{"user": "What ability score minimum is typically needed to multiclass into a class?", "assistant": "Multiclassing typically requires a minimum score of 13 in the class's key ability.", "keywords": ["13"]}
