@@ -16,20 +16,39 @@ Loss
 loss): cosine-similarity logits between the two views, cross-entropy against
 the identity permutation (row ``i`` should match column ``i``).
 
+LoRA
+----
+``EmbedTuner`` always optimises ``model.parameters()`` filtered to
+``requires_grad=True``. Calling ``model.add_lora_adapters(...)`` before
+constructing the tuner freezes the base weights and leaves only the
+adapter trainable — no other change needed here. The resulting ``.lora``
+file is meant to be loaded into a *separate* model instance used only for
+embedding (e.g. as ``SemanticRetriever``'s ``embed_fn``), not into the
+instance used for chat generation: the adapter reroutes the same
+``q_proj``/``v_proj`` weights used by ``forward()``, so applying it to the
+generation model would change generation output too, defeating the point
+of using LoRA here.
+
 Scope
 -----
-This is the minimal loop needed to validate the loss against a real model:
-no checkpointing, no LoRA, no corpus loading. Those land in later phases —
-this module trains all of ``model.parameters()`` directly, which the LoRA
-phase will narrow to adapter-only parameters.
+``PassageDataset``/``collate_passages`` tokenize corpus passages the same
+way ``InferenceEngine.embed`` does (``BOS`` prefix, truncate, pad with
+``PAD_ID``) so a checkpoint trained here behaves identically when consumed
+through the normal inference path. Corpus *loading* (reading files, calling
+``chunk_text``) stays in the CLI script — this module only tokenizes
+whatever passage strings it's given, so it has no opinion on where they
+came from.
 """
 
-from typing import Optional
+from typing import Callable, Iterable, Optional
 
 import torch
 import torch.nn.functional as F
+from torch.utils.data import Dataset
 
 from grimoire_ai.llm.model.transformer import GrimoireTransformer
+from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
+from grimoire_ai.llm.tokenizer.special_tokens import BOS_ID, PAD_ID
 
 
 def contrastive_loss(
@@ -59,6 +78,67 @@ def contrastive_loss(
     return F.cross_entropy(sim, labels)
 
 
+class PassageDataset(Dataset):
+    """Tokenized corpus passages, ready for contrastive training batches.
+
+    Tokenization mirrors ``InferenceEngine.embed`` exactly (``BOS`` prefix,
+    truncate to ``max_seq_len``) so a LoRA adapter trained here sees the same
+    token layout it will see at inference time through that method.
+    """
+
+    def __init__(
+        self,
+        passages: list[str],
+        tokenizer: BytePairEncoder,
+        max_seq_len: int,
+    ) -> None:
+        """Tokenize every passage up front.
+
+        Args:
+            passages: Passage strings (e.g. from ``chunk_text``). Order is
+                preserved; no domain knowledge about their content is used.
+            tokenizer: A loaded ``BytePairEncoder``.
+            max_seq_len: Sequences longer than this (including the ``BOS``
+                token) are truncated.
+        """
+        self._encoded: list[list[int]] = []
+        for text in passages:
+            ids = [BOS_ID] + tokenizer.encode(text)[: max_seq_len - 1]
+            self._encoded.append(ids)
+
+    def __len__(self) -> int:
+        return len(self._encoded)
+
+    def __getitem__(self, idx: int) -> torch.Tensor:
+        return torch.tensor(self._encoded[idx], dtype=torch.long)
+
+
+def collate_passages(batch: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+    """Right-pad a batch of token-id sequences with ``PAD_ID``.
+
+    Right-padding (not the left-padding ``PaddingCollator`` uses for causal
+    LM training) is fine here: ``_embed_pooled`` masks padded positions out
+    of the mean pool rather than feeding them through autoregressive
+    attention, so there is no "padding mid-context" hazard to avoid.
+
+    Args:
+        batch: A list of variable-length 1-D token-id tensors, as returned
+            by ``PassageDataset.__getitem__``.
+
+    Returns:
+        ``(input_ids, attention_mask)``, both of shape
+        ``(batch_size, max_len)``, where ``max_len`` is the longest sequence
+        in this batch.
+    """
+    width = max(seq.size(0) for seq in batch)
+    input_ids = torch.full((len(batch), width), PAD_ID, dtype=torch.long)
+    attention_mask = torch.zeros((len(batch), width), dtype=torch.long)
+    for row, seq in enumerate(batch):
+        input_ids[row, : seq.size(0)] = seq
+        attention_mask[row, : seq.size(0)] = 1
+    return input_ids, attention_mask
+
+
 class EmbedTuner:
     """Runs contrastive training steps against a ``GrimoireTransformer``.
 
@@ -66,7 +146,11 @@ class EmbedTuner:
         model: The model being tuned, moved to ``device``.
         device: ``"cuda"`` or ``"cpu"``.
         temperature: Forwarded to ``contrastive_loss`` on every step.
-        optimizer: ``AdamW`` over ``model.parameters()``.
+        optimizer: ``AdamW`` over the model's trainable parameters — every
+            parameter with ``requires_grad=True`` at construction time. Call
+            ``model.add_lora_adapters(...)`` before constructing this tuner
+            to train only a LoRA adapter instead of the full model; nothing
+            else needs to change.
     """
 
     def __init__(
@@ -136,3 +220,46 @@ class EmbedTuner:
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
         self.optimizer.step()
         return loss.item()
+
+    def train(
+        self,
+        loader: Iterable[tuple[torch.Tensor, torch.Tensor]],
+        total_steps: int,
+        log_every: int = 50,
+        on_log: Optional[Callable[[int, float], None]] = None,
+    ) -> None:
+        """Run ``train_step`` repeatedly until ``total_steps`` is reached.
+
+        Cycles ``loader`` indefinitely so training can run for more steps
+        than there are batches in the dataset, mirroring ``Trainer.train()``.
+
+        Args:
+            loader: Iterable of ``(input_ids, attention_mask)`` batches, e.g.
+                a ``DataLoader`` over ``PassageDataset`` with
+                ``collate_fn=collate_passages``. Every batch must have at
+                least 2 rows (see ``train_step``).
+            total_steps: Number of ``train_step`` calls to run.
+            log_every: Print (and invoke ``on_log`` with) the mean loss over
+                the last ``log_every`` steps, every ``log_every`` steps.
+            on_log: Optional callback invoked as ``(step, avg_loss)`` at each
+                ``log_every`` boundary, in addition to the printed line.
+        """
+        step = 0
+        running_loss = 0.0
+        data_iter = iter(loader)
+        while step < total_steps:
+            try:
+                input_ids, attention_mask = next(data_iter)
+            except StopIteration:
+                data_iter = iter(loader)
+                input_ids, attention_mask = next(data_iter)
+
+            running_loss += self.train_step(input_ids, attention_mask)
+            step += 1
+
+            if step % log_every == 0:
+                avg_loss = running_loss / log_every
+                print(f"  embed-tune step {step:>6} / {total_steps} | loss {avg_loss:.4f}")
+                if on_log is not None:
+                    on_log(step, avg_loss)
+                running_loss = 0.0
