@@ -118,6 +118,36 @@ def _scan_subdirs(base_dir: str) -> list[str]:
     return [str(d) + "/" for d in dirs]
 
 
+# ---------------------------------------------------------------------------
+# Dropdown refresh helpers
+# ---------------------------------------------------------------------------
+# The choice lists above are scanned once at app startup so dropdowns are
+# populated immediately on load. That snapshot goes stale the moment a
+# training run (or any other process) writes a new file — restarting the
+# whole app just to pick up a fresh checkpoint is needless. These re-scan
+# the filesystem on demand; each is wired to its tab's `.select()` event so
+# switching into a tab always shows what's actually on disk right now.
+
+def _refresh_ckpts_all():
+    return gr.update(choices=_scan_files("checkpoints/", "*.pt", recursive=True))
+
+
+def _refresh_ckpts_pretrain():
+    return gr.update(choices=_scan_files("checkpoints/pretrain/", "*.pt"))
+
+
+def _refresh_lora_choices():
+    return gr.update(choices=_scan_files("checkpoints/", "*.lora", recursive=True))
+
+
+def _refresh_corpus_dirs():
+    return gr.update(choices=_scan_subdirs("data/corpus/"))
+
+
+def _refresh_jsonl_choices():
+    return gr.update(choices=_scan_files("data/finetune/", "*.jsonl"))
+
+
 def _fmt_elapsed(seconds: float) -> str:
     """Format a duration in seconds as a human-readable string."""
     h, rem = divmod(int(seconds), 3600)
@@ -2201,7 +2231,7 @@ def build_app() -> gr.Blocks:
             pp_stop_btn.click(fn=stop_preprocess, inputs=[], outputs=[], cancels=[pp_event])
 
         # ----------------------------------------------------------------
-        with gr.Tab("Pre-train"):
+        with gr.Tab("Pre-train") as pretrain_tab:
             gr.Markdown("Launch a pre-training run on a tokenised corpus binary.")
             with gr.Row():
                 pt_corpus = gr.Textbox(
@@ -2350,9 +2380,10 @@ def build_app() -> gr.Blocks:
             # the Gradio event outright would kill the generator mid-stream,
             # leaving Start permanently disabled until the app restarts.
             pt_stop_btn.click(fn=stop_pretrain, inputs=[], outputs=[])
+            pretrain_tab.select(fn=_refresh_ckpts_pretrain, outputs=[pt_resume])
 
         # ----------------------------------------------------------------
-        with gr.Tab("Fine-tune"):
+        with gr.Tab("Fine-tune") as finetune_tab:
             gr.Markdown(
                 "Specialise a pre-trained model on a conversation dataset. "
                 "Fine-tuning teaches the model to respond in a specific style or domain "
@@ -2558,9 +2589,12 @@ def build_app() -> gr.Blocks:
             # is intentionally omitted: Trainer's stop_event polling already
             # lets this generator shut down gracefully and re-enable Start.
             ft_stop_btn.click(fn=stop_finetune, inputs=[], outputs=[])
+            finetune_tab.select(fn=_refresh_ckpts_pretrain, outputs=[ft_pretrain_ckpt])
+            finetune_tab.select(fn=_refresh_jsonl_choices, outputs=[ft_data])
+            finetune_tab.select(fn=_refresh_ckpts_all, outputs=[ft_resume])
 
         # ----------------------------------------------------------------
-        with gr.Tab("Scale"):
+        with gr.Tab("Scale") as scale_tab:
             gr.Markdown(
                 "Estimate how many training steps your corpus and model size warrant, "
                 "based on the Chinchilla scaling laws."
@@ -2599,9 +2633,10 @@ def build_app() -> gr.Blocks:
                 inputs=[sc_corpus, sc_checkpoint, sc_batch, sc_accum, sc_seq, sc_steps],
                 outputs=[sc_output],
             )
+            scale_tab.select(fn=_refresh_ckpts_all, outputs=[sc_checkpoint])
 
         # ----------------------------------------------------------------
-        with gr.Tab("Evaluate"):
+        with gr.Tab("Evaluate") as evaluate_tab:
             gr.Markdown(
                 "Run the evaluation suite on a checkpoint: **perplexity / BPC** on a "
                 "held-out corpus slice, **retrieval hit-rate** over a fixed query set, "
@@ -2688,6 +2723,8 @@ def build_app() -> gr.Blocks:
                 outputs=[ev_log, ev_run_btn, ev_stop_btn],
             )
             ev_stop_btn.click(fn=stop_eval, inputs=[], outputs=[], cancels=[ev_event])
+            evaluate_tab.select(fn=_refresh_ckpts_all, outputs=[ev_checkpoint])
+            evaluate_tab.select(fn=_refresh_corpus_dirs, outputs=[ev_corpus_dir])
 
         # ----------------------------------------------------------------
         with gr.Tab("Ingest"):
@@ -2779,7 +2816,7 @@ def build_app() -> gr.Blocks:
             ing_stop_btn.click(fn=None, cancels=[ing_event])
 
         # ----------------------------------------------------------------
-        with gr.Tab("Corpus"):
+        with gr.Tab("Corpus") as corpus_tab:
             gr.Markdown(
                 "Pre-compute the semantic embedding index for a corpus directory.  "
                 "The index is stored as `.semantic_index/` inside the corpus directory "
@@ -2839,9 +2876,11 @@ def build_app() -> gr.Blocks:
                 outputs=[ci_log, ci_run_btn, ci_stop_btn],
             )
             ci_stop_btn.click(fn=stop_build_index, inputs=[], outputs=[], cancels=[ci_event])
+            corpus_tab.select(fn=_refresh_corpus_dirs, outputs=[ci_corpus_dir])
+            corpus_tab.select(fn=_refresh_ckpts_all, outputs=[ci_checkpoint])
 
         # ----------------------------------------------------------------
-        with gr.Tab("Chat"):
+        with gr.Tab("Chat") as chat_tab:
             gr.Markdown(
                 "Select a named agent **or** load any checkpoint manually. "
                 "Conversation history is maintained automatically."
@@ -3067,6 +3106,9 @@ def build_app() -> gr.Blocks:
                 inputs=[chat_ckpt, chat_vocab, chat_corpus_dir, chat_encoder, chat_threshold, chat_quantize, chat_lora, chat_math_tool],
                 outputs=[engine_state, conv_state, load_status, chat_quantize],
             )
+            chat_tab.select(fn=_refresh_ckpts_all, outputs=[chat_ckpt])
+            chat_tab.select(fn=_refresh_corpus_dirs, outputs=[chat_corpus_dir])
+            chat_tab.select(fn=_refresh_lora_choices, outputs=[chat_lora])
             chat_btn.click(
                 fn=chat,
                 inputs=[chat_query, engine_state, conv_state,
