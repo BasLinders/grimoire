@@ -593,6 +593,14 @@ def _wrap_with_buttons(gen: Generator) -> Generator[tuple, None, None]:
 
 _WATCHDOG_INTERVAL_S = 30.0
 
+#: Retrieval embedding backend choices, shared by the Chat and Evaluate tabs.
+_ENCODER_CHOICES = [
+    "Model (decoder embeddings)",
+    "MiniLM (all-MiniLM-L6-v2)",
+    "MPNet (all-mpnet-base-v2)",
+    "Lexical (Jaccard)",
+]
+
 
 def _stream_task(
     task_fn, stop_key: Optional[str] = None, stop_event: Optional[threading.Event] = None,
@@ -1465,7 +1473,7 @@ def run_eval_ui(
     corpus_dir: str,
     corpus_bin: str,
     quiz_path: str,
-    semantic: bool,
+    encoder: str,
     quantize: bool,
     max_ppl_batches: int,
     device: str = "Auto",
@@ -1476,6 +1484,9 @@ def run_eval_ui(
     """Run the evaluation harness and stream progress."""
     from grimoire_ai.llm.inference.engine import InferenceEngine
     from grimoire_ai.llm.eval.harness import run_eval
+    from grimoire_ai.llm.inference.semantic import (
+        EXTERNAL_ENCODERS, SemanticRetriever, make_external_embed_fn,
+    )
 
     checkpoint_path = checkpoint_path.strip()
     vocab_path = vocab_path.strip()
@@ -1519,10 +1530,34 @@ def run_eval_ui(
                 raise ValueError(f"Failed to load LoRA adapter: {exc}") from exc
             on_progress(f"LoRA adapter loaded: {lora_path}")
 
+        use_lexical  = encoder == "Lexical (Jaccard)"
+        use_external = encoder in EXTERNAL_ENCODERS
+
         if corpus_dir and Path(corpus_dir).is_dir():
             txt_files = sorted(Path(corpus_dir).glob("*.txt"))
             if txt_files:
-                if semantic:
+                if use_external:
+                    # External sentence encoders are independent of the
+                    # checkpoint/LoRA, so there's no cache-staleness key to
+                    # reuse here (unlike the model-embeddings path below) —
+                    # always re-embed. They're also typically faster than a
+                    # forward pass through the Grimoire model for this corpus
+                    # size, so that's an acceptable cost for an eval run.
+                    on_progress(f"Loading {encoder} …")
+                    try:
+                        embed_fn = make_external_embed_fn(EXTERNAL_ENCODERS[encoder])
+                    except ImportError as exc:
+                        raise ValueError(str(exc)) from exc
+                    documents = [
+                        (txt.read_text(encoding="utf-8"), txt.stem) for txt in txt_files
+                    ]
+                    on_progress(f"Embedding {len(documents)} file(s) with {encoder} …")
+                    retriever = SemanticRetriever(embed_fn=embed_fn)
+                    for text, source in documents:
+                        retriever.add_text(text, source=source)
+                    retriever.index(stop_event=stop_event, on_progress=on_progress)
+                    engine.corpus = retriever
+                elif not use_lexical:
                     documents: list[tuple[str, str]] = [
                         (txt.read_text(encoding="utf-8"), txt.stem) for txt in txt_files
                     ]
@@ -1536,7 +1571,6 @@ def run_eval_ui(
                     if index_dir and _index_is_fresh(index_dir, [corpus_dir], checkpoint_path, lora_path):
                         on_progress("Loading cached semantic index …")
                         try:
-                            from grimoire_ai.llm.inference.semantic import SemanticRetriever
                             engine.corpus = SemanticRetriever.from_index(index_dir, embed_fn=engine.embed)
                             loaded_ok = engine.corpus.size > 0
                         except Exception:
@@ -2701,10 +2735,16 @@ def build_app() -> gr.Blocks:
                      "something that needs more training.",
             )
             with gr.Row():
-                ev_semantic = gr.Checkbox(
-                    label="Semantic retrieval (model embeddings)",
-                    value=True,
-                    info="Use the model's own embeddings for retrieval. Slower but more accurate than lexical.",
+                ev_encoder = gr.Dropdown(
+                    choices=_ENCODER_CHOICES,
+                    value="Model (decoder embeddings)",
+                    label="Embedding backend",
+                    info="How corpus passages are matched to questions for retrieval. "
+                         "Model: the trained transformer's own embeddings — no extra install, "
+                         "but may be less discriminative early in training. "
+                         "MiniLM/MPNet: dedicated sentence encoders, independent of the "
+                         "checkpoint — requires pip install -e \".[encoder]\". "
+                         "Lexical: fast word-overlap matching, no neural embedding.",
                 )
                 ev_quantize = gr.Checkbox(
                     label="int8 quantization (CPU only)",
@@ -2743,7 +2783,7 @@ def build_app() -> gr.Blocks:
                 fn=run_eval_ui,
                 inputs=[
                     ev_checkpoint, ev_vocab, ev_corpus_dir, ev_corpus_bin,
-                    ev_quiz, ev_semantic, ev_quantize, ev_max_ppl, ev_device, ev_lora,
+                    ev_quiz, ev_encoder, ev_quantize, ev_max_ppl, ev_device, ev_lora,
                     ev_repetition_penalty, ev_math_tool,
                 ],
                 outputs=[ev_log, ev_run_btn, ev_stop_btn],
@@ -2915,12 +2955,6 @@ def build_app() -> gr.Blocks:
             conv_state   = gr.State(value=None)
 
             # ---- Shared retrieval config (used by both agent and manual load)
-            _ENCODER_CHOICES = [
-                "Model (decoder embeddings)",
-                "MiniLM (all-MiniLM-L6-v2)",
-                "MPNet (all-mpnet-base-v2)",
-                "Lexical (Jaccard)",
-            ]
             with gr.Accordion("Retrieval configuration", open=True):
                 with gr.Row():
                     chat_encoder = gr.Dropdown(

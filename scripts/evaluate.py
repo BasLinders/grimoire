@@ -62,8 +62,10 @@ def main() -> None:
         help="Directory for the JSON report (default: data/eval).",
     )
     parser.add_argument(
-        "--semantic", action="store_true",
-        help="Use the model's own embeddings for semantic retrieval (slower but more accurate).",
+        "--encoder", choices=["lexical", "model", "minilm", "mpnet"], default="lexical",
+        help="Retrieval embedding backend (default: lexical). 'model' uses the "
+             "checkpoint's own embeddings; 'minilm'/'mpnet' use a dedicated sentence "
+             "encoder independent of the checkpoint (requires pip install -e \".[encoder]\").",
     )
     parser.add_argument(
         "--max-ppl-batches", type=int, default=50, metavar="N",
@@ -108,9 +110,19 @@ def main() -> None:
         for txt in sorted(Path(corpus_dir).glob("*.txt")):
             documents.append((txt.read_text(encoding="utf-8"), txt.stem))
         if documents:
-            if args.semantic:
+            if args.encoder == "model":
                 print(f"Building semantic corpus from {len(documents)} file(s) …")
                 engine.build_semantic_corpus(documents)
+            elif args.encoder in ("minilm", "mpnet"):
+                from grimoire_ai.llm.inference.semantic import SemanticRetriever, make_external_embed_fn
+                model_id = "all-MiniLM-L6-v2" if args.encoder == "minilm" else "all-mpnet-base-v2"
+                print(f"Embedding {len(documents)} file(s) with {model_id} …")
+                embed_fn = make_external_embed_fn(model_id)
+                retriever = SemanticRetriever(embed_fn=embed_fn)
+                for text, source in documents:
+                    retriever.add_text(text, source=source)
+                retriever.index()
+                engine.corpus = retriever
             else:
                 from grimoire_ai.corpus.corpus import GrimoireCorpus
                 corpus = GrimoireCorpus()
