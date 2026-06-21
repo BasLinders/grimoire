@@ -1471,6 +1471,7 @@ def run_eval_ui(
     device: str = "Auto",
     lora_path: str = "",
     quiz_repetition_penalty: float = 1.0,
+    math_tool_enabled: bool = False,
 ) -> Generator[tuple, None, None]:
     """Run the evaluation harness and stream progress."""
     from grimoire_ai.llm.inference.engine import InferenceEngine
@@ -1498,11 +1499,16 @@ def run_eval_ui(
 
     def _task(on_progress):
         on_progress("Loading model …")
+        math_tool = None
+        if math_tool_enabled:
+            from grimoire_ai.tools.math_tool import MathTool
+            math_tool = MathTool()
         engine = InferenceEngine(
             checkpoint_path=checkpoint_path,
             tokenizer_path=vocab_path,
             quantize=quantize,
             device=device_arg,
+            math_tool=math_tool,
         )
         on_progress(f"Model loaded on {engine.device}  ({engine.model.num_parameters():,} params)")
 
@@ -2717,6 +2723,13 @@ def build_app() -> gr.Blocks:
                     label="Device",
                     info="Auto picks CUDA if a GPU is available, otherwise CPU.",
                 )
+                ev_math_tool = gr.Checkbox(
+                    label="Enable math tool",
+                    value=False,
+                    info="Detect arithmetic/probability in quiz questions and inject the "
+                         "computed result as context, and resolve <TOOL:python> tags in "
+                         "responses — same tool available in the Chat tab.",
+                )
             with gr.Row():
                 ev_run_btn  = gr.Button("Run evaluation", variant="primary")
                 ev_stop_btn = gr.Button("Stop", interactive=False, elem_classes=["stop-btn"])
@@ -2731,7 +2744,7 @@ def build_app() -> gr.Blocks:
                 inputs=[
                     ev_checkpoint, ev_vocab, ev_corpus_dir, ev_corpus_bin,
                     ev_quiz, ev_semantic, ev_quantize, ev_max_ppl, ev_device, ev_lora,
-                    ev_repetition_penalty,
+                    ev_repetition_penalty, ev_math_tool,
                 ],
                 outputs=[ev_log, ev_run_btn, ev_stop_btn],
             )

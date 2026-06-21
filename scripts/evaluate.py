@@ -78,6 +78,11 @@ def main() -> None:
         help="Penalty (>1.0) applied to already-generated tokens during quiz "
              "generation, to discourage repetition loops. 1.0 (default) disables it.",
     )
+    parser.add_argument(
+        "--math-tool", action="store_true",
+        help="Detect arithmetic/probability in quiz questions and inject the computed "
+             "result as context, and resolve <TOOL:python> tags in responses.",
+    )
     args = parser.parse_args()
 
     from grimoire_ai.llm.inference.engine import InferenceEngine
@@ -85,11 +90,17 @@ def main() -> None:
 
     corpus_dir = args.corpus_dir.strip()
 
+    math_tool = None
+    if args.math_tool:
+        from grimoire_ai.tools.math_tool import MathTool
+        math_tool = MathTool()
+
     print("Loading model …")
     engine = InferenceEngine(
         checkpoint_path=args.checkpoint,
         tokenizer_path=args.vocab,
         quantize=args.quantize,
+        math_tool=math_tool,
     )
 
     if corpus_dir and Path(corpus_dir).is_dir():
