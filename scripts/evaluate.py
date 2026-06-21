@@ -85,6 +85,12 @@ def main() -> None:
         help="Detect arithmetic/probability in quiz questions and inject the computed "
              "result as context, and resolve <TOOL:python> tags in responses.",
     )
+    parser.add_argument(
+        "--retrieval-threshold", type=float, default=None, metavar="X",
+        help="Minimum top-1 score for retrieved context to be injected during quiz "
+             "generation. Default (unset) always injects the top-1 result, even an "
+             "irrelevant one. Cosine scores live in [-1, 1].",
+    )
     args = parser.parse_args()
 
     from grimoire_ai.llm.inference.engine import InferenceEngine
@@ -103,6 +109,7 @@ def main() -> None:
         tokenizer_path=args.vocab,
         quantize=args.quantize,
         math_tool=math_tool,
+        retrieval_threshold=args.retrieval_threshold,
     )
 
     if corpus_dir and Path(corpus_dir).is_dir():
