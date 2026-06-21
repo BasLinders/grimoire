@@ -73,6 +73,11 @@ def main() -> None:
         "--quantize", action="store_true",
         help="Apply int8 quantization when loading the model.",
     )
+    parser.add_argument(
+        "--quiz-repetition-penalty", type=float, default=1.0, metavar="X",
+        help="Penalty (>1.0) applied to already-generated tokens during quiz "
+             "generation, to discourage repetition loops. 1.0 (default) disables it.",
+    )
     args = parser.parse_args()
 
     from grimoire_ai.llm.inference.engine import InferenceEngine
@@ -109,6 +114,7 @@ def main() -> None:
         quiz_path=args.quiz or None,
         output_dir=args.output_dir,
         max_perplexity_batches=args.max_ppl_batches,
+        quiz_repetition_penalty=args.quiz_repetition_penalty,
         on_progress=print,
     )
 

@@ -1470,6 +1470,7 @@ def run_eval_ui(
     max_ppl_batches: int,
     device: str = "Auto",
     lora_path: str = "",
+    quiz_repetition_penalty: float = 1.0,
 ) -> Generator[tuple, None, None]:
     """Run the evaluation harness and stream progress."""
     from grimoire_ai.llm.inference.engine import InferenceEngine
@@ -1576,6 +1577,7 @@ def run_eval_ui(
             quiz_path=quiz_path or None,
             output_dir="data/eval",
             max_perplexity_batches=int(max_ppl_batches),
+            quiz_repetition_penalty=float(quiz_repetition_penalty),
             on_progress=on_progress,
             stop_event=stop_event,
         )
@@ -2684,6 +2686,14 @@ def build_app() -> gr.Blocks:
                     "Defaults to the built-in Saga quiz when left blank."
                 ),
             )
+            ev_repetition_penalty = gr.Number(
+                label="Quiz repetition penalty",
+                value=1.0,
+                info="Penalty (>1.0) on already-generated tokens during quiz generation, "
+                     "to discourage repetition loops. 1.0 disables it (matches prior behaviour). "
+                     "Try 1.2-1.3 to see how much of a repetition pattern is decoding-time vs "
+                     "something that needs more training.",
+            )
             with gr.Row():
                 ev_semantic = gr.Checkbox(
                     label="Semantic retrieval (model embeddings)",
@@ -2721,6 +2731,7 @@ def build_app() -> gr.Blocks:
                 inputs=[
                     ev_checkpoint, ev_vocab, ev_corpus_dir, ev_corpus_bin,
                     ev_quiz, ev_semantic, ev_quantize, ev_max_ppl, ev_device, ev_lora,
+                    ev_repetition_penalty,
                 ],
                 outputs=[ev_log, ev_run_btn, ev_stop_btn],
             )
