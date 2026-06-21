@@ -789,6 +789,47 @@ def test_swa_disabled_writes_no_file() -> None:
         assert not (Path(tmp) / "swa.pt").exists()
 
 
+def test_final_checkpoint_saved_when_not_aligned_to_save_every() -> None:
+    """A checkpoint at the true final step must exist even off a save_every boundary."""
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = _tiny_config()
+        model = GrimoireTransformer(cfg)
+        corpus_path = _write_corpus(500, cfg.vocab_size, tmp)
+        dataset = TokenizedDataset(corpus_path, seq_len=cfg.max_seq_len, stride=cfg.max_seq_len)
+        trainer = Trainer(
+            model=model,
+            train_dataset=dataset,
+            total_steps=7,
+            batch_size=2,
+            accumulate_steps=1,
+            log_every=999,
+            save_every=3,  # 7 is not a multiple of 3 — periodic saves land on 3, 6 only
+            checkpoint_dir=tmp,
+            device="cpu",
+        )
+        trainer.train()
+
+        assert (Path(tmp) / "step_0000003.pt").is_file()
+        assert (Path(tmp) / "step_0000006.pt").is_file()
+        assert (Path(tmp) / "step_0000007.pt").is_file(), (
+            "Training stopped at step 7, off the save_every=3 boundary — "
+            "the true end state must still be saved."
+        )
+
+
+def test_final_checkpoint_not_duplicated_when_aligned() -> None:
+    """When the final step already lands on a save_every boundary, don't save it twice."""
+    with tempfile.TemporaryDirectory() as tmp:
+        trainer, _ = _make_trainer(tmp, total_steps=6)
+        trainer.save_every = 3  # 6 is a multiple of 3 — last periodic save is the final step
+        trainer.train()
+
+        ckpts = sorted(Path(tmp).glob("step_*.pt"))
+        assert [p.name for p in ckpts] == ["step_0000003.pt", "step_0000006.pt"], (
+            "Expected exactly one file per save point, no duplicate at the aligned final step."
+        )
+
+
 def test_lr_schedule_warmup_and_decay() -> None:
     """LR should rise during warmup and then decrease after peak."""
     cfg = _tiny_config()
