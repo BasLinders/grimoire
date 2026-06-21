@@ -207,6 +207,11 @@ class Trainer:
         self.save_every = save_every
         self.checkpoint_dir = Path(checkpoint_dir)
         self._step = 0
+        # Tracks the step a checkpoint was last written at, so train() can
+        # guarantee a final save covering the true end state even when the
+        # exit step (natural completion, early stop, or user stop) doesn't
+        # land on a save_every boundary. -1 means "nothing saved this call".
+        self._last_saved_step = -1
         self._last_avg_loss: float = 0.0
         self._last_val_loss: float = float("nan")
         self._eval_every = eval_every if eval_every > 0 else save_every
@@ -548,22 +553,7 @@ class Trainer:
 
                 # --- Checkpointing -------------------------------------
                 if self._step % self.save_every == 0:
-                    elapsed_total = time.time() - t_start
-                    ckpt_path = self.checkpoint_dir / f"step_{self._step:07d}.pt"
-                    save_checkpoint(
-                        path=str(ckpt_path),
-                        model=self.model,
-                        optimizer=self._optimizer,
-                        scheduler=self._scheduler,
-                        step=self._step,
-                        config_dict=self.config.to_dict(),
-                        train_loss=self._last_avg_loss,
-                        scaler=self._scaler if self._use_amp else None,
-                        model_state_dict=self._model_state_dict_fn() if self._model_state_dict_fn else None,
-                    )
-                    print(f"  → checkpoint saved: {ckpt_path}")
-                    if self._on_save is not None:
-                        self._on_save(self._step, elapsed_total)
+                    self._save_checkpoint_now(t_start)
 
                 # --- Evaluation ----------------------------------------
                 if self._val_loader is not None and self._step % self._eval_every == 0:
@@ -600,6 +590,13 @@ class Trainer:
                     # is not counted as training time in the next log line.
                     t0 = time.time()
 
+        # Guarantee the true end state is always recoverable: natural
+        # completion, early stopping, and user-initiated stop can all land on
+        # a step that isn't a save_every boundary, silently dropping however
+        # many steps came after the last periodic save.
+        if self._last_saved_step != self._step:
+            self._save_checkpoint_now(t_start)
+
         # Save the averaged SWA weights, if any snapshots were collected.
         if self._swa_enabled:
             self._finalize_swa()
@@ -612,6 +609,31 @@ class Trainer:
             print(f"\nTraining complete. Final step: {self._step} | total time: {elapsed_total:.1f}s")
         if self._on_done is not None:
             self._on_done(self._step, elapsed_total)
+
+    def _save_checkpoint_now(self, t_start: float) -> None:
+        """Write a checkpoint at the current step and fire the on_save callback.
+
+        Shared by the periodic save_every check and the unconditional final
+        save in train(), so both produce identical files/log lines and both
+        update _last_saved_step to avoid a redundant duplicate write.
+        """
+        elapsed_total = time.time() - t_start
+        ckpt_path = self.checkpoint_dir / f"step_{self._step:07d}.pt"
+        save_checkpoint(
+            path=str(ckpt_path),
+            model=self.model,
+            optimizer=self._optimizer,
+            scheduler=self._scheduler,
+            step=self._step,
+            config_dict=self.config.to_dict(),
+            train_loss=self._last_avg_loss,
+            scaler=self._scaler if self._use_amp else None,
+            model_state_dict=self._model_state_dict_fn() if self._model_state_dict_fn else None,
+        )
+        self._last_saved_step = self._step
+        print(f"  → checkpoint saved: {ckpt_path}")
+        if self._on_save is not None:
+            self._on_save(self._step, elapsed_total)
 
     # ------------------------------------------------------------------
     # Stochastic Weight Averaging
