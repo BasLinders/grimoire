@@ -1480,6 +1480,7 @@ def run_eval_ui(
     lora_path: str = "",
     quiz_repetition_penalty: float = 1.0,
     math_tool_enabled: bool = False,
+    retrieval_threshold: Optional[float] = None,
 ) -> Generator[tuple, None, None]:
     """Run the evaluation harness and stream progress."""
     from grimoire_ai.llm.inference.engine import InferenceEngine
@@ -1520,6 +1521,7 @@ def run_eval_ui(
             quantize=quantize,
             device=device_arg,
             math_tool=math_tool,
+            retrieval_threshold=retrieval_threshold,
         )
         on_progress(f"Model loaded on {engine.device}  ({engine.model.num_parameters():,} params)")
 
@@ -2746,6 +2748,15 @@ def build_app() -> gr.Blocks:
                          "checkpoint — requires pip install -e \".[encoder]\". "
                          "Lexical: fast word-overlap matching, no neural embedding.",
                 )
+                ev_retrieval_threshold = gr.Slider(
+                    minimum=-1.0, maximum=1.0, value=0.0, step=0.05,
+                    label="Retrieval threshold",
+                    info="Minimum top-1 score for retrieved context to be injected. "
+                         "Previously unset here, meaning every quiz question got the "
+                         "top-1 passage injected unconditionally — even an irrelevant one. "
+                         "Cosine scores live in [-1, 1]; raise this if low-confidence "
+                         "matches seem to be confusing answers rather than grounding them.",
+                )
                 ev_quantize = gr.Checkbox(
                     label="int8 quantization (CPU only)",
                     value=_dp["quantize"],
@@ -2784,7 +2795,7 @@ def build_app() -> gr.Blocks:
                 inputs=[
                     ev_checkpoint, ev_vocab, ev_corpus_dir, ev_corpus_bin,
                     ev_quiz, ev_encoder, ev_quantize, ev_max_ppl, ev_device, ev_lora,
-                    ev_repetition_penalty, ev_math_tool,
+                    ev_repetition_penalty, ev_math_tool, ev_retrieval_threshold,
                 ],
                 outputs=[ev_log, ev_run_btn, ev_stop_btn],
             )
