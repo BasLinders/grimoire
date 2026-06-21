@@ -2402,11 +2402,13 @@ def build_app() -> gr.Blocks:
             )
             with gr.Row():
                 ft_pretrain_ckpt = gr.Dropdown(
-                    choices=_ckpts_pretrain,
+                    choices=_ckpts_all,
                     value="",
                     label="Pre-trained checkpoint (.pt)",
                     allow_custom_value=True,
-                    info="The base model from Pre-train that fine-tuning builds on.",
+                    info="The checkpoint fine-tuning builds on — a Pre-train checkpoint for a "
+                         "new base fine-tune, or an existing base/fine-tuned checkpoint when "
+                         "training a LoRA agent on top of it.",
                 )
                 ft_ckpt_info = gr.Textbox(
                     label="Checkpoint architecture",
@@ -2589,7 +2591,7 @@ def build_app() -> gr.Blocks:
             # is intentionally omitted: Trainer's stop_event polling already
             # lets this generator shut down gracefully and re-enable Start.
             ft_stop_btn.click(fn=stop_finetune, inputs=[], outputs=[])
-            finetune_tab.select(fn=_refresh_ckpts_pretrain, outputs=[ft_pretrain_ckpt])
+            finetune_tab.select(fn=_refresh_ckpts_all, outputs=[ft_pretrain_ckpt])
             finetune_tab.select(fn=_refresh_jsonl_choices, outputs=[ft_data])
             finetune_tab.select(fn=_refresh_ckpts_all, outputs=[ft_resume])
 
