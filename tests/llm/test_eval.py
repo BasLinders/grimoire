@@ -394,6 +394,62 @@ class TestHarness:
             )
         assert results["summary"] and results["summary"] != "No evals ran."
 
+    def test_harness_quiz_repetition_penalty_threads_through(self) -> None:
+        """quiz_repetition_penalty should reach engine.respond() via gen_config."""
+        from grimoire_ai.llm.eval.harness import run_eval
+
+        captured = {}
+
+        def _respond(question, gen_config=None):
+            captured["gen_config"] = gen_config
+            return "proficiency bonus is +3"
+
+        engine = self._make_engine()
+        engine.respond = _respond
+
+        with tempfile.TemporaryDirectory() as tmp:
+            quiz_path = Path(tmp) / "quiz.jsonl"
+            quiz_path.write_text(
+                '{"user": "What is proficiency?", "keywords": ["+3"]}\n',
+                encoding="utf-8",
+            )
+            run_eval(
+                engine=engine,
+                output_dir=tmp,
+                quiz_path=str(quiz_path),
+                quiz_repetition_penalty=1.3,
+            )
+
+        assert captured["gen_config"] is not None
+        assert captured["gen_config"].repetition_penalty == 1.3
+
+    def test_harness_quiz_default_repetition_penalty_unset(self) -> None:
+        """Default quiz_repetition_penalty=1.0 should not override eval_quiz's own default."""
+        from grimoire_ai.llm.eval.harness import run_eval
+
+        captured = {}
+
+        def _respond(question, gen_config=None):
+            captured["gen_config"] = gen_config
+            return "proficiency bonus is +3"
+
+        engine = self._make_engine()
+        engine.respond = _respond
+
+        with tempfile.TemporaryDirectory() as tmp:
+            quiz_path = Path(tmp) / "quiz.jsonl"
+            quiz_path.write_text(
+                '{"user": "What is proficiency?", "keywords": ["+3"]}\n',
+                encoding="utf-8",
+            )
+            run_eval(
+                engine=engine,
+                output_dir=tmp,
+                quiz_path=str(quiz_path),
+            )
+
+        assert captured["gen_config"].repetition_penalty == 1.0
+
     def test_harness_no_engine_no_corpus_bin_raises(self) -> None:
         from grimoire_ai.llm.eval.harness import run_eval
 

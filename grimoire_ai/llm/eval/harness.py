@@ -43,6 +43,7 @@ def run_eval(
     retrieval_queries: Optional[list[dict]] = None,
     max_perplexity_batches: int = 50,
     perplexity_batch_size: int = 4,
+    quiz_repetition_penalty: float = 1.0,
     on_progress: Optional[Callable[[str], None]] = None,
     stop_event: Optional[threading.Event] = None,
 ) -> dict:
@@ -63,6 +64,12 @@ def run_eval(
             to ``SAGA_QUERIES`` when ``None``.
         max_perplexity_batches: Cap on batches for perplexity eval.
         perplexity_batch_size: Batch size for perplexity eval.
+        quiz_repetition_penalty: Multiplicative penalty on previously-generated
+            tokens during quiz generation. ``1.0`` (default) disables it,
+            matching the quiz's standalone default. Values > 1.0 discourage
+            the model from repeating itself — useful for isolating how much
+            of a repetition-loop pattern is a decoding-time effect versus
+            something that needs more training to fix.
         on_progress: Optional progress callback.
         stop_event: When set, each evaluator stops as soon as it notices
             (between batches/questions/queries) and any evaluator not yet
@@ -153,8 +160,16 @@ def run_eval(
             _log("─── Quiz eval ─────────────────────────────────────────")
             from grimoire_ai.llm.eval.quiz import eval_quiz, load_quiz
             examples = load_quiz(_quiz_path)
+            quiz_gen_config = None
+            if quiz_repetition_penalty != 1.0:
+                from grimoire_ai.llm.inference.sampler import GenerationConfig
+                quiz_gen_config = GenerationConfig(
+                    max_new_tokens=128, temperature=0.0, top_k=1, top_p=1.0,
+                    repetition_penalty=quiz_repetition_penalty,
+                )
             quiz_result = eval_quiz(
-                engine=engine, examples=examples, on_progress=on_progress, stop_event=stop_event,
+                engine=engine, examples=examples, gen_config=quiz_gen_config,
+                on_progress=on_progress, stop_event=stop_event,
             )
             results["evals"]["quiz"] = quiz_result
         else:
