@@ -415,3 +415,54 @@ def test_embed_ignores_padding(model: GrimoireTransformer, cfg: TransformerConfi
     assert torch.allclose(vec_real, vec_padded, atol=1e-5), (
         "Padding leaked into the embedding — the masked mean pool is wrong."
     )
+
+
+def test_embed_matches_embed_pooled_under_no_grad(
+    model: GrimoireTransformer, cfg: TransformerConfig
+) -> None:
+    """embed() must remain a pure no-grad wrapper around _embed_pooled()."""
+    model.eval()
+    input_ids = torch.randint(1, cfg.vocab_size, (2, 6))
+    via_embed = model.embed(input_ids)
+    with torch.no_grad():
+        via_pooled = model._embed_pooled(input_ids)
+    assert torch.allclose(via_embed, via_pooled, atol=1e-6)
+
+
+def test_embed_pooled_allows_gradients(
+    model: GrimoireTransformer, cfg: TransformerConfig
+) -> None:
+    """_embed_pooled() must be usable inside a training step (no @no_grad)."""
+    model.train()
+    input_ids = torch.randint(1, cfg.vocab_size, (2, 6))
+    vecs = model._embed_pooled(input_ids)
+    assert vecs.requires_grad
+    vecs.sum().backward()
+    grad_norms = [
+        p.grad.norm().item() for p in model.parameters() if p.grad is not None
+    ]
+    assert any(g > 0 for g in grad_norms), (
+        "No gradient reached any parameter — _embed_pooled() is not "
+        "differentiable end-to-end."
+    )
+
+
+def test_embed_pooled_dropout_gives_two_views_in_train_mode(
+    cfg: TransformerConfig,
+) -> None:
+    """Two forward passes of the same input in train() must differ.
+
+    This is the SimCSE-style self-augmentation an embedding-contrastive
+    training stage relies on: dropout noise alone must be enough to produce
+    two distinct embeddings of identical input. Requires dropout > 0 in cfg.
+    """
+    train_cfg = TransformerConfig(**{**cfg.to_dict(), "dropout": 0.5})
+    model = GrimoireTransformer(train_cfg)
+    model.train()
+    input_ids = torch.randint(1, train_cfg.vocab_size, (2, 6))
+    vec_a = model._embed_pooled(input_ids)
+    vec_b = model._embed_pooled(input_ids)
+    assert not torch.allclose(vec_a, vec_b), (
+        "Two train-mode forward passes of identical input produced "
+        "identical embeddings — dropout is not active."
+    )

@@ -177,25 +177,23 @@ class GrimoireTransformer(nn.Module):
             return logits, present_kvs
         return logits
 
-    @torch.no_grad()
-    def embed(
+    def _embed_pooled(
         self,
         input_ids: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Produce a dense sentence embedding for each input sequence.
+        """Compute the pooled sentence embedding (gradient-enabled core of ``embed``).
 
         Runs the same trunk as ``forward`` (token embedding → blocks →
         final RMSNorm) but stops *before* the output projection head, then
         mean-pools the final hidden states across the sequence dimension.
-        The result is the model's own learned representation of the text —
-        suitable for semantic similarity search (cosine retrieval) using
-        exactly the domain knowledge the model was trained on.
+        Unlike ``forward``, this never uses a KV cache and always runs the
+        full bidirectional-within-window trunk in a single pass.
 
-        Unlike ``forward``, this method never uses a KV cache and always runs
-        the full bidirectional-within-window trunk in a single pass. It is
-        decorated with ``torch.no_grad`` because embeddings are only consumed
-        at inference time.
+        This method carries no ``torch.no_grad``, unlike ``embed()`` — it is
+        the entry point for embedding training (e.g. contrastive fine-tuning),
+        where gradients must flow back through the pooled vector to the trunk
+        weights. ``embed()`` remains the no-grad entry point for inference.
 
         Args:
             input_ids: Integer tensor of shape ``(batch, seq_len)`` with
@@ -226,6 +224,35 @@ class GrimoireTransformer(nn.Module):
             counts = mask.sum(dim=1).clamp(min=1.0)
             return summed / counts
         return x.mean(dim=1)
+
+    @torch.no_grad()
+    def embed(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Produce a dense sentence embedding for each input sequence.
+
+        The result is the model's own learned representation of the text —
+        suitable for semantic similarity search (cosine retrieval) using
+        exactly the domain knowledge the model was trained on. Decorated with
+        ``torch.no_grad`` because this entry point is for inference only; see
+        ``_embed_pooled`` for the gradient-enabled core used during training.
+
+        Args:
+            input_ids: Integer tensor of shape ``(batch, seq_len)`` with
+                token ids in ``[0, vocab_size)``.
+            attention_mask: Optional tensor of shape ``(batch, seq_len)`` with
+                ``1`` for real tokens and ``0`` for padding. When provided,
+                padded positions are excluded from the mean pool so that
+                padding never dilutes the embedding.
+
+        Returns:
+            Float tensor of shape ``(batch, d_model)`` — one pooled embedding
+            per input sequence. Not L2-normalised; callers that want cosine
+            similarity should normalise the result.
+        """
+        return self._embed_pooled(input_ids, attention_mask)
 
     @torch.no_grad()
     def merged_state_dict(self) -> dict[str, torch.Tensor]:
