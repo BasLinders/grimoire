@@ -1,0 +1,5 @@
+# Remap automated-tooling commits onto the repository owner's identity.
+# This only affects how authors are *displayed* (git log / blame / shortlog
+# and GitHub's contributor graph). It rewrites no history and changes no
+# commit SHAs.
+Bas Linders <154208731+BasLinders@users.noreply.github.com> <noreply@anthropic.com>
