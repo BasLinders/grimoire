@@ -1,4 +1,4 @@
-"""Unit tests for self-supervised contrastive embedding training.
+"""Unit tests for self-supervised and supervised contrastive embedding training.
 
 Coverage:
     contrastive_loss          — perfect alignment collapses to ~0, uniform
@@ -14,6 +14,11 @@ Coverage:
                                  is rejected, train() cycles a short loader,
                                  LoRA-only training leaves base weights
                                  untouched.
+    QAPairDataset/collate_qa_pairs/train_step_pairs/train_pairs — the
+                                 supervised (question, answer) path: two
+                                 genuinely different inputs embedded and
+                                 contrasted, independent padding per side,
+                                 convergence on real pairs.
 """
 
 import pytest
@@ -30,7 +35,9 @@ from grimoire_ai.llm.training.embed_tune import (
     DocumentGroupedBatchSampler,
     EmbedTuner,
     PassageDataset,
+    QAPairDataset,
     collate_passages,
+    collate_qa_pairs,
     contrastive_loss,
 )
 
@@ -380,3 +387,171 @@ class TestDocumentGroupedBatchSampler:
         on_log_calls = []
         tuner.train(loader, total_steps=30, log_every=10, on_log=lambda s, l: on_log_calls.append((s, l)))
         assert [s for s, _ in on_log_calls] == [10, 20, 30]
+
+
+# ---------------------------------------------------------------------------
+# Supervised (question, answer) pairs
+# ---------------------------------------------------------------------------
+
+def _qa_tokenizer() -> BytePairEncoder:
+    # BytePairEncoder requires vocab_size >= 262 (6 special + 256 base bytes),
+    # but the actual encoded ids for this small fixed vocabulary/text set stay
+    # well under _small_config()'s vocab_size (256) in practice -- verified
+    # empirically (max id 127) since the model's embedding table has exactly
+    # that many rows.
+    tok = BytePairEncoder()
+    tok.train(
+        [
+            "how does grappling affect movement speed creature held fast " * 10,
+            "what is advantage roll twice take higher result d20 " * 10,
+            "how does a long rest recover spell slots hit points " * 10,
+        ],
+        vocab_size=262,
+    )
+    return tok
+
+
+class TestQAPairDataset:
+    def test_each_side_starts_with_bos(self):
+        tok = _qa_tokenizer()
+        ds = QAPairDataset(
+            [("how does grappling work", "a creature held fast cannot move")], tok, max_seq_len=16,
+        )
+        q_ids, a_ids = ds[0]
+        assert q_ids[0].item() == BOS_ID
+        assert a_ids[0].item() == BOS_ID
+
+    def test_question_and_answer_tokenized_independently(self):
+        """A short question and a much longer answer must not be forced to
+        the same length -- each side encodes on its own."""
+        tok = _qa_tokenizer()
+        ds = QAPairDataset(
+            [("grapple", "a creature held fast cannot move and speed becomes zero")],
+            tok, max_seq_len=32,
+        )
+        q_ids, a_ids = ds[0]
+        assert q_ids.shape[0] != a_ids.shape[0]
+
+    def test_truncates_each_side_to_max_seq_len(self):
+        tok = _qa_tokenizer()
+        long_text = "how does grappling affect movement speed creature held fast " * 5
+        ds = QAPairDataset([(long_text, long_text)], tok, max_seq_len=8)
+        q_ids, a_ids = ds[0]
+        assert q_ids.shape[0] == 8
+        assert a_ids.shape[0] == 8
+
+    def test_length_matches_input(self):
+        tok = _qa_tokenizer()
+        pairs = [("q1", "a1"), ("q2", "a2"), ("q3", "a3")]
+        ds = QAPairDataset(pairs, tok, max_seq_len=16)
+        assert len(ds) == len(pairs)
+
+
+class TestCollateQAPairs:
+    def test_each_side_padded_to_its_own_longest(self):
+        batch = [
+            (torch.tensor([1, 2, 3]), torch.tensor([1, 2, 3, 4, 5])),
+            (torch.tensor([1, 2]), torch.tensor([1, 2, 3])),
+        ]
+        q_ids, q_mask, a_ids, a_mask = collate_qa_pairs(batch)
+        assert q_ids.shape == (2, 3)   # padded to the longer question (3)
+        assert a_ids.shape == (2, 5)   # padded to the longer answer (5), independently
+
+    def test_padding_uses_pad_id_and_zero_mask(self):
+        batch = [
+            (torch.tensor([1, 2, 3]), torch.tensor([5, 6])),
+            (torch.tensor([1]), torch.tensor([5, 6, 7])),
+        ]
+        q_ids, q_mask, a_ids, a_mask = collate_qa_pairs(batch)
+        assert q_ids[1, 1].item() == PAD_ID
+        assert q_mask[1, 1].item() == 0
+        assert a_ids[0, 2].item() == PAD_ID
+        assert a_mask[0, 2].item() == 0
+
+    def test_real_tokens_preserved_in_order(self):
+        batch = [(torch.tensor([5, 6, 7]), torch.tensor([9, 10]))]
+        q_ids, _, a_ids, _ = collate_qa_pairs(batch)
+        assert torch.equal(q_ids[0], torch.tensor([5, 6, 7]))
+        assert torch.equal(a_ids[0], torch.tensor([9, 10]))
+
+    def test_loader_round_trip_yields_batchable_tensors(self):
+        tok = _qa_tokenizer()
+        pairs = [("grapple speed", "creature held fast"), ("advantage roll", "roll twice take higher")]
+        ds = QAPairDataset(pairs, tok, max_seq_len=16)
+        loader = DataLoader(ds, batch_size=2, collate_fn=collate_qa_pairs, drop_last=True)
+        q_ids, q_mask, a_ids, a_mask = next(iter(loader))
+        assert q_ids.shape[0] == 2
+        assert a_ids.shape[0] == 2
+        assert q_ids.shape == q_mask.shape
+        assert a_ids.shape == a_mask.shape
+
+
+class TestEmbedTunerPairs:
+    def test_train_step_pairs_rejects_batch_of_one(self):
+        model = GrimoireTransformer(_small_config())
+        tuner = EmbedTuner(model, device="cpu")
+        q = torch.randint(1, 256, (1, 6))
+        a = torch.randint(1, 256, (1, 6))
+        with pytest.raises(ValueError, match="batch_size"):
+            tuner.train_step_pairs(q, None, a, None)
+
+    def test_train_step_pairs_returns_python_float(self):
+        model = GrimoireTransformer(_small_config())
+        tuner = EmbedTuner(model, device="cpu")
+        q = torch.randint(1, 256, (3, 6))
+        a = torch.randint(1, 256, (3, 7))  # deliberately different seq_len per side
+        loss = tuner.train_step_pairs(q, None, a, None)
+        assert isinstance(loss, float)
+
+    def test_loss_decreases_on_fixed_pairs(self):
+        torch.manual_seed(0)
+        model = GrimoireTransformer(_small_config())
+        tuner = EmbedTuner(model, lr=3e-3, device="cpu")
+        q = torch.randint(1, 256, (4, 6))
+        a = torch.randint(1, 256, (4, 8))
+
+        losses = [tuner.train_step_pairs(q, None, a, None) for _ in range(20)]
+        assert losses[-1] < losses[0]
+
+    def test_supervised_training_aligns_questions_with_their_answers(self):
+        """After training on real (question, answer) text pairs, each
+        question's embedding must rank its OWN answer highest among the
+        other answers in the batch -- the actual retrieval signal this path
+        exists to produce, as opposed to same-passage self-similarity.
+        """
+        torch.manual_seed(0)
+        tok = _qa_tokenizer()
+        pairs = [
+            ("how does grappling affect speed", "a creature held fast cannot move at all"),
+            ("what is advantage on a roll", "roll the d20 twice and take the higher result"),
+            ("how does a long rest work", "spell slots and hit points are fully restored"),
+        ]
+        ds = QAPairDataset(pairs, tok, max_seq_len=_small_config().max_seq_len)
+        loader = DataLoader(ds, batch_size=3, collate_fn=collate_qa_pairs, drop_last=True)
+
+        model = GrimoireTransformer(_small_config())
+        tuner = EmbedTuner(model, lr=3e-3, device="cpu")
+        tuner.train_pairs(loader, total_steps=150, log_every=150)
+
+        batch = next(iter(loader))
+        q_ids, q_mask, a_ids, a_mask = batch
+        model.train()
+        with torch.no_grad():
+            emb_q = F.normalize(model._embed_pooled(q_ids, q_mask), dim=-1)
+            emb_a = F.normalize(model._embed_pooled(a_ids, a_mask), dim=-1)
+            sim = emb_q @ emb_a.T
+
+        assert (sim.argmax(dim=1) == torch.arange(3)).all()
+
+    def test_train_pairs_cycles_short_loader_to_reach_total_steps(self):
+        model = GrimoireTransformer(_small_config())
+        tuner = EmbedTuner(model, device="cpu")
+        batch = (
+            torch.randint(1, 256, (3, 6)), None,
+            torch.randint(1, 256, (3, 7)), None,
+        )
+        loader = [batch]  # a single-batch loader; train_pairs must cycle it
+
+        steps_logged = []
+        tuner.train_pairs(loader, total_steps=10, log_every=2, on_log=lambda s, l: steps_logged.append(s))
+        assert steps_logged == [2, 4, 6, 8, 10]
