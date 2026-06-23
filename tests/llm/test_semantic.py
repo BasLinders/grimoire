@@ -198,3 +198,68 @@ def test_threshold_passes_high_scores() -> None:
     results = retriever.query("grapple speed movement", top_k=1)
     assert len(results) == 1
     assert results[0].score > 0.5, f"Expected high on-domain score, got {results[0].score}"
+
+
+# ---------------------------------------------------------------------------
+# indexed_sources / checkpointed resume
+# ---------------------------------------------------------------------------
+
+def test_indexed_sources_tracks_distinct_sources() -> None:
+    retriever = SemanticRetriever(embed_fn=_keyword_embed)
+    retriever.add_text("A grappled creature is held fast.", source="doc_a")
+    retriever.add_text("The fire spreads quickly.", source="doc_b")
+    retriever.index()
+    assert retriever.indexed_sources == {"doc_a", "doc_b"}
+
+
+def test_indexed_sources_excludes_pending() -> None:
+    """A queued-but-not-yet-indexed document must not count as done."""
+    retriever = SemanticRetriever(embed_fn=_keyword_embed)
+    retriever.add_text("A grappled creature is held fast.", source="doc_a")
+    assert retriever.indexed_sources == set()
+    retriever.index()
+    assert retriever.indexed_sources == {"doc_a"}
+
+
+def test_resume_from_checkpoint_skips_already_indexed_documents(tmp_path) -> None:
+    """The save_index / from_index / indexed_sources combination must let a
+    caller resume without re-embedding documents already indexed -- the
+    pattern evaluate.py's --encoder lora checkpointing relies on.
+    """
+    calls: list[int] = []
+
+    def counting_embed(texts: list[str]) -> torch.Tensor:
+        calls.append(len(texts))
+        return _keyword_embed(texts)
+
+    retriever = SemanticRetriever(embed_fn=counting_embed)
+    retriever.add_text("A grappled creature is held fast.", source="doc_a")
+    retriever.add_text("The fire spreads quickly.", source="doc_b")
+    retriever.index()
+    assert retriever.size == 2
+
+    checkpoint_dir = tmp_path / "checkpoint"
+    retriever.save_index(checkpoint_dir, build_faiss=False)
+
+    # Simulate a fresh process resuming: reload from the checkpoint, then
+    # only re-add documents NOT already indexed.
+    calls.clear()
+    resumed = SemanticRetriever.from_index(checkpoint_dir, embed_fn=counting_embed)
+    assert resumed.indexed_sources == {"doc_a", "doc_b"}
+
+    all_documents = [
+        ("A grappled creature is held fast.", "doc_a"),
+        ("The fire spreads quickly.", "doc_b"),
+        ("A rogue can hide and move with stealth.", "doc_c"),
+    ]
+    remaining = [(t, s) for t, s in all_documents if s not in resumed.indexed_sources]
+    assert remaining == [("A rogue can hide and move with stealth.", "doc_c")]
+
+    for text, source in remaining:
+        resumed.add_text(text, source=source)
+    resumed.index()
+
+    assert resumed.size == 3
+    assert resumed.indexed_sources == {"doc_a", "doc_b", "doc_c"}
+    # Only the new document's passage should have been embedded post-resume.
+    assert calls == [1]

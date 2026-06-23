@@ -79,11 +79,18 @@ def contrastive_loss(
 
 
 class PassageDataset(Dataset):
-    """Tokenized corpus passages, ready for contrastive training batches.
+    """Corpus passages, tokenized on access for contrastive training batches.
 
     Tokenization mirrors ``InferenceEngine.embed`` exactly (``BOS`` prefix,
     truncate to ``max_seq_len``) so a LoRA adapter trained here sees the same
     token layout it will see at inference time through that method.
+
+    Tokenization happens lazily in ``__getitem__``, not up front: a
+    real-sized corpus chunks into millions of passages (e.g. ~2M for the
+    455 MB Saga corpus), and a fixed number of training steps only ever
+    touches a small, randomly-sampled fraction of them. Eagerly tokenizing
+    every passage before training starts would mean paying that cost for
+    passages the run never uses.
     """
 
     def __init__(
@@ -92,7 +99,7 @@ class PassageDataset(Dataset):
         tokenizer: BytePairEncoder,
         max_seq_len: int,
     ) -> None:
-        """Tokenize every passage up front.
+        """Store the passages and tokenizer for on-access encoding.
 
         Args:
             passages: Passage strings (e.g. from ``chunk_text``). Order is
@@ -101,16 +108,16 @@ class PassageDataset(Dataset):
             max_seq_len: Sequences longer than this (including the ``BOS``
                 token) are truncated.
         """
-        self._encoded: list[list[int]] = []
-        for text in passages:
-            ids = [BOS_ID] + tokenizer.encode(text)[: max_seq_len - 1]
-            self._encoded.append(ids)
+        self._passages = passages
+        self._tokenizer = tokenizer
+        self._max_seq_len = max_seq_len
 
     def __len__(self) -> int:
-        return len(self._encoded)
+        return len(self._passages)
 
     def __getitem__(self, idx: int) -> torch.Tensor:
-        return torch.tensor(self._encoded[idx], dtype=torch.long)
+        ids = [BOS_ID] + self._tokenizer.encode(self._passages[idx])[: self._max_seq_len - 1]
+        return torch.tensor(ids, dtype=torch.long)
 
 
 def collate_passages(batch: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
