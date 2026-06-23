@@ -41,6 +41,7 @@ from grimoire_ai.llm.model.transformer import GrimoireTransformer
 from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
 from grimoire_ai.llm.training.checkpoint import load_checkpoint
 from grimoire_ai.llm.training.embed_tune import (
+    DocumentGroupedBatchSampler,
     EmbedTuner,
     PassageDataset,
     collate_passages,
@@ -74,7 +75,16 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--temperature", type=float, default=0.05, metavar="X",
                          help="InfoNCE softmax temperature (default: 0.05).")
     parser.add_argument("--batch-size", type=int, default=8, metavar="N",
-                         help="Passages per training batch (default: 8); must be >= 2.")
+                         help="Passages per training batch (default: 8); must be >= 2 and a "
+                              "multiple of --passages-per-doc.")
+    parser.add_argument("--passages-per-doc", type=int, default=4, metavar="N",
+                         help="Passages sampled from each document per batch (default: 4). "
+                              "Each batch draws batch-size/passages-per-doc documents, so "
+                              "in-batch negatives include same-document near-misses (hard) "
+                              "alongside cross-document negatives (easy) -- pure random "
+                              "batching only ever produces easy negatives, which is why an "
+                              "earlier run of this script confused things like 'advantage' "
+                              "with 'disadvantage' despite a low training loss.")
     parser.add_argument("--total-steps", type=int, default=500, metavar="N",
                          help="Number of training steps (default: 500).")
     parser.add_argument("--log-every", type=int, default=25, metavar="N",
@@ -96,8 +106,11 @@ def main(argv: list[str] | None = None) -> None:
     if not txt_files:
         raise ValueError(f"No .txt files found in {args.corpus_dir}")
     passages: list[str] = []
-    for txt in txt_files:
-        passages.extend(chunk_text(txt.read_text(encoding="utf-8"), args.chunk_chars))
+    doc_ids: list[int] = []
+    for doc_id, txt in enumerate(txt_files):
+        chunks = chunk_text(txt.read_text(encoding="utf-8"), args.chunk_chars)
+        passages.extend(chunks)
+        doc_ids.extend([doc_id] * len(chunks))
     print(f"Corpus: {len(passages)} passage(s) from {len(txt_files)} file(s)")
     if len(passages) < args.batch_size:
         raise ValueError(
@@ -106,13 +119,13 @@ def main(argv: list[str] | None = None) -> None:
         )
 
     dataset = PassageDataset(passages, tokenizer, max_seq_len=config.max_seq_len)
-    loader = DataLoader(
-        dataset,
+    sampler = DocumentGroupedBatchSampler(
+        doc_ids,
         batch_size=args.batch_size,
-        shuffle=True,
-        collate_fn=collate_passages,
-        drop_last=True,
+        passages_per_doc=args.passages_per_doc,
+        num_batches=args.total_steps,
     )
+    loader = DataLoader(dataset, batch_sampler=sampler, collate_fn=collate_passages)
 
     model.add_lora_adapters(rank=args.rank, alpha=args.alpha, targets=args.targets)
     trainable = model.num_parameters(trainable_only=True)

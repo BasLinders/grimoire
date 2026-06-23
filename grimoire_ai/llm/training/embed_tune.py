@@ -29,6 +29,23 @@ instance used for chat generation: the adapter reroutes the same
 generation model would change generation output too, defeating the point
 of using LoRA here.
 
+Hard negatives
+---------------
+Plain random batching makes every negative "easy": two passages picked from
+anywhere across a large, topically diverse corpus are almost always about
+completely different things, so the loss saturates by learning only coarse
+topic separation and never has to discriminate between passages that are
+genuinely close (e.g. "advantage" vs "disadvantage", "long rest" vs "short
+rest") — confirmed empirically on the real Saga corpus: the trained adapter
+beat the untrained baseline's retrieval hit-rate but produced *worse* quiz
+answers, because its retrieved context was frequently a confusable
+near-miss rather than actually wrong. ``DocumentGroupedBatchSampler`` fixes
+this by building every batch from a handful of documents with several
+passages each, so in-batch negatives include same-document near-misses
+(hard) alongside cross-document negatives (easy) — still fully
+self-supervised, still no labels or domain knowledge, just a different way
+of grouping the same passages into batches.
+
 Scope
 -----
 ``PassageDataset``/``collate_passages`` tokenize corpus passages the same
@@ -40,6 +57,7 @@ whatever passage strings it's given, so it has no opinion on where they
 came from.
 """
 
+import random
 from typing import Callable, Iterable, Optional
 
 import torch
@@ -144,6 +162,91 @@ def collate_passages(batch: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Ten
         input_ids[row, : seq.size(0)] = seq
         attention_mask[row, : seq.size(0)] = 1
     return input_ids, attention_mask
+
+
+class DocumentGroupedBatchSampler:
+    """Yields batches with several passages per source document.
+
+    Each batch is built from ``docs_per_batch = batch_size // passages_per_doc``
+    documents, sampling ``passages_per_doc`` passages from each (with
+    replacement, since a fixed number of training steps only ever touches a
+    small fraction of a real corpus anyway — see ``PassageDataset``). The
+    result: every batch's negatives are a mix of same-document near-misses
+    (hard — close in topic and vocabulary, but a different fact) and
+    cross-document negatives (easy — unrelated content), rather than being
+    uniformly easy the way pure random batching is.
+
+    Meant to be passed as a ``DataLoader``'s ``batch_sampler``, e.g.
+    ``DataLoader(dataset, batch_sampler=sampler, collate_fn=collate_passages)``.
+    """
+
+    def __init__(
+        self,
+        doc_ids: list[int],
+        batch_size: int,
+        passages_per_doc: int = 4,
+        num_batches: int = 1000,
+        seed: Optional[int] = None,
+    ) -> None:
+        """Group passage indices by document and set up batch sampling.
+
+        Args:
+            doc_ids: One document id per passage, aligned with the dataset
+                this sampler will be used against (e.g. the index of the
+                source file each passage was chunked from).
+            batch_size: Passages per batch. Must be a multiple of
+                ``passages_per_doc``.
+            passages_per_doc: Passages sampled from each chosen document per
+                batch. Must be at least 2 -- with 1, a document contributes
+                no same-document negative at all.
+            num_batches: Length of one pass over this sampler (it samples
+                with replacement, so this is just where ``EmbedTuner.train``'s
+                cycling logic restarts iteration, not a hard corpus limit).
+            seed: Optional seed for reproducible batch composition.
+
+        Raises:
+            ValueError: If ``batch_size`` isn't a multiple of
+                ``passages_per_doc``, if ``passages_per_doc < 2``, or if no
+                document has at least ``passages_per_doc`` passages.
+        """
+        if passages_per_doc < 2:
+            raise ValueError(
+                f"passages_per_doc must be >= 2 for same-document negatives "
+                f"to exist, got {passages_per_doc}."
+            )
+        if batch_size % passages_per_doc != 0:
+            raise ValueError(
+                f"batch_size ({batch_size}) must be a multiple of "
+                f"passages_per_doc ({passages_per_doc})."
+            )
+
+        by_doc: dict[int, list[int]] = {}
+        for idx, doc_id in enumerate(doc_ids):
+            by_doc.setdefault(doc_id, []).append(idx)
+        self._docs = [idxs for idxs in by_doc.values() if len(idxs) >= passages_per_doc]
+        if not self._docs:
+            raise ValueError(
+                f"No document has >= passages_per_doc ({passages_per_doc}) passages; "
+                f"cannot form same-document batches."
+            )
+
+        self._passages_per_doc = passages_per_doc
+        self._docs_per_batch = batch_size // passages_per_doc
+        self._num_batches = num_batches
+        self._rng = random.Random(seed)
+
+    def __iter__(self) -> Iterable[list[int]]:
+        for _ in range(self._num_batches):
+            chosen_docs = self._rng.sample(
+                self._docs, k=min(self._docs_per_batch, len(self._docs))
+            )
+            batch: list[int] = []
+            for doc_idxs in chosen_docs:
+                batch.extend(self._rng.sample(doc_idxs, k=self._passages_per_doc))
+            yield batch
+
+    def __len__(self) -> int:
+        return self._num_batches
 
 
 class EmbedTuner:
