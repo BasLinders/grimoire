@@ -8,10 +8,15 @@ This guide covers everything needed to prepare a corpus, pre-train a Grimoire mo
 
 | Requirement | Minimum | Recommended |
 |---|---|---|
-| Python | 3.10 | 3.11+ |
+| Python | 3.10 | 3.11–3.13 (see CUDA note below) |
 | RAM | 8 GB | 16 GB |
 | GPU | — (CPU works) | NVIDIA RTX with 4 GB+ VRAM |
 | CUDA | — | 12.4 (for RTX cards) |
+
+> **For GPU use, keep Python within the range PyTorch ships CUDA wheels for**
+> (currently up to 3.13). A newer Python still works CPU-only. See
+> [§1 — CUDA](#cuda-windows--linux-rtx-card) for a dedicated-venv workaround
+> if your default interpreter is too new.
 
 ---
 
@@ -41,6 +46,68 @@ import torch
 print(torch.cuda.is_available())    # True
 print(torch.cuda.get_device_name(0))
 ```
+
+> **Python version matters for CUDA.** PyTorch's CUDA wheels lag the newest
+> Python releases. If `pip install torch --index-url .../cu124` fails with
+> `Could not find a version that satisfies the requirement torch`, your
+> Python is too new — at the time of writing the CUDA wheels top out at
+> **Python 3.13** (`cp313`), so Python 3.14 has no CUDA build and silently
+> installs the CPU-only wheel instead (`torch.cuda.is_available()` →
+> `False`). Check with `python --version`. If you're on a Python newer than
+> the latest CUDA wheel, use a dedicated CUDA venv (next section) pinned to a
+> supported version rather than changing your system Python.
+
+#### A dedicated CUDA virtual environment
+
+The cleanest way to get GPU acceleration without disturbing your main
+environment — and the recommended approach if your default `python` is too
+new for the CUDA wheels — is a separate venv pinned to a supported Python
+version. Training/eval scripts auto-detect CUDA (`InferenceEngine` and the
+trainers pick `cuda` when `torch.cuda.is_available()`), so **no script flags
+change** — only which interpreter you run them with.
+
+**Create it** (example pins Python 3.13 via the `py` launcher on Windows; on
+Linux use `python3.13 -m venv`):
+
+```bash
+# From the repo root
+py -3.13 -m venv .venv-cuda
+source .venv-cuda/Scripts/activate     # Windows (Git Bash)
+# source .venv-cuda/bin/activate       # Linux / macOS
+
+pip install torch --index-url https://download.pytorch.org/whl/cu124
+pip install -e ".[dev]"
+
+python -c "import torch; print(torch.cuda.is_available())"   # expect: True
+```
+
+While the venv is active, your prompt shows `(.venv-cuda)` and `python` /
+`pip` resolve to it. Run any training or eval command exactly as documented
+elsewhere in this guide — it will use the GPU automatically. CUDA embedding /
+indexing is typically **10–30× faster** than CPU for this model size.
+
+**Switch back** to your system Python at any time:
+
+```bash
+deactivate          # prompt's (.venv-cuda) prefix disappears
+```
+
+**Remove it** when you no longer need it — a venv is just a directory, so
+deleting it fully uninstalls everything inside without touching your system
+Python:
+
+```bash
+deactivate                  # if it's still active
+rm -rf .venv-cuda           # Windows (Git Bash) / Linux / macOS
+# Remove-Item -Recurse -Force .venv-cuda   # Windows PowerShell
+```
+
+> **Don't `pip uninstall torch` to "switch" between CPU and CUDA builds in
+> one environment.** Uninstalling can leave an empty `torch` namespace
+> directory behind that imports without error but fails at `import torch.nn`
+> with `ModuleNotFoundError`. Keep the CPU and CUDA builds in separate venvs
+> instead; if you hit that broken state, `pip install torch` (CPU) or the
+> `cu124` index URL (CUDA) reinstalls cleanly over it.
 
 ### Training UI (optional)
 
@@ -267,7 +334,86 @@ Open `http://localhost:7860`, go to the **Fine-tune** tab, point it at your pre-
 
 ---
 
-## 5 — Checkpoints
+## 5 — Tune embeddings for retrieval (optional, experimental)
+
+> **Status:** experimental. The model's *generation* quality does not depend
+> on this step — it only affects the quality of the **semantic retrieval**
+> backend (`--encoder model` / `--encoder lora`). External encoders
+> (MiniLM / MPNet) remain the stronger option today; this stage exists to
+> close that gap with a retriever you trained yourself. Skip it if you are
+> happy using an external encoder or lexical retrieval.
+
+The base and fine-tuned checkpoints are only ever trained with a
+next-token-prediction objective, which gives no pressure to place
+semantically similar passages near each other in embedding space. As a
+result, the model's *own* pooled embeddings under-perform dedicated sentence
+encoders for retrieval. `scripts/embed_tune.py` adds the missing signal with
+a short, self-supervised **contrastive** training pass that produces a small
+LoRA adapter specialised for embeddings — no labels and no domain-specific
+setup, so the same recipe works on any corpus of `.txt` files.
+
+### Hard-negative batching
+
+Each batch is built from a handful of documents with several passages each
+(controlled by `--passages-per-doc`), so the in-batch negatives include
+**same-document near-misses** (hard) alongside cross-document negatives
+(easy). Pure random batching across a large, diverse corpus only ever
+produces easy negatives — the loss then saturates by learning coarse topic
+separation and never learns to distinguish confusable concepts (an earlier
+random-batched run retrieved "disadvantage" passages for "advantage" queries
+despite a low training loss). `--batch-size` must be a multiple of
+`--passages-per-doc`.
+
+### Run it
+
+```bash
+python scripts/embed_tune.py \
+    --checkpoint checkpoints/finetune/step_XXXXXXX.pt \
+    --vocab      data/tokenizer/bpe.json \
+    --corpus-dir data/corpus/saga/ \
+    --output     checkpoints/lora/embed-saga/embed.lora
+```
+
+Output is a small `.lora` file (a few MB). The base checkpoint's weights are
+frozen — only the adapter is trained. On GPU this is fast; on CPU a few
+hundred steps still completes in minutes. **Embedding a large corpus for
+evaluation is the slow part, not this training pass** — see the
+`--encoder lora` notes in [setup-inference.md](setup-inference.md).
+
+Key flags:
+
+| Flag | Default | Description |
+|---|---|---|
+| `--checkpoint` | required | Checkpoint to tune (base weights stay frozen) |
+| `--corpus-dir` | required | Directory of `.txt` files to train on |
+| `--output` | required | Output `.lora` path |
+| `--batch-size` | `8` | Passages per batch; must be a multiple of `--passages-per-doc` |
+| `--passages-per-doc` | `4` | Passages per document per batch (hard-negative grouping) |
+| `--total-steps` | `500` | Training steps |
+| `--rank` / `--alpha` | `8` / `16.0` | LoRA capacity and scaling |
+| `--lr` | `1e-4` | AdamW learning rate |
+| `--temperature` | `0.05` | InfoNCE softmax temperature |
+
+### Consuming the adapter
+
+The adapter is for the **embedding model only**. It reroutes the same
+`q_proj`/`v_proj` weights that generation uses, so it must be loaded into a
+*separate* model instance dedicated to retrieval — never into the engine
+that generates chat responses, or generation output changes too. The
+evaluation harness handles this split for you:
+
+```bash
+python scripts/evaluate.py \
+    --checkpoint checkpoints/finetune/step_XXXXXXX.pt \
+    --vocab      data/tokenizer/bpe.json \
+    --corpus-dir data/corpus/saga/ \
+    --quiz       scripts/eval_data/saga_quiz.jsonl \
+    --encoder lora --lora checkpoints/lora/embed-saga/embed.lora
+```
+
+---
+
+## 6 — Checkpoints
 
 Checkpoints are saved as `step_NNNNNNN.pt` files in the output directory. Each checkpoint stores:
 
@@ -285,7 +431,7 @@ python -m grimoire_ai.llm.training.train \
 
 ---
 
-## 6 — Verify training worked
+## 7 — Verify training worked
 
 Quick sanity check after fine-tuning:
 
