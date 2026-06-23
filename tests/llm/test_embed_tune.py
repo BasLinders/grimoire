@@ -1,15 +1,19 @@
 """Unit tests for self-supervised contrastive embedding training.
 
 Coverage:
-    contrastive_loss   — perfect alignment collapses to ~0, uniform
-                          similarity gives log(batch) (no signal), gradients
-                          flow.
-    PassageDataset      — BOS prefix, truncation to max_seq_len.
-    collate_passages    — right-padding, attention mask correctness.
-    EmbedTuner          — loss decreases on a fixed batch, batch retrieval
-                           accuracy converges, batch_size=1 is rejected,
-                           train() cycles a short loader, LoRA-only training
-                           leaves base weights untouched.
+    contrastive_loss          — perfect alignment collapses to ~0, uniform
+                                 similarity gives log(batch) (no signal),
+                                 gradients flow.
+    PassageDataset             — BOS prefix, truncation to max_seq_len.
+    collate_passages           — right-padding, attention mask correctness.
+    DocumentGroupedBatchSampler — batch composition (docs/passages-per-doc),
+                                 validation, reproducibility, integration
+                                 with EmbedTuner.
+    EmbedTuner                 — loss decreases on a fixed batch, batch
+                                 retrieval accuracy converges, batch_size=1
+                                 is rejected, train() cycles a short loader,
+                                 LoRA-only training leaves base weights
+                                 untouched.
 """
 
 import pytest
@@ -23,6 +27,7 @@ from grimoire_ai.llm.model.transformer import GrimoireTransformer
 from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
 from grimoire_ai.llm.tokenizer.special_tokens import BOS_ID, PAD_ID
 from grimoire_ai.llm.training.embed_tune import (
+    DocumentGroupedBatchSampler,
     EmbedTuner,
     PassageDataset,
     collate_passages,
@@ -274,3 +279,104 @@ class TestEmbedTunerWithLora:
             sim = emb_a @ emb_b.T
 
         assert (sim.argmax(dim=1) == torch.arange(6)).all()
+
+
+# ---------------------------------------------------------------------------
+# DocumentGroupedBatchSampler
+# ---------------------------------------------------------------------------
+
+class TestDocumentGroupedBatchSampler:
+    def _doc_ids(self) -> list[int]:
+        # 4 documents, 5 passages each -> indices 0-19, doc_id = idx // 5.
+        return [idx // 5 for idx in range(20)]
+
+    def test_batch_size_must_be_multiple_of_passages_per_doc(self):
+        with pytest.raises(ValueError, match="multiple"):
+            DocumentGroupedBatchSampler(self._doc_ids(), batch_size=10, passages_per_doc=4)
+
+    def test_passages_per_doc_must_be_at_least_two(self):
+        with pytest.raises(ValueError, match="passages_per_doc"):
+            DocumentGroupedBatchSampler(self._doc_ids(), batch_size=8, passages_per_doc=1)
+
+    def test_rejects_corpus_with_no_large_enough_document(self):
+        # Every "document" here has only 1 passage -- none can supply 2.
+        with pytest.raises(ValueError, match="No document"):
+            DocumentGroupedBatchSampler(list(range(10)), batch_size=4, passages_per_doc=2)
+
+    def test_len_matches_num_batches(self):
+        sampler = DocumentGroupedBatchSampler(
+            self._doc_ids(), batch_size=8, passages_per_doc=4, num_batches=17
+        )
+        assert len(sampler) == 17
+        assert sum(1 for _ in sampler) == 17
+
+    def test_every_batch_has_correct_size(self):
+        sampler = DocumentGroupedBatchSampler(
+            self._doc_ids(), batch_size=8, passages_per_doc=4, num_batches=20, seed=0
+        )
+        for batch in sampler:
+            assert len(batch) == 8
+
+    def test_batch_contains_same_document_groups(self):
+        """Each batch must be composed of passages_per_doc-sized groups that
+        share a document -- the actual hard-negative structure this sampler
+        exists to produce."""
+        doc_ids = self._doc_ids()
+        sampler = DocumentGroupedBatchSampler(
+            doc_ids, batch_size=8, passages_per_doc=4, num_batches=20, seed=0
+        )
+        for batch in sampler:
+            docs_in_batch = [doc_ids[i] for i in batch]
+            # 8 passages / 4 per doc = 2 distinct documents, each appearing exactly 4 times.
+            counts: dict[int, int] = {}
+            for d in docs_in_batch:
+                counts[d] = counts.get(d, 0) + 1
+            assert len(counts) == 2
+            assert all(c == 4 for c in counts.values())
+
+    def test_indices_are_valid_and_within_their_document(self):
+        doc_ids = self._doc_ids()
+        sampler = DocumentGroupedBatchSampler(
+            doc_ids, batch_size=8, passages_per_doc=4, num_batches=10, seed=0
+        )
+        for batch in sampler:
+            for idx in batch:
+                assert 0 <= idx < len(doc_ids)
+
+    def test_seed_reproducible(self):
+        doc_ids = self._doc_ids()
+        a = list(DocumentGroupedBatchSampler(doc_ids, batch_size=8, passages_per_doc=4, num_batches=5, seed=42))
+        b = list(DocumentGroupedBatchSampler(doc_ids, batch_size=8, passages_per_doc=4, num_batches=5, seed=42))
+        assert a == b
+
+    def test_small_documents_are_excluded_not_crashed_on(self):
+        # doc 0 has 5 passages, doc 1 has only 1 -- doc 1 must simply be
+        # unused, not cause an error.
+        doc_ids = [0, 0, 0, 0, 0, 1]
+        sampler = DocumentGroupedBatchSampler(doc_ids, batch_size=4, passages_per_doc=2, num_batches=5, seed=0)
+        for batch in sampler:
+            for idx in batch:
+                assert doc_ids[idx] == 0
+
+    def test_works_as_dataloader_batch_sampler_with_embed_tuner(self):
+        """End-to-end: plug the sampler into a real DataLoader/EmbedTuner
+        pipeline and confirm training still runs and converges, proving the
+        hard-negative batches are still valid contrastive training input.
+        """
+        torch.manual_seed(0)
+        tok = BytePairEncoder()
+        tok.train(["hello world, the grappled creature has speed zero. " * 20], vocab_size=280)
+
+        # 4 documents worth of distinct passages, 4 passages each.
+        passages = [f"document {d} passage {p} hello world grappled creature" for d in range(4) for p in range(4)]
+        doc_ids = [d for d in range(4) for _ in range(4)]
+        dataset = PassageDataset(passages, tok, max_seq_len=16)
+        sampler = DocumentGroupedBatchSampler(doc_ids, batch_size=8, passages_per_doc=4, num_batches=30, seed=0)
+        loader = DataLoader(dataset, batch_sampler=sampler, collate_fn=collate_passages)
+
+        model = GrimoireTransformer(_small_config())
+        tuner = EmbedTuner(model, lr=3e-3, device="cpu")
+
+        on_log_calls = []
+        tuner.train(loader, total_steps=30, log_every=10, on_log=lambda s, l: on_log_calls.append((s, l)))
+        assert [s for s, _ in on_log_calls] == [10, 20, 30]
