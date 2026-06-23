@@ -115,6 +115,34 @@ rm -rf .venv-cuda           # Windows (Git Bash) / Linux / macOS
 pip install -e ".[ui]"
 ```
 
+#### Running the UI on GPU
+
+The UI does **not** switch compute environments at runtime — whether it uses
+the GPU is fixed by **which interpreter launches it**. To run training and
+evaluation on CUDA from the UI, launch the UI itself from your
+[CUDA venv](#a-dedicated-cuda-virtual-environment):
+
+```bash
+source .venv-cuda/Scripts/activate     # Windows (Git Bash)
+pip install -e ".[ui]"                 # the CUDA venv needs the UI extra too
+python -m grimoire_ai.ui
+```
+
+The `[ui]` install is required separately in `.venv-cuda` — the venv setup
+earlier only installed `.[dev]`, which does not include Gradio, so launching
+the UI without this step fails with a missing-`gradio` import.
+
+Behaviour once launched:
+
+| Tab | Device control | On CPU-launched UI |
+|---|---|---|
+| Pre-train / Fine-tune | **none** — auto-detects `cuda` if available, else `cpu` | always CPU; no override |
+| Evaluate | **Device** dropdown (`Auto` / `CPU` / `CUDA`) | selecting `CUDA` errors — the process has no GPU torch |
+
+Confirm which device is actually in use from the on-screen log, not the fan
+noise: training prints `Training on CUDA | …` / `Training on CPU | …`, and the
+Evaluate tab prints `Model loaded on cuda` / `Model loaded on cpu`.
+
 ### Corpus scraper (optional — for ingesting web/PDF/DOCX sources)
 
 ```bash
