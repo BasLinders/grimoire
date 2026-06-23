@@ -32,6 +32,15 @@ from pathlib import Path
 
 
 def main() -> None:
+    # The harness prints Unicode symbols (warning signs, arrows, etc.) throughout
+    # its progress messages. Windows consoles often default stdout/stderr to a
+    # legacy code page (e.g. cp1252) that can't encode them, crashing a run with
+    # a UnicodeEncodeError partway through -- reconfigure to UTF-8 unconditionally
+    # so a multi-hour run never dies on a print statement.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
     parser = argparse.ArgumentParser(
         description="Run Grimoire evaluation suite.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -62,10 +71,19 @@ def main() -> None:
         help="Directory for the JSON report (default: data/eval).",
     )
     parser.add_argument(
-        "--encoder", choices=["lexical", "model", "minilm", "mpnet"], default="lexical",
+        "--encoder", choices=["lexical", "model", "minilm", "mpnet", "lora"], default="lexical",
         help="Retrieval embedding backend (default: lexical). 'model' uses the "
              "checkpoint's own embeddings; 'minilm'/'mpnet' use a dedicated sentence "
-             "encoder independent of the checkpoint (requires pip install -e \".[encoder]\").",
+             "encoder independent of the checkpoint (requires pip install -e \".[encoder]\"); "
+             "'lora' uses the checkpoint's own embeddings through a LoRA adapter trained by "
+             "scripts/embed_tune.py (requires --lora). The adapter is applied to a separate "
+             "model instance used only for embedding -- the engine that generates chat "
+             "responses is unaffected, since the same adapted weights would otherwise change "
+             "generation output too.",
+    )
+    parser.add_argument(
+        "--lora", metavar="PATH", default="",
+        help="Path to a .lora file from scripts/embed_tune.py. Required when --encoder lora.",
     )
     parser.add_argument(
         "--max-ppl-batches", type=int, default=50, metavar="N",
@@ -86,10 +104,25 @@ def main() -> None:
              "result as context, and resolve <TOOL:python> tags in responses.",
     )
     parser.add_argument(
+        "--index-batch-size", type=int, default=32, metavar="N",
+        help="Passages embedded per forward pass when building a semantic corpus "
+             "(model/minilm/mpnet/lora encoders). Larger values amortize fixed "
+             "per-call overhead and can meaningfully improve CPU throughput "
+             "(default: 32).",
+    )
+    parser.add_argument(
         "--retrieval-threshold", type=float, default=None, metavar="X",
         help="Minimum top-1 score for retrieved context to be injected during quiz "
              "generation. Default (unset) always injects the top-1 result, even an "
              "irrelevant one. Cosine scores live in [-1, 1].",
+    )
+    parser.add_argument(
+        "--checkpoint-every-files", type=int, default=25, metavar="N",
+        help="For --encoder lora: save an index checkpoint every N corpus files "
+             "(default: 25). A large corpus can take hours to embed on CPU; this "
+             "lets a restart resume from the last checkpoint instead of "
+             "re-embedding everything. Checkpoint lives at "
+             "<output-dir>/lora_index_checkpoint/.",
     )
     args = parser.parse_args()
 
@@ -119,7 +152,7 @@ def main() -> None:
         if documents:
             if args.encoder == "model":
                 print(f"Building semantic corpus from {len(documents)} file(s) …")
-                engine.build_semantic_corpus(documents)
+                engine.build_semantic_corpus(documents, batch_size=args.index_batch_size)
             elif args.encoder in ("minilm", "mpnet"):
                 from grimoire_ai.llm.inference.semantic import SemanticRetriever, make_external_embed_fn
                 model_id = "all-MiniLM-L6-v2" if args.encoder == "minilm" else "all-mpnet-base-v2"
@@ -128,7 +161,48 @@ def main() -> None:
                 retriever = SemanticRetriever(embed_fn=embed_fn)
                 for text, source in documents:
                     retriever.add_text(text, source=source)
-                retriever.index()
+                retriever.index(batch_size=args.index_batch_size)
+                engine.corpus = retriever
+            elif args.encoder == "lora":
+                if not args.lora:
+                    raise ValueError("--encoder lora requires --lora <path to .lora file>")
+                from grimoire_ai.llm.inference.semantic import SemanticRetriever
+                print(f"Loading embedding adapter: {args.lora} …")
+                embed_engine = InferenceEngine(
+                    checkpoint_path=args.checkpoint,
+                    tokenizer_path=args.vocab,
+                    quantize=args.quantize,
+                )
+                embed_engine.load_lora(args.lora)
+
+                # Embedding a real-sized corpus on CPU can take hours; checkpoint
+                # periodically so a restart (e.g. after the machine sleeps) resumes
+                # from the last save instead of re-embedding everything. Assumes
+                # the corpus hasn't changed between runs -- no staleness check.
+                checkpoint_dir = Path(args.output_dir) / "lora_index_checkpoint"
+                if checkpoint_dir.exists():
+                    print(f"Resuming from index checkpoint: {checkpoint_dir} …")
+                    retriever = SemanticRetriever.from_index(checkpoint_dir, embed_fn=embed_engine.embed)
+                    print(f"  {retriever.size} passage(s) already indexed from "
+                          f"{len(retriever.indexed_sources)} file(s).")
+                else:
+                    retriever = SemanticRetriever(embed_fn=embed_engine.embed)
+
+                remaining = [(t, s) for t, s in documents if s not in retriever.indexed_sources]
+                print(f"Building semantic corpus: {len(remaining)} file(s) remaining "
+                      f"of {len(documents)} …")
+
+                files_per_checkpoint = max(args.checkpoint_every_files, 1)
+                for i in range(0, len(remaining), files_per_checkpoint):
+                    group = remaining[i : i + files_per_checkpoint]
+                    for text, source in group:
+                        retriever.add_text(text, source=source)
+                    retriever.index(on_progress=print, batch_size=args.index_batch_size)
+                    retriever.save_index(checkpoint_dir, build_faiss=False)
+                    done = min(i + files_per_checkpoint, len(remaining))
+                    print(f"  checkpoint saved: {retriever.size} passage(s) indexed "
+                          f"({done}/{len(remaining)} file(s) this run) …")
+
                 engine.corpus = retriever
             else:
                 from grimoire_ai.corpus.corpus import GrimoireCorpus
