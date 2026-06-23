@@ -46,6 +46,25 @@ passages each, so in-batch negatives include same-document near-misses
 self-supervised, still no labels or domain knowledge, just a different way
 of grouping the same passages into batches.
 
+Supervised pairs
+-----------------
+Both ``train_step`` and ``DocumentGroupedBatchSampler`` are still
+self-supervised: the "positive" is always two views of the *same* passage
+(SimCSE dropout twins), so the loss only ever learns "is this the same
+content", never "does this passage answer this query" — the actual
+retrieval task. Hard negatives improved how well the self-supervised
+adapter learned its proxy task, but did not close the gap to a dedicated
+sentence encoder (MiniLM/MPNet), which are trained on millions of real
+query/relevant-passage pairs.
+
+``QAPairDataset``/``collate_qa_pairs``/``EmbedTuner.train_step_pairs`` add a
+*supervised* path for when real (query, relevant-passage) pairs exist —
+e.g. ``grimoire_ai.llm.data.qa_pairs.load_qa_pairs`` over a StackExchange-style
+Q&A corpus. ``emb_a`` and ``emb_b`` become the question and answer
+embeddings (two genuinely different inputs) instead of two dropout views of
+one input; ``contrastive_loss`` itself needs no change, since it was always
+just in-batch InfoNCE between two aligned batches.
+
 Scope
 -----
 ``PassageDataset``/``collate_passages`` tokenize corpus passages the same
@@ -67,6 +86,31 @@ from torch.utils.data import Dataset
 from grimoire_ai.llm.model.transformer import GrimoireTransformer
 from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
 from grimoire_ai.llm.tokenizer.special_tokens import BOS_ID, PAD_ID
+
+
+def _right_pad_batch(seqs: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+    """Right-pad a batch of variable-length 1-D token-id tensors with ``PAD_ID``.
+
+    Shared by ``collate_passages`` and ``collate_qa_pairs``. Right-padding
+    (not the left-padding ``PaddingCollator`` uses for causal LM training) is
+    fine here: ``_embed_pooled`` masks padded positions out of the mean pool
+    rather than feeding them through autoregressive attention, so there is no
+    "padding mid-context" hazard to avoid.
+
+    Args:
+        seqs: A list of variable-length 1-D token-id tensors.
+
+    Returns:
+        ``(input_ids, attention_mask)``, both of shape
+        ``(len(seqs), max_len)``, where ``max_len`` is the longest sequence.
+    """
+    width = max(seq.size(0) for seq in seqs)
+    input_ids = torch.full((len(seqs), width), PAD_ID, dtype=torch.long)
+    attention_mask = torch.zeros((len(seqs), width), dtype=torch.long)
+    for row, seq in enumerate(seqs):
+        input_ids[row, : seq.size(0)] = seq
+        attention_mask[row, : seq.size(0)] = 1
+    return input_ids, attention_mask
 
 
 def contrastive_loss(
@@ -141,11 +185,6 @@ class PassageDataset(Dataset):
 def collate_passages(batch: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
     """Right-pad a batch of token-id sequences with ``PAD_ID``.
 
-    Right-padding (not the left-padding ``PaddingCollator`` uses for causal
-    LM training) is fine here: ``_embed_pooled`` masks padded positions out
-    of the mean pool rather than feeding them through autoregressive
-    attention, so there is no "padding mid-context" hazard to avoid.
-
     Args:
         batch: A list of variable-length 1-D token-id tensors, as returned
             by ``PassageDataset.__getitem__``.
@@ -155,13 +194,69 @@ def collate_passages(batch: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Ten
         ``(batch_size, max_len)``, where ``max_len`` is the longest sequence
         in this batch.
     """
-    width = max(seq.size(0) for seq in batch)
-    input_ids = torch.full((len(batch), width), PAD_ID, dtype=torch.long)
-    attention_mask = torch.zeros((len(batch), width), dtype=torch.long)
-    for row, seq in enumerate(batch):
-        input_ids[row, : seq.size(0)] = seq
-        attention_mask[row, : seq.size(0)] = 1
-    return input_ids, attention_mask
+    return _right_pad_batch(batch)
+
+
+class QAPairDataset(Dataset):
+    """Tokenized (question, answer) pairs for supervised contrastive training.
+
+    Tokenization mirrors ``PassageDataset`` (``BOS`` prefix, truncate to
+    ``max_seq_len``, lazily in ``__getitem__``) so the question and answer
+    sides see the same token layout as everything else this module produces.
+    """
+
+    def __init__(
+        self,
+        pairs: list[tuple[str, str]],
+        tokenizer: BytePairEncoder,
+        max_seq_len: int,
+    ) -> None:
+        """Store the pairs and tokenizer for on-access encoding.
+
+        Args:
+            pairs: ``(question, answer)`` text pairs, e.g. from
+                ``grimoire_ai.llm.data.qa_pairs.load_qa_pairs``.
+            tokenizer: A loaded ``BytePairEncoder``.
+            max_seq_len: Sequences longer than this (including the ``BOS``
+                token) are truncated, applied independently to each side.
+        """
+        self._pairs = pairs
+        self._tokenizer = tokenizer
+        self._max_seq_len = max_seq_len
+
+    def __len__(self) -> int:
+        return len(self._pairs)
+
+    def _encode(self, text: str) -> torch.Tensor:
+        ids = [BOS_ID] + self._tokenizer.encode(text)[: self._max_seq_len - 1]
+        return torch.tensor(ids, dtype=torch.long)
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        question, answer = self._pairs[idx]
+        return self._encode(question), self._encode(answer)
+
+
+def collate_qa_pairs(
+    batch: list[tuple[torch.Tensor, torch.Tensor]],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Right-pad a batch of ``(question, answer)`` token-id pairs.
+
+    Questions and answers are padded *independently* — a long answer must
+    not force every question in the batch to pad to that length, and vice
+    versa.
+
+    Args:
+        batch: A list of ``(question_ids, answer_ids)`` tuples, as returned
+            by ``QAPairDataset.__getitem__``.
+
+    Returns:
+        ``(q_input_ids, q_attention_mask, a_input_ids, a_attention_mask)``.
+        The two sides may have different padded widths.
+    """
+    questions, answers = zip(*batch)
+    q_input_ids, q_attention_mask = _right_pad_batch(list(questions))
+    a_input_ids, a_attention_mask = _right_pad_batch(list(answers))
+    return q_input_ids, q_attention_mask, a_input_ids, a_attention_mask
 
 
 class DocumentGroupedBatchSampler:
@@ -331,6 +426,96 @@ class EmbedTuner:
         self.optimizer.step()
         return loss.item()
 
+    def train_step_pairs(
+        self,
+        q_input_ids: torch.Tensor,
+        q_attention_mask: Optional[torch.Tensor],
+        a_input_ids: torch.Tensor,
+        a_attention_mask: Optional[torch.Tensor],
+    ) -> float:
+        """Run one supervised contrastive step on a batch of (question, answer) pairs.
+
+        Unlike ``train_step``'s SimCSE self-pairs (the same input embedded
+        twice), this embeds two genuinely *different* inputs — real
+        questions and their real answer passages — so the loss directly
+        optimises the retrieval task itself (does this passage answer this
+        query) instead of a same-passage proxy.
+
+        Args:
+            q_input_ids: Question token ids, shape ``(batch, q_seq_len)``.
+                ``batch`` must be at least 2 (see ``train_step``).
+            q_attention_mask: Optional question padding mask.
+            a_input_ids: Answer token ids, shape ``(batch, a_seq_len)``,
+                row-aligned with ``q_input_ids`` (row ``i``'s answer must
+                answer row ``i``'s question).
+            a_attention_mask: Optional answer padding mask.
+
+        Returns:
+            The scalar loss value for this step (Python float).
+
+        Raises:
+            ValueError: If ``q_input_ids`` has fewer than 2 rows.
+        """
+        if q_input_ids.size(0) < 2:
+            raise ValueError(
+                f"train_step_pairs requires batch_size >= 2 for in-batch "
+                f"negatives to exist, got {q_input_ids.size(0)}."
+            )
+
+        self.model.train()
+        q_input_ids = q_input_ids.to(self.device)
+        a_input_ids = a_input_ids.to(self.device)
+        if q_attention_mask is not None:
+            q_attention_mask = q_attention_mask.to(self.device)
+        if a_attention_mask is not None:
+            a_attention_mask = a_attention_mask.to(self.device)
+
+        emb_q = self.model._embed_pooled(q_input_ids, q_attention_mask)
+        emb_a = self.model._embed_pooled(a_input_ids, a_attention_mask)
+        loss = contrastive_loss(emb_q, emb_a, temperature=self.temperature)
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+        self.optimizer.step()
+        return loss.item()
+
+    def _run_loop(
+        self,
+        loader: Iterable,
+        total_steps: int,
+        log_every: int,
+        on_log: Optional[Callable[[int, float], None]],
+        step_fn: Callable[..., float],
+        log_prefix: str,
+    ) -> None:
+        """Shared cycling/logging loop for ``train`` and ``train_pairs``.
+
+        Cycles ``loader`` indefinitely so training can run for more steps
+        than there are batches in the dataset, mirroring ``Trainer.train()``.
+        Each batch yielded by ``loader`` is unpacked and passed positionally
+        to ``step_fn``.
+        """
+        step = 0
+        running_loss = 0.0
+        data_iter = iter(loader)
+        while step < total_steps:
+            try:
+                batch = next(data_iter)
+            except StopIteration:
+                data_iter = iter(loader)
+                batch = next(data_iter)
+
+            running_loss += step_fn(*batch)
+            step += 1
+
+            if step % log_every == 0:
+                avg_loss = running_loss / log_every
+                print(f"  {log_prefix} step {step:>6} / {total_steps} | loss {avg_loss:.4f}")
+                if on_log is not None:
+                    on_log(step, avg_loss)
+                running_loss = 0.0
+
     def train(
         self,
         loader: Iterable[tuple[torch.Tensor, torch.Tensor]],
@@ -339,9 +524,6 @@ class EmbedTuner:
         on_log: Optional[Callable[[int, float], None]] = None,
     ) -> None:
         """Run ``train_step`` repeatedly until ``total_steps`` is reached.
-
-        Cycles ``loader`` indefinitely so training can run for more steps
-        than there are batches in the dataset, mirroring ``Trainer.train()``.
 
         Args:
             loader: Iterable of ``(input_ids, attention_mask)`` batches, e.g.
@@ -354,22 +536,26 @@ class EmbedTuner:
             on_log: Optional callback invoked as ``(step, avg_loss)`` at each
                 ``log_every`` boundary, in addition to the printed line.
         """
-        step = 0
-        running_loss = 0.0
-        data_iter = iter(loader)
-        while step < total_steps:
-            try:
-                input_ids, attention_mask = next(data_iter)
-            except StopIteration:
-                data_iter = iter(loader)
-                input_ids, attention_mask = next(data_iter)
+        self._run_loop(loader, total_steps, log_every, on_log, self.train_step, "embed-tune")
 
-            running_loss += self.train_step(input_ids, attention_mask)
-            step += 1
+    def train_pairs(
+        self,
+        loader: Iterable[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]],
+        total_steps: int,
+        log_every: int = 50,
+        on_log: Optional[Callable[[int, float], None]] = None,
+    ) -> None:
+        """Run ``train_step_pairs`` repeatedly until ``total_steps`` is reached.
 
-            if step % log_every == 0:
-                avg_loss = running_loss / log_every
-                print(f"  embed-tune step {step:>6} / {total_steps} | loss {avg_loss:.4f}")
-                if on_log is not None:
-                    on_log(step, avg_loss)
-                running_loss = 0.0
+        Args:
+            loader: Iterable of ``(q_input_ids, q_attention_mask, a_input_ids,
+                a_attention_mask)`` batches, e.g. a ``DataLoader`` over
+                ``QAPairDataset`` with ``collate_fn=collate_qa_pairs``. Every
+                batch must have at least 2 rows (see ``train_step_pairs``).
+            total_steps: Number of ``train_step_pairs`` calls to run.
+            log_every: Print (and invoke ``on_log`` with) the mean loss over
+                the last ``log_every`` steps, every ``log_every`` steps.
+            on_log: Optional callback invoked as ``(step, avg_loss)`` at each
+                ``log_every`` boundary, in addition to the printed line.
+        """
+        self._run_loop(loader, total_steps, log_every, on_log, self.train_step_pairs, "embed-tune (qa)")
