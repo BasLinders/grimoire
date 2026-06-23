@@ -436,8 +436,21 @@ python scripts/evaluate.py \
     --vocab      data/tokenizer/bpe.json \
     --corpus-dir data/corpus/saga/ \
     --quiz       scripts/eval_data/saga_quiz.jsonl \
-    --encoder lora --lora checkpoints/lora/embed-saga/embed.lora
+    --encoder lora --lora checkpoints/lora/embed-saga/embed.lora \
+    --quiz-repetition-penalty 1.3
 ```
+
+> **Always pass `--quiz-repetition-penalty 1.3` for quiz evaluation.** The
+> flag defaults to `1.0` (no penalty), which leaves greedy decoding free to
+> fall into repetition loops ("a critical hit is a critical hit") on a small
+> model — degenerate output that depresses quiz scores and does **not**
+> reflect real use, since the chat/agent runtime already generates with a
+> `1.3` penalty (see `agents.json`). The default is left at `1.0` so the
+> harness measures *unmodified* generation by default, but the standing
+> recipe for any quiz comparison should match the deployment setting. Keep
+> the penalty **identical across every run you compare** — it shifts absolute
+> pass-rates, so mixing `1.0` baselines with `1.3` candidates is not a fair
+> comparison.
 
 ---
 
