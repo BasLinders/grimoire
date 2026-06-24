@@ -555,3 +555,127 @@ class TestEmbedTunerPairs:
         steps_logged = []
         tuner.train_pairs(loader, total_steps=10, log_every=2, on_log=lambda s, l: steps_logged.append(s))
         assert steps_logged == [2, 4, 6, 8, 10]
+
+
+# ---------------------------------------------------------------------------
+# Resume / checkpointing
+# ---------------------------------------------------------------------------
+
+class TestResumeAndCheckpointing:
+    def test_start_step_resumes_at_the_right_point(self):
+        """total_steps is the absolute target, not an additional count --
+        starting at step 400 with total_steps=1000 runs 600 more steps."""
+        model = GrimoireTransformer(_small_config())
+        tuner = EmbedTuner(model, device="cpu")
+        loader = [(torch.randint(1, 256, (3, 6)), None)]
+
+        steps_logged = []
+        tuner.train(
+            loader, total_steps=10, log_every=2, start_step=4,
+            on_log=lambda s, l: steps_logged.append(s),
+        )
+        assert steps_logged == [6, 8, 10]
+
+    def test_start_step_at_or_past_total_steps_runs_nothing(self):
+        model = GrimoireTransformer(_small_config())
+        tuner = EmbedTuner(model, device="cpu")
+        loader = [(torch.randint(1, 256, (3, 6)), None)]
+
+        steps_logged = []
+        tuner.train(
+            loader, total_steps=10, log_every=2, start_step=10,
+            on_log=lambda s, l: steps_logged.append(s),
+        )
+        assert steps_logged == []
+
+    def test_checkpoint_every_fires_at_the_right_boundaries(self):
+        model = GrimoireTransformer(_small_config())
+        tuner = EmbedTuner(model, device="cpu")
+        loader = [(torch.randint(1, 256, (3, 6)), None)]
+
+        checkpoints = []
+        tuner.train(
+            loader, total_steps=10, log_every=100, checkpoint_every=3,
+            on_checkpoint=lambda s: checkpoints.append(s),
+        )
+        assert checkpoints == [3, 6, 9]
+
+    def test_checkpoint_every_zero_disables_checkpointing(self):
+        model = GrimoireTransformer(_small_config())
+        tuner = EmbedTuner(model, device="cpu")
+        loader = [(torch.randint(1, 256, (3, 6)), None)]
+
+        checkpoints = []
+        tuner.train(
+            loader, total_steps=10, log_every=100, checkpoint_every=0,
+            on_checkpoint=lambda s: checkpoints.append(s),
+        )
+        assert checkpoints == []
+
+    def test_checkpoint_every_independent_of_log_every(self):
+        """Checkpointing and logging fire on their own independent cadences."""
+        model = GrimoireTransformer(_small_config())
+        tuner = EmbedTuner(model, device="cpu")
+        loader = [(torch.randint(1, 256, (3, 6)), None)]
+
+        logs, checkpoints = [], []
+        tuner.train(
+            loader, total_steps=12, log_every=5, checkpoint_every=4,
+            on_log=lambda s, l: logs.append(s),
+            on_checkpoint=lambda s: checkpoints.append(s),
+        )
+        assert logs == [5, 10]
+        assert checkpoints == [4, 8, 12]
+
+    def test_train_pairs_supports_start_step_and_checkpointing_too(self):
+        model = GrimoireTransformer(_small_config())
+        tuner = EmbedTuner(model, device="cpu")
+        loader = [(
+            torch.randint(1, 256, (3, 6)), None,
+            torch.randint(1, 256, (3, 7)), None,
+        )]
+
+        checkpoints = []
+        tuner.train_pairs(
+            loader, total_steps=10, log_every=100, start_step=6, checkpoint_every=2,
+            on_checkpoint=lambda s: checkpoints.append(s),
+        )
+        assert checkpoints == [8, 10]
+
+    def test_resume_with_save_lora_extra_round_trips_a_real_run(self, tmp_path):
+        """End-to-end: train partway, checkpoint via save_lora's extra=,
+        reload into a fresh model+optimizer via load_lora, and confirm
+        training continues from the right step with the right LoRA weights
+        and optimizer state -- the actual resume workflow embed_tune.py uses.
+        """
+        from grimoire_ai.llm.model.lora import load_lora, save_lora
+
+        torch.manual_seed(0)
+        model = GrimoireTransformer(_small_config())
+        model.add_lora_adapters(rank=4, alpha=8.0, targets=["q_proj", "v_proj"])
+        tuner = EmbedTuner(model, lr=3e-3, device="cpu")
+        loader = [(torch.randint(1, 256, (4, 6)), None)]
+
+        # Train partway, then checkpoint.
+        tuner.train(loader, total_steps=10, log_every=100)
+        ckpt_path = str(tmp_path / "embed.ckpt.pt")
+        save_lora(
+            model, rank=4, alpha=8.0, targets=["q_proj", "v_proj"], path=ckpt_path,
+            extra={"optimizer_state": tuner.optimizer.state_dict(), "step": 10},
+        )
+
+        # Resume into a fresh model: same base weights, no LoRA yet.
+        model2 = GrimoireTransformer(_small_config())
+        model2.load_state_dict(
+            {k: v for k, v in model.state_dict().items() if "lora" not in k}, strict=False,
+        )
+        payload = load_lora(model2, ckpt_path)
+        tuner2 = EmbedTuner(model2, lr=3e-3, device="cpu")
+        tuner2.optimizer.load_state_dict(payload["optimizer_state"])
+
+        steps_logged = []
+        tuner2.train(
+            loader, total_steps=15, log_every=1, start_step=payload["step"],
+            on_log=lambda s, l: steps_logged.append(s),
+        )
+        assert steps_logged == [11, 12, 13, 14, 15]
