@@ -29,14 +29,31 @@ The parser is deliberately tolerant: it keys off the ``#``/``##``/``---``
 structural markers and tolerates missing scores, missing bodies, and blocks
 with no answers (which are simply skipped) rather than assuming every block is
 well-formed.
+
+Instruction-tuning conversion
+------------------------------
+The same pairs double as instruction-tuning data for the *generator*: a
+StackExchange question maps directly onto ``ConversationDataset``'s
+``"user"`` field. The mismatch is the answer — community answers run
+discursive and long (median ~1200 characters across this corpus, some over
+20,000), where the model needs to learn short, direct replies (the existing
+hand-authored ``scripts/finetune_data/saga_v1.jsonl`` averages ~320
+characters). ``qa_pairs_to_finetune_examples`` bridges this by extracting two
+different-length slices of the *same* answer: a longer one as ``"context"``
+(simulating what a retriever would hand the model) and a shorter one as
+``"assistant"`` (the concise reply to learn to produce from it). There's no
+separately-authored "ideal short answer" to draw on, so this derives one from
+the community answer itself rather than inventing one — a known
+simplification, not a substitute for curated examples.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterable, Iterator, Optional
 
 # A question block opens with a level-1 ATX heading: "# <title>". We match at
 # line start and capture the title text. (Answers use "## ", which this does
@@ -216,3 +233,136 @@ def load_qa_pairs(
                     continue
             pairs.append(pair)
     return pairs
+
+
+# ---------------------------------------------------------------------------
+# Instruction-tuning conversion
+# ---------------------------------------------------------------------------
+
+# Default budgets, chosen to land near scripts/finetune_data/saga_v1.jsonl's
+# existing style (assistant answers there run ~185-530 characters; context
+# there is the bare source rule a sentence or two shorter than the answer).
+_DEFAULT_CONTEXT_MAX_CHARS = 600
+_DEFAULT_ANSWER_MAX_CHARS = 350
+
+# Reused for both context and answer extraction below -- same sentence
+# boundary rule as grimoire_ai.llm.inference.semantic.chunk_text's packing,
+# kept local here since that pattern is private to that module.
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+
+# Line boundary, checked before sentence-splitting: StackExchange answers
+# often format lists as one item per line with little or no terminal
+# punctuation (e.g. a table of abbreviations), which _SENTENCE_SPLIT alone
+# would never break on -- without this, such a list is indistinguishable
+# from one giant unpunctuated "sentence" and blows straight through any
+# character budget.
+_LINE_SPLIT = re.compile(r"\n+")
+
+
+@dataclass(frozen=True)
+class FinetuneExample:
+    """A (question, concise answer, context) triple, field-compatible with
+    ``grimoire_ai.llm.data.conversation.ConversationDataset``'s JSONL format.
+    """
+
+    user: str
+    assistant: str
+    context: str
+
+    def to_json_line(self) -> str:
+        """Serialize to one JSONL line (no trailing newline)."""
+        return json.dumps({"user": self.user, "assistant": self.assistant, "context": self.context})
+
+
+def _take_sentences_within_budget(text: str, max_chars: int) -> str:
+    """Take whole sentences/lines from the start of ``text`` up to ``max_chars``.
+
+    Splits on line breaks first, then sentences within each line, before
+    packing -- a list-formatted answer (one item per line, little or no
+    terminal punctuation) would otherwise look like a single giant
+    "sentence" to a sentence-only splitter and blow straight through the
+    budget (observed on the real corpus: list-of-abbreviations answers with
+    no period for thousands of characters).
+
+    Packs units greedily, stopping *before* one that would push the running
+    length over budget. Always returns at least the first unit, even if it
+    alone exceeds ``max_chars`` -- truncating mid-unit would risk cutting off
+    the actual answer rather than just trailing detail.
+
+    Args:
+        text: Source text to extract a leading slice of.
+        max_chars: Target maximum length in characters.
+
+    Returns:
+        The extracted slice, stripped. Empty only if ``text`` is blank.
+    """
+    units: list[str] = []
+    for line in _LINE_SPLIT.split(text.strip()):
+        line = line.strip()
+        if not line:
+            continue
+        units.extend(s.strip() for s in _SENTENCE_SPLIT.split(line) if s.strip())
+    if not units:
+        return ""
+    taken = [units[0]]
+    total = len(units[0])
+    for unit in units[1:]:
+        if total + 1 + len(unit) > max_chars:
+            break
+        taken.append(unit)
+        total += 1 + len(unit)
+    return " ".join(taken)
+
+
+def qa_pair_to_finetune_example(
+    pair: QAPair,
+    context_max_chars: int = _DEFAULT_CONTEXT_MAX_CHARS,
+    answer_max_chars: int = _DEFAULT_ANSWER_MAX_CHARS,
+) -> Optional[FinetuneExample]:
+    """Convert one ``QAPair`` into a ``FinetuneExample``, or ``None``.
+
+    Both ``context`` and ``assistant`` are leading slices of the *same*
+    ``pair.answer`` text, extracted independently with ``answer_max_chars <=
+    context_max_chars`` so the assistant target is consistent with (a prefix
+    of, in practice) what the context shows -- the model is being taught to
+    state the direct answer the context already contains, not to introduce
+    information absent from it.
+
+    Args:
+        pair: A parsed question/answer pair.
+        context_max_chars: Budget for the ``context`` slice.
+        answer_max_chars: Budget for the ``assistant`` slice. Should not
+            exceed ``context_max_chars``.
+
+    Returns:
+        ``None`` when the answer is too short to form a meaningful pair
+        (e.g. a one-word "Yes." with no elaboration) -- there is nothing
+        useful to extract twice.
+    """
+    context = _take_sentences_within_budget(pair.answer, context_max_chars)
+    assistant = _take_sentences_within_budget(pair.answer, answer_max_chars)
+    if len(context) < 20 or len(assistant) < 10:
+        return None
+    return FinetuneExample(user=pair.question, assistant=assistant, context=context)
+
+
+def qa_pairs_to_finetune_examples(
+    pairs: Iterable[QAPair],
+    context_max_chars: int = _DEFAULT_CONTEXT_MAX_CHARS,
+    answer_max_chars: int = _DEFAULT_ANSWER_MAX_CHARS,
+) -> list[FinetuneExample]:
+    """Convert many ``QAPair``s, dropping any too short to split meaningfully.
+
+    Args:
+        pairs: Parsed question/answer pairs, e.g. from ``load_qa_pairs``.
+        context_max_chars: Forwarded to ``qa_pair_to_finetune_example``.
+        answer_max_chars: Forwarded to ``qa_pair_to_finetune_example``.
+
+    Returns:
+        A list of ``FinetuneExample``, shorter than ``pairs`` by however many
+        were dropped as too short.
+    """
+    examples = (
+        qa_pair_to_finetune_example(p, context_max_chars, answer_max_chars) for p in pairs
+    )
+    return [ex for ex in examples if ex is not None]
