@@ -1,17 +1,29 @@
-"""Unit tests for StackExchange Q&A pair parsing.
+"""Unit tests for StackExchange Q&A pair parsing and finetune-data conversion.
 
 Coverage:
-    parse_qa_text  — title/answer extraction, multiple answers per question,
-                     accepted flag, score parsing (incl. negative), malformed
-                     and empty blocks, trailing answer with no separator.
-    load_qa_pairs  — directory globbing, min_score filtering, accepted_only.
+    parse_qa_text                — title/answer extraction, multiple answers
+                                    per question, accepted flag, score parsing
+                                    (incl. negative), malformed and empty
+                                    blocks, trailing answer with no separator.
+    load_qa_pairs                 — directory globbing, min_score filtering,
+                                    accepted_only.
+    qa_pair_to_finetune_example  — context/assistant extraction budgets,
+                                    short-answer rejection, JSONL round-trip.
 """
 
+import json
 from pathlib import Path
 
 import pytest
 
-from grimoire_ai.llm.data.qa_pairs import QAPair, load_qa_pairs, parse_qa_text
+from grimoire_ai.llm.data.qa_pairs import (
+    FinetuneExample,
+    QAPair,
+    load_qa_pairs,
+    parse_qa_text,
+    qa_pair_to_finetune_example,
+    qa_pairs_to_finetune_examples,
+)
 
 
 # A faithful mock of the scraper's output format (two questions, the first
@@ -192,3 +204,115 @@ class TestLoadQAPairs:
     def test_no_matching_files_returns_empty(self, tmp_path):
         pairs = load_qa_pairs(tmp_path, min_score=1)
         assert pairs == []
+
+
+# ---------------------------------------------------------------------------
+# Instruction-tuning conversion
+# ---------------------------------------------------------------------------
+
+def _pair(answer: str, question: str = "How does grappling work?") -> QAPair:
+    return QAPair(question=question, answer=answer, answer_score=10, accepted=True)
+
+
+class TestQaPairToFinetuneExample:
+    def test_user_is_the_question(self):
+        ex = qa_pair_to_finetune_example(_pair("A grappled creature has its speed reduced to zero."))
+        assert ex.user == "How does grappling work?"
+
+    def test_context_and_assistant_are_leading_slices_of_the_answer(self):
+        answer = (
+            "A grappled creature has its speed reduced to zero. "
+            "The condition ends if the grappler is incapacitated. "
+            "It also ends if the creature is moved out of the grappler's reach."
+        )
+        ex = qa_pair_to_finetune_example(_pair(answer), context_max_chars=200, answer_max_chars=60)
+        assert answer.startswith(ex.context)
+        assert answer.startswith(ex.assistant)
+
+    def test_assistant_is_no_longer_than_context(self):
+        answer = (
+            "A grappled creature has its speed reduced to zero. "
+            "The condition ends if the grappler is incapacitated. "
+            "It also ends if the creature is moved out of the grappler's reach."
+        )
+        ex = qa_pair_to_finetune_example(_pair(answer), context_max_chars=200, answer_max_chars=60)
+        assert len(ex.assistant) <= len(ex.context)
+
+    def test_respects_context_max_chars(self):
+        long_answer = "This is one sentence. " * 50
+        ex = qa_pair_to_finetune_example(_pair(long_answer), context_max_chars=100, answer_max_chars=50)
+        assert len(ex.context) <= 100 or ex.context == "This is one sentence."  # single-sentence floor
+
+    def test_respects_answer_max_chars(self):
+        long_answer = "This is one sentence. " * 50
+        ex = qa_pair_to_finetune_example(_pair(long_answer), context_max_chars=400, answer_max_chars=30)
+        assert len(ex.assistant) <= 30 or ex.assistant == "This is one sentence."
+
+    def test_does_not_cut_off_mid_sentence(self):
+        answer = "Short first sentence here now. This second one is considerably longer than the budget allows."
+        ex = qa_pair_to_finetune_example(_pair(answer), context_max_chars=40, answer_max_chars=40)
+        # Either exactly the first sentence, or the first sentence is a clean prefix.
+        assert ex.context == "Short first sentence here now."
+
+    def test_single_long_sentence_exceeding_budget_is_still_returned(self):
+        """A budget smaller than even the first sentence must not produce an
+        empty string -- better to exceed the budget than drop the answer."""
+        answer = "This single sentence is deliberately much longer than the tiny budget given to it here."
+        ex = qa_pair_to_finetune_example(_pair(answer), context_max_chars=10, answer_max_chars=10)
+        assert ex is not None
+        assert ex.context == answer
+        assert ex.assistant == answer
+
+    def test_unpunctuated_line_list_does_not_blow_through_the_budget(self):
+        """Regression: a list with one item per line and no terminal
+        punctuation (observed on the real corpus -- an abbreviation table)
+        looked like a single giant 'sentence' to a sentence-only splitter
+        and exceeded the budget by 10x or more. Line breaks must be treated
+        as unit boundaries too, not just '.', '!', '?'.
+        """
+        answer = "\n".join(f"Item{i} description for entry number {i}" for i in range(50))
+        ex = qa_pair_to_finetune_example(_pair(answer), context_max_chars=100, answer_max_chars=50)
+        assert len(ex.context) <= 100
+        assert len(ex.assistant) <= 50
+
+    def test_too_short_answer_returns_none(self):
+        assert qa_pair_to_finetune_example(_pair("Yes.")) is None
+
+    def test_empty_answer_returns_none(self):
+        assert qa_pair_to_finetune_example(_pair("")) is None
+
+    def test_default_budgets_keep_answer_shorter_than_context_budget(self):
+        ex = qa_pair_to_finetune_example(_pair("This is a perfectly normal-length community answer. " * 5))
+        assert len(ex.assistant) <= 350
+        assert len(ex.context) <= 600
+
+
+class TestFinetuneExample:
+    def test_to_json_line_has_conversationdataset_fields(self):
+        ex = FinetuneExample(user="Q?", assistant="A.", context="Ctx.")
+        obj = json.loads(ex.to_json_line())
+        assert obj == {"user": "Q?", "assistant": "A.", "context": "Ctx."}
+
+    def test_to_json_line_is_a_single_line(self):
+        ex = FinetuneExample(user="Q?", assistant="A.", context="Ctx.")
+        assert "\n" not in ex.to_json_line()
+
+
+class TestQaPairsToFinetuneExamples:
+    def test_converts_multiple_pairs(self):
+        pairs = [
+            _pair("A grappled creature has its speed reduced to zero.", "Q1?"),
+            _pair("You roll the d20 twice and take the higher result.", "Q2?"),
+        ]
+        examples = qa_pairs_to_finetune_examples(pairs)
+        assert len(examples) == 2
+        assert {e.user for e in examples} == {"Q1?", "Q2?"}
+
+    def test_drops_pairs_too_short_to_split(self):
+        pairs = [
+            _pair("A grappled creature has its speed reduced to zero.", "Q1?"),
+            _pair("Yes.", "Q2?"),
+        ]
+        examples = qa_pairs_to_finetune_examples(pairs)
+        assert len(examples) == 1
+        assert examples[0].user == "Q1?"
