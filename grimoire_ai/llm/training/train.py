@@ -163,6 +163,14 @@ def _load_config(path: str) -> dict:
 
 def main() -> None:
     """Parse arguments, build all objects, and start training."""
+    # Trainer prints Unicode symbols (e.g. the checkpoint-saved arrow) that
+    # crash with UnicodeEncodeError on Windows' default cp1252 console
+    # encoding -- reconfigure unconditionally so a multi-hour run never dies
+    # on a print statement, of all things.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
     parser = argparse.ArgumentParser(
         description="Train the GrimoireTransformer.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
