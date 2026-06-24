@@ -128,6 +128,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     """Run the fine-tuning loop."""
+    # Trainer prints Unicode symbols (e.g. the checkpoint-saved arrow) that
+    # crash with UnicodeEncodeError on Windows' default cp1252 console
+    # encoding -- reconfigure unconditionally so a multi-hour run never dies
+    # on a print statement, of all things.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
     args = _parse_args(argv)
 
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
