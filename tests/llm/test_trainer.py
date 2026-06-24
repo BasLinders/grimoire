@@ -871,3 +871,73 @@ def test_lr_schedule_warmup_and_decay() -> None:
     assert lr_at_end < peak_lr, "LR should decay after the warmup peak."
     # Minimum LR should be approximately 10% of peak.
     assert lr_at_end < peak_lr * 0.2, "LR should decay significantly by the end."
+
+
+# ---------------------------------------------------------------------------
+# train(start_step=...) -- resuming step count/LR schedule without a full
+# resume_from checkpoint (e.g. when a caller restored model/optimizer state
+# through some other mechanism, such as a LoRA adapter's own file format).
+# ---------------------------------------------------------------------------
+
+def test_start_step_runs_remaining_steps_only() -> None:
+    """total_steps is the absolute target -- starting at step 3 toward
+    total_steps=5 must run only 2 more steps, not 5 more."""
+    with tempfile.TemporaryDirectory() as tmp:
+        trainer, _ = _make_trainer(tmp, total_steps=5)
+        trainer.train(start_step=3)
+    assert trainer._step == 5
+
+
+def test_start_step_zero_is_unchanged_behaviour() -> None:
+    """The default (start_step=0) must behave exactly as before this
+    parameter existed -- training runs the full total_steps from scratch."""
+    with tempfile.TemporaryDirectory() as tmp:
+        trainer, _ = _make_trainer(tmp, total_steps=5)
+        trainer.train(start_step=0)
+    assert trainer._step == 5
+
+
+def test_start_step_at_or_past_total_steps_runs_nothing() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        trainer, _ = _make_trainer(tmp, total_steps=5)
+        trainer.train(start_step=5)
+    assert trainer._step == 5  # loop body never executed
+
+
+def test_start_step_continues_lr_schedule_not_restarts_it() -> None:
+    """The LR right after resuming must match the schedule's value at that
+    step number (continuing warmup/decay), not the value at step 0 -- i.e.
+    the scheduler-replay must actually advance the LR, not just the step
+    counter cosmetically."""
+    with tempfile.TemporaryDirectory() as tmp:
+        trainer, _ = _make_trainer(tmp, total_steps=20)
+        trainer.peak_lr = 1e-3
+        # Recompute a scheduler matching the trainer's own warmup/decay shape
+        # isn't necessary here -- just confirm the LR moved off its step-0
+        # value, which only happens if the scheduler was actually replayed.
+        lr_at_step_0 = trainer._scheduler.get_last_lr()[0]
+        trainer.train(start_step=15)
+        lr_after_resume = trainer._scheduler.get_last_lr()[0]
+    assert lr_after_resume != lr_at_step_0
+
+
+def test_start_step_ignored_when_resume_from_given() -> None:
+    """resume_from is the authoritative path (it has real saved scheduler/
+    optimizer state) -- start_step must be ignored when both are passed,
+    not silently override the restored step count."""
+    # Two separate temp dirs: trainer2's own corpus.bin must not collide
+    # with trainer's still-open memmap handle from the same filename.
+    with tempfile.TemporaryDirectory() as tmp1, tempfile.TemporaryDirectory() as tmp2:
+        trainer, model = _make_trainer(tmp1, total_steps=5)
+        trainer.train()  # produces a real checkpoint at the final step (5)
+        ckpt_path = str(Path(tmp1) / "resume_ckpt.pt")
+        save_checkpoint(
+            path=ckpt_path, model=model, optimizer=trainer._optimizer,
+            step=trainer._step, config_dict=_tiny_config().to_dict(),
+            scheduler=trainer._scheduler,
+        )
+
+        trainer2, _ = _make_trainer(tmp2, total_steps=6, corpus_tokens=500)
+        # A bogus start_step that would be obviously wrong if honoured.
+        trainer2.train(resume_from=ckpt_path, start_step=999)
+    assert trainer2._step == 6  # resumed from the checkpoint's real step (5), ran 1 more

@@ -162,6 +162,14 @@ def main(argv: list[str] | None = None) -> None:
 
     lora_targets: list[str] = []
     on_save_lora = None
+    # Declared before on_save_lora is defined, reassigned to the real Trainer
+    # once constructed below -- the closure resolves this name when it's
+    # actually CALLED (during trainer.train()), well after the reassignment,
+    # not when it's defined, so this gives on_save_lora access to the
+    # trainer's optimizer without restructuring construction order.
+    trainer: Optional[Trainer] = None
+    lora_resume_step = 0
+    lora_resume_optimizer_state: Optional[dict] = None
     if args.lora_rank > 0:
         lora_targets = [t.strip() for t in args.lora_targets.split(",") if t.strip()]
         model.add_lora_adapters(rank=args.lora_rank, alpha=args.lora_alpha, targets=lora_targets)
@@ -171,14 +179,17 @@ def main(argv: list[str] | None = None) -> None:
         )
         if args.resume_lora:
             from grimoire_ai.llm.model.lora import load_lora
-            load_lora(model, args.resume_lora)
-            print(f"  Resumed from LoRA adapter: {args.resume_lora}")
+            payload = load_lora(model, args.resume_lora)
+            lora_resume_step = payload.get("step", 0)
+            lora_resume_optimizer_state = payload.get("optimizer_state")
+            print(f"  Resumed from LoRA adapter: {args.resume_lora} (step {lora_resume_step})")
         print(f"  Trainable parameters: {model.num_parameters():,}")
 
         def on_save_lora(step: int, _elapsed: float) -> None:
             lora_path = Path(args.output) / f"step_{step:07d}.lora"
-            save_lora(model, args.lora_rank, args.lora_alpha, lora_targets, str(lora_path))
-            print(f"  → LoRA adapter saved: {lora_path}")
+            extra = {"optimizer_state": trainer._optimizer.state_dict(), "step": step} if trainer is not None else None
+            save_lora(model, args.lora_rank, args.lora_alpha, lora_targets, str(lora_path), extra=extra)
+            print(f"  -> LoRA adapter saved: {lora_path}")
 
     trainer = Trainer(
         model=model,
@@ -199,8 +210,17 @@ def main(argv: list[str] | None = None) -> None:
         model_state_dict_fn=model.merged_state_dict if args.lora_rank > 0 else None,
     )
 
-    print("Starting fine-tuning…")
-    trainer.train(resume_from=None)  # always start fresh from the provided checkpoint
+    if lora_resume_optimizer_state is not None:
+        trainer._optimizer.load_state_dict(lora_resume_optimizer_state)
+        print(f"  Restored optimizer state from: {args.resume_lora}")
+
+    print("Starting fine-tuning...")
+    # The full (non-LoRA) fine-tune always starts fresh from --resume's base
+    # checkpoint -- a TRUE interruption-resume there would need its own
+    # checkpoint file (Trainer.train's resume_from), which this script
+    # doesn't currently write for the non-LoRA path. LoRA resumes via
+    # lora_resume_step instead, restored above.
+    trainer.train(resume_from=None, start_step=lora_resume_step)
 
     if args.lora_rank > 0:
         final_lora = Path(args.output) / "lora_final.lora"
