@@ -423,7 +423,7 @@ class Trainer:
     # Training loop
     # ------------------------------------------------------------------
 
-    def train(self, resume_from: Optional[str] = None) -> None:
+    def train(self, resume_from: Optional[str] = None, start_step: int = 0) -> None:
         """Run the training loop until ``total_steps`` optimizer steps.
 
         Each optimizer step consists of ``accumulate_steps`` micro-batches.
@@ -435,12 +435,31 @@ class Trainer:
         batches in the dataset.
 
         Args:
-            resume_from: Optional path to a checkpoint ``.pt`` file.  If
-                provided, model weights, optimizer state, scaler state, and
-                the step counter are restored before training begins.
+            resume_from: Optional path to a checkpoint ``.pt`` file written
+                by *this* ``Trainer`` (e.g. via ``save_every``). If provided,
+                model weights, optimizer state, scaler state, and the step
+                counter are restored before training begins; ``start_step``
+                is ignored in this case.
+            start_step: Resume point when the caller restored model/optimizer
+                state through some *other* mechanism than ``resume_from``
+                (e.g. a LoRA adapter's own checkpoint format) and only needs
+                this ``Trainer`` to pick up the step count and LR schedule
+                from where that state left off. ``total_steps`` is the
+                absolute target, not an additional count -- starting at step
+                400 with ``total_steps=1000`` runs 600 more steps. Has no
+                effect when ``resume_from`` is given. There is no saved
+                scheduler state to restore in this path, so the LR schedule
+                is approximated by replaying ``start_step`` calls to it, the
+                same fallback ``_load_resume`` uses for legacy checkpoints
+                that predate scheduler-state saving.
         """
         if resume_from is not None:
             self._load_resume(resume_from)
+        elif start_step:
+            self._step = start_step
+            for _ in range(start_step):
+                self._scheduler.step()
+            print(f"  Starting at step {self._step} / {self.total_steps}")
 
         self.model.train()
         self._optimizer.zero_grad()
@@ -561,7 +580,7 @@ class Trainer:
                     self._last_val_loss = val_loss
                     elapsed_total = time.time() - t_start
                     print(
-                        f"  → eval step {self._step:>6} | "
+                        f"  -> eval step {self._step:>6} | "
                         f"val loss {val_loss:.4f}"
                     )
                     if self._on_eval is not None:
@@ -574,7 +593,7 @@ class Trainer:
                     # producing statistically meaningful gains.
                     if self._early_stopper is not None and self._early_stop_check():
                         print(
-                            f"  → early stop at step {self._step}: "
+                            f"  -> early stop at step {self._step}: "
                             f"no significant val-loss improvement for "
                             f"{self._early_stopper.patience} evals "
                             f"(best {self._early_stopper.best_loss:.4f})"
@@ -631,7 +650,7 @@ class Trainer:
             model_state_dict=self._model_state_dict_fn() if self._model_state_dict_fn else None,
         )
         self._last_saved_step = self._step
-        print(f"  → checkpoint saved: {ckpt_path}")
+        print(f"  -> checkpoint saved: {ckpt_path}")
         if self._on_save is not None:
             self._on_save(self._step, elapsed_total)
 
@@ -661,7 +680,7 @@ class Trainer:
         first.
         """
         if self._swa_model is None:
-            print("  → SWA: no snapshots collected (run ended before swa_start); nothing saved.")
+            print("  -> SWA: no snapshots collected (run ended before swa_start); nothing saved.")
             return
         swa_path = self.checkpoint_dir / "swa.pt"
         swa_inner = self._swa_model.module
@@ -677,7 +696,7 @@ class Trainer:
             scaler=self._scaler if self._use_amp else None,
             model_state_dict=swa_sd_fn() if swa_sd_fn else None,
         )
-        print(f"  → SWA: averaged {self._swa_n} snapshot(s) saved to {swa_path}")
+        print(f"  -> SWA: averaged {self._swa_n} snapshot(s) saved to {swa_path}")
 
     # ------------------------------------------------------------------
     # Evaluation
