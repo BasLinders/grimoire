@@ -144,6 +144,7 @@ def main() -> None:
         math_tool=math_tool,
         retrieval_threshold=args.retrieval_threshold,
     )
+    print(f"Device: {engine.device}")
 
     if corpus_dir and Path(corpus_dir).is_dir():
         documents: list[tuple[str, str]] = []
@@ -173,6 +174,7 @@ def main() -> None:
                     tokenizer_path=args.vocab,
                     quantize=args.quantize,
                 )
+                print(f"Embedding device: {embed_engine.device}")
                 embed_engine.load_lora(args.lora)
 
                 # Embedding a real-sized corpus on CPU can take hours; checkpoint
