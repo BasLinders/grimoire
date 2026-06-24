@@ -96,6 +96,7 @@ def save_lora(
     alpha: float,
     targets: list[str],
     path: str,
+    extra: dict | None = None,
 ) -> None:
     """Save LoRA adapter weights to *path*.
 
@@ -108,6 +109,14 @@ def save_lora(
         alpha: LoRA alpha used when the adapters were created.
         targets: Names of the Linear layers that were wrapped.
         path: Destination path (``.lora`` extension recommended).
+        extra: Optional additional keys merged into the saved payload (must
+            not collide with ``"rank"``/``"alpha"``/``"targets"``/
+            ``"state_dict"``). Lets a training loop piggyback resumable
+            state (e.g. optimizer state, step count) on the same file format
+            without every ``.lora`` consumer needing to know about it —
+            ``load_lora`` already returns the full payload, so those extra
+            keys come back for free. Deployable adapters (the file you'd
+            actually load for inference) should omit this and stay clean.
     """
     lora_sd: dict[str, torch.Tensor] = {}
     for mod_name, module in model.named_modules():
@@ -120,6 +129,8 @@ def save_lora(
         "targets":    list(targets),
         "state_dict": lora_sd,
     }
+    if extra:
+        payload.update(extra)
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     torch.save(payload, str(p))

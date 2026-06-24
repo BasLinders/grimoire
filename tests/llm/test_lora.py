@@ -305,6 +305,54 @@ class TestLoraSerialisation:
             torch.save({"model": model.state_dict()}, str(full_path))
             assert lora_path.stat().st_size < full_path.stat().st_size
 
+    def test_extra_keys_round_trip_through_load_lora(self):
+        """A training loop's resumable state (optimizer state, step count)
+        can piggyback on the same file via save_lora's extra= param and
+        comes back from load_lora's returned payload -- no API change
+        needed on the load side.
+        """
+        model = _small_model()
+        model.add_lora_adapters(rank=4, alpha=8.0, targets=["q_proj", "v_proj"])
+        optimizer = torch.optim.AdamW(
+            (p for p in model.parameters() if p.requires_grad), lr=1e-4,
+        )
+        # Take one step so the optimizer actually has non-trivial state
+        # (exp_avg / exp_avg_sq buffers), not just empty param groups.
+        loss = model(torch.randint(0, 256, (1, 8))).sum()
+        loss.backward()
+        optimizer.step()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "test.lora")
+            save_lora(
+                model, rank=4, alpha=8.0, targets=["q_proj", "v_proj"], path=path,
+                extra={"optimizer_state": optimizer.state_dict(), "step": 123},
+            )
+
+            model2 = _small_model()
+            model2.load_state_dict({k: v for k, v in model.state_dict().items() if "lora" not in k}, strict=False)
+            payload = load_lora(model2, path)
+
+        assert payload["step"] == 123
+        assert "optimizer_state" in payload
+        # Confirm it's actually usable to resume an optimizer, not just present.
+        optimizer2 = torch.optim.AdamW(
+            (p for p in model2.parameters() if p.requires_grad), lr=1e-4,
+        )
+        optimizer2.load_state_dict(payload["optimizer_state"])
+        assert optimizer2.state_dict()["state"].keys() == optimizer.state_dict()["state"].keys()
+
+    def test_no_extra_keeps_payload_minimal(self):
+        """Without extra=, the payload must contain exactly the documented
+        keys -- a deployable adapter shouldn't carry training-only bloat."""
+        model = _small_model()
+        model.add_lora_adapters(rank=4, alpha=8.0)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "test.lora")
+            save_lora(model, rank=4, alpha=8.0, targets=["q_proj", "v_proj"], path=path)
+            payload = torch.load(path, map_location="cpu", weights_only=True)
+        assert set(payload.keys()) == {"rank", "alpha", "targets", "state_dict"}
+
 
 # ---------------------------------------------------------------------------
 # InferenceEngine.load_lora

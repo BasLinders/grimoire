@@ -36,6 +36,28 @@ python scripts/embed_tune.py \\
 
 Output: a .lora file (grimoire_ai.llm.model.lora.save_lora format).
 
+Resuming an interrupted run
+----------------------------
+A long run (especially --qa-corpus-dir, where answers are much longer than
+chunked passages) checkpoints periodically to --checkpoint-path (default
+<output>.ckpt.pt) -- LoRA weights + optimizer state + step count, every
+--checkpoint-every steps. To resume after an interruption:
+
+python scripts/embed_tune.py \\
+    --checkpoint checkpoints/saga/step_0000500.pt \\
+    --vocab      data/tokenizer/bpe.json \\
+    --qa-corpus-dir data/corpus/saga/ \\
+    --output     checkpoints/saga/embed-qa.lora \\
+    --resume     checkpoints/saga/embed-qa.lora.ckpt.pt \\
+    --total-steps 1000
+
+--total-steps is the absolute target: resuming at step 400 with
+--total-steps 1000 runs 600 more steps, not 1000 more. --rank/--alpha/
+--targets are ignored when resuming -- the checkpoint's saved values are
+used instead, since the model architecture can't change mid-run. The
+checkpoint file (--checkpoint-path) is distinct from the final --output
+adapter: only --output is meant to be loaded for inference.
+
 Consuming the result
 ---------------------
 Load it with grimoire_ai.llm.model.lora.load_lora() into its OWN model
@@ -57,7 +79,7 @@ from torch.utils.data import DataLoader
 from grimoire_ai.llm.data.qa_pairs import load_qa_pairs
 from grimoire_ai.llm.inference.semantic import chunk_text
 from grimoire_ai.llm.model.config import TransformerConfig
-from grimoire_ai.llm.model.lora import save_lora
+from grimoire_ai.llm.model.lora import load_lora, save_lora
 from grimoire_ai.llm.model.transformer import GrimoireTransformer
 from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
 from grimoire_ai.llm.training.checkpoint import load_checkpoint
@@ -126,9 +148,25 @@ def main(argv: list[str] | None = None) -> None:
                               "this script confused things like 'advantage' with 'disadvantage' "
                               "despite a low training loss.")
     parser.add_argument("--total-steps", type=int, default=500, metavar="N",
-                         help="Number of training steps (default: 500).")
+                         help="Absolute target step count (default: 500). When --resume is "
+                              "given, training continues from the resumed step toward this "
+                              "target rather than running --total-steps additional steps.")
     parser.add_argument("--log-every", type=int, default=25, metavar="N",
                          help="Print mean loss every N steps (default: 25).")
+    parser.add_argument("--checkpoint-path", default="", metavar="PATH",
+                         help="Where to periodically save a resumable checkpoint (LoRA "
+                              "weights + optimizer state + step count). Defaults to "
+                              "<output>.ckpt.pt. Distinct from --output: this file carries "
+                              "training-only state and isn't meant for inference.")
+    parser.add_argument("--checkpoint-every", type=int, default=100, metavar="N",
+                         help="Save a resumable checkpoint every N steps (default: 100). "
+                              "0 disables periodic checkpointing -- only the final --output "
+                              "adapter gets written, with no way to resume if interrupted.")
+    parser.add_argument("--resume", default="", metavar="PATH",
+                         help="Resume from a checkpoint written by a previous run's "
+                              "--checkpoint-path (NOT a plain --output adapter, which carries "
+                              "no optimizer/step state). Reuses the checkpoint's rank/alpha/"
+                              "targets, ignoring --rank/--alpha/--targets.")
     args = parser.parse_args(argv)
 
     if bool(args.corpus_dir) == bool(args.qa_corpus_dir):
@@ -193,18 +231,47 @@ def main(argv: list[str] | None = None) -> None:
         )
         loader = DataLoader(dataset, batch_sampler=sampler, collate_fn=collate_passages)
 
-    model.add_lora_adapters(rank=args.rank, alpha=args.alpha, targets=args.targets)
+    start_step = 0
+    if args.resume:
+        payload = load_lora(model, args.resume)
+        rank, alpha, targets = payload["rank"], payload["alpha"], payload["targets"]
+        start_step = payload.get("step", 0)
+        print(f"Resumed from {args.resume}: rank={rank}, alpha={alpha}, targets={targets}, "
+              f"step={start_step}")
+    else:
+        rank, alpha, targets = args.rank, args.alpha, args.targets
+        model.add_lora_adapters(rank=rank, alpha=alpha, targets=targets)
+
     trainable = model.num_parameters(trainable_only=True)
-    print(f"LoRA adapters added: rank={args.rank}, alpha={args.alpha}, "
-          f"targets={args.targets}, trainable params={trainable:,}")
+    print(f"LoRA adapters: rank={rank}, alpha={alpha}, targets={targets}, "
+          f"trainable params={trainable:,}")
 
     tuner = EmbedTuner(model, lr=args.lr, temperature=args.temperature, device=device)
-    if args.qa_corpus_dir:
-        tuner.train_pairs(loader, total_steps=args.total_steps, log_every=args.log_every)
-    else:
-        tuner.train(loader, total_steps=args.total_steps, log_every=args.log_every)
+    if args.resume and "optimizer_state" in payload:
+        tuner.optimizer.load_state_dict(payload["optimizer_state"])
 
-    save_lora(model, rank=args.rank, alpha=args.alpha, targets=args.targets, path=args.output)
+    checkpoint_path = args.checkpoint_path or f"{args.output}.ckpt.pt"
+
+    def _on_checkpoint(step: int) -> None:
+        save_lora(
+            model, rank=rank, alpha=alpha, targets=targets, path=checkpoint_path,
+            extra={"optimizer_state": tuner.optimizer.state_dict(), "step": step},
+        )
+        print(f"  checkpoint saved: {checkpoint_path} (step {step})")
+
+    train_kwargs = dict(
+        total_steps=args.total_steps,
+        log_every=args.log_every,
+        start_step=start_step,
+        checkpoint_every=args.checkpoint_every,
+        on_checkpoint=_on_checkpoint if args.checkpoint_every else None,
+    )
+    if args.qa_corpus_dir:
+        tuner.train_pairs(loader, **train_kwargs)
+    else:
+        tuner.train(loader, **train_kwargs)
+
+    save_lora(model, rank=rank, alpha=alpha, targets=targets, path=args.output)
     print(f"\nSaved LoRA adapter to: {args.output}")
 
 

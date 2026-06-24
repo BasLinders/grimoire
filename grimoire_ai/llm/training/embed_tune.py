@@ -488,15 +488,33 @@ class EmbedTuner:
         on_log: Optional[Callable[[int, float], None]],
         step_fn: Callable[..., float],
         log_prefix: str,
+        start_step: int = 0,
+        checkpoint_every: int = 0,
+        on_checkpoint: Optional[Callable[[int], None]] = None,
     ) -> None:
-        """Shared cycling/logging loop for ``train`` and ``train_pairs``.
+        """Shared cycling/logging/checkpointing loop for ``train``/``train_pairs``.
 
         Cycles ``loader`` indefinitely so training can run for more steps
         than there are batches in the dataset, mirroring ``Trainer.train()``.
         Each batch yielded by ``loader`` is unpacked and passed positionally
         to ``step_fn``.
+
+        Args:
+            start_step: Resume point — the loop runs steps
+                ``start_step + 1 .. total_steps`` instead of ``1 .. total_steps``,
+                so a long run interrupted partway through can continue from
+                where it left off rather than restarting at step 0. The caller
+                is responsible for having already restored the model/optimizer
+                state that step count corresponds to.
+            checkpoint_every: Invoke ``on_checkpoint(step)`` every this many
+                steps, in addition to (and independently of) logging. ``0``
+                disables checkpointing — the default, since this loop has no
+                opinion on *how* a checkpoint should be written (that's the
+                caller's job, e.g. via ``save_lora``'s ``extra=`` parameter).
+            on_checkpoint: Callback invoked with the current step number at
+                each ``checkpoint_every`` boundary.
         """
-        step = 0
+        step = start_step
         running_loss = 0.0
         data_iter = iter(loader)
         while step < total_steps:
@@ -509,12 +527,15 @@ class EmbedTuner:
             running_loss += step_fn(*batch)
             step += 1
 
-            if step % log_every == 0:
+            if log_every and step % log_every == 0:
                 avg_loss = running_loss / log_every
                 print(f"  {log_prefix} step {step:>6} / {total_steps} | loss {avg_loss:.4f}")
                 if on_log is not None:
                     on_log(step, avg_loss)
                 running_loss = 0.0
+
+            if checkpoint_every and on_checkpoint is not None and step % checkpoint_every == 0:
+                on_checkpoint(step)
 
     def train(
         self,
@@ -522,6 +543,9 @@ class EmbedTuner:
         total_steps: int,
         log_every: int = 50,
         on_log: Optional[Callable[[int, float], None]] = None,
+        start_step: int = 0,
+        checkpoint_every: int = 0,
+        on_checkpoint: Optional[Callable[[int], None]] = None,
     ) -> None:
         """Run ``train_step`` repeatedly until ``total_steps`` is reached.
 
@@ -530,13 +554,23 @@ class EmbedTuner:
                 a ``DataLoader`` over ``PassageDataset`` with
                 ``collate_fn=collate_passages``. Every batch must have at
                 least 2 rows (see ``train_step``).
-            total_steps: Number of ``train_step`` calls to run.
+            total_steps: Number of ``train_step`` calls to run, counted from
+                ``start_step`` (the absolute target, not an additional count —
+                resuming at ``start_step=400`` with ``total_steps=1000`` runs
+                600 more steps, mirroring ``Trainer``'s convention).
             log_every: Print (and invoke ``on_log`` with) the mean loss over
                 the last ``log_every`` steps, every ``log_every`` steps.
             on_log: Optional callback invoked as ``(step, avg_loss)`` at each
                 ``log_every`` boundary, in addition to the printed line.
+            start_step: Resume point; see ``_run_loop``.
+            checkpoint_every: See ``_run_loop``. ``0`` (default) disables
+                checkpointing.
+            on_checkpoint: See ``_run_loop``.
         """
-        self._run_loop(loader, total_steps, log_every, on_log, self.train_step, "embed-tune")
+        self._run_loop(
+            loader, total_steps, log_every, on_log, self.train_step, "embed-tune",
+            start_step=start_step, checkpoint_every=checkpoint_every, on_checkpoint=on_checkpoint,
+        )
 
     def train_pairs(
         self,
@@ -544,6 +578,9 @@ class EmbedTuner:
         total_steps: int,
         log_every: int = 50,
         on_log: Optional[Callable[[int, float], None]] = None,
+        start_step: int = 0,
+        checkpoint_every: int = 0,
+        on_checkpoint: Optional[Callable[[int], None]] = None,
     ) -> None:
         """Run ``train_step_pairs`` repeatedly until ``total_steps`` is reached.
 
@@ -552,10 +589,18 @@ class EmbedTuner:
                 a_attention_mask)`` batches, e.g. a ``DataLoader`` over
                 ``QAPairDataset`` with ``collate_fn=collate_qa_pairs``. Every
                 batch must have at least 2 rows (see ``train_step_pairs``).
-            total_steps: Number of ``train_step_pairs`` calls to run.
+            total_steps: Number of ``train_step_pairs`` calls to run, counted
+                from ``start_step`` (see ``train``).
             log_every: Print (and invoke ``on_log`` with) the mean loss over
                 the last ``log_every`` steps, every ``log_every`` steps.
             on_log: Optional callback invoked as ``(step, avg_loss)`` at each
                 ``log_every`` boundary, in addition to the printed line.
+            start_step: Resume point; see ``_run_loop``.
+            checkpoint_every: See ``_run_loop``. ``0`` (default) disables
+                checkpointing.
+            on_checkpoint: See ``_run_loop``.
         """
-        self._run_loop(loader, total_steps, log_every, on_log, self.train_step_pairs, "embed-tune (qa)")
+        self._run_loop(
+            loader, total_steps, log_every, on_log, self.train_step_pairs, "embed-tune (qa)",
+            start_step=start_step, checkpoint_every=checkpoint_every, on_checkpoint=on_checkpoint,
+        )
