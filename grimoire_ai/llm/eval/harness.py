@@ -201,7 +201,7 @@ def run_eval(
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"eval_{timestamp}.json"
-    out_path.write_text(json.dumps(results, indent=2, ensure_ascii=False))
+    out_path.write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
     _log(f"\nReport saved → {out_path}")
     _log(f"Summary: {results['summary']}")
 
