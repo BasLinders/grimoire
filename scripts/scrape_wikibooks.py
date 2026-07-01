@@ -5,9 +5,9 @@ much longer than Wikipedia articles — a single chapter can run several thousan
 words — making this a token-dense source.  Two topic groups are covered:
 
   math     — mathematics, statistics, probability, linear algebra, calculus,
-              logic, combinatorics, data science, machine learning
+             logic, combinatorics, data science, machine learning
   fantasy  — fantasy writing, mythology, folklore, world-building guides,
-              role-playing game manuals, historical fiction craft
+             role-playing game manuals, historical fiction craft
 
 Usage
 -----
@@ -74,40 +74,30 @@ def _get(params: dict, delay: float, timeout: int = 60) -> requests.Response:
 # ---------------------------------------------------------------------------
 
 MATH_CATEGORIES = [
-    "Mathematics",
-    "Algebra",
-    "Calculus",
-    "Statistics",
-    "Probability",
-    "Linear Algebra",
-    "Discrete Mathematics",
-    "Mathematical Analysis",
-    "Number Theory",
-    "Combinatorics",
-    "Logic",
-    "Numerical Methods",
-    "Data Science",
-    "Machine Learning",
-    "Artificial Intelligence",
-    "Computer Science",
-    "Algorithms",
-    "Information Theory",
-    "Optimization",
+    "Subject:Mathematics",
+    "Subject:Algebra",
+    "Subject:Calculus",
+    "Subject:Statistics",
+    "Subject:Probability",
+    "Subject:Linear algebra",
+    "Subject:Discrete mathematics",
+    "Subject:Computer science",
+    "Subject:Artificial intelligence",
+    "Subject:Machine learning",
+    "Subject:Algorithms",
 ]
 
 FANTASY_CATEGORIES = [
-    "Fiction Writing",
-    "Fantasy",
-    "Mythology",
-    "Folklore",
-    "Dungeons and Dragons",
-    "Role-playing Games",
-    "World Building",
-    "Speculative Fiction",
-    "Writing",
-    "History",
-    "Classical Studies",
-    "Linguistics",
+    "Subject:Fiction",
+    "Subject:Creative writing",
+    "Subject:Literature",
+    "Subject:Role-playing games",
+    "Subject:Games",
+    "Subject:Mythology",
+    "Subject:Folklore",
+    "Subject:History",
+    "Subject:Linguistics",
+    "Book:Dungeons & Dragons",
 ]
 
 ALL_GROUPS = {
