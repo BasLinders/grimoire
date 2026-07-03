@@ -200,6 +200,58 @@ encounter at the level ranges used so far). Source:
 monster's CR/XP here before reusing it, and add any newly-verified creature
 to this list.
 
+## Source-based sample weighting
+
+The mechanism (`--weight-pattern` on `grimoire-preprocess` → per-document
+weight sidecars → `scripts/build_source_weights.py` → `sample_weights.npy` →
+`Trainer`'s `sample_weights_path`) existed before this decision but had never
+been given real values. Byte-share breakdown of `data/corpus/saga/` (403
+`gutenberg_*` files, 1,469 total) showed D&D-specific content is already the
+majority by volume (~61%) — the dilution risk is prospective, from the
+catalog scraper's ~3,400-book candidate pool, not already acute. One finding
+shaped the scheme: ~110 official WotC rulebooks/adventures/oneshots (7.2% of
+corpus bytes) have no shared filename prefix, so they can't be targeted by a
+specific glob — handled with a trailing `*:WEIGHT` catch-all rule instead of
+a rename, since `--weight-pattern` rules are matched in order with first-
+match-wins (`grimoire_ai/llm/data/preprocessing.py`'s `_resolve_weight`).
+
+- [x] **Decide weight values.** Down-weight raw bulk literature; leave
+      already-D&D-specific categories at baseline; upweight the highest-
+      authority structured/official content via the catch-all:
+      ```
+      gutenberg_*:0.5
+      wp_fantasy_*:0.5
+      wp_math_*:1
+      wp_dnd_*:1
+      rpg_se_*:1
+      fr_wiki_*:1
+      dragon_*:1
+      dnd_*:1
+      synth_*:1
+      *:1.75
+      ```
+      The catch-all lands on `srd_*`, `5etools_*`, `open5e_*`, and the
+      untaggable official-book long tail. Effective (weight × byte-share,
+      renormalized) result: `gutenberg_*` drops from 37.8% raw share to
+      ~21.4%; the official-book long tail nearly doubles from 7.2% to ~14.2%;
+      `open5e_*` goes from 2.0% to ~4.1%. `wp_math_*` is left untouched —
+      separate data-science-assistant scope, not diluting anything.
+- [x] **Tag the corpus.** Re-ran `grimoire-preprocess` with the rules above
+      against the full corpus (2026-07-03) — 129,343,636 tokens (unchanged;
+      weighting only adds sidecars, doesn't retokenize differently), wrote
+      `corpus.bin.doc_end_offsets.npy` / `corpus.bin.doc_weights.npy` for all
+      1,469 documents.
+- [ ] **Build `sample_weights.npy` and use it in a real training run.** Use
+      the Pre-train tab's "Build sample weights from tags" button (not a raw
+      `build_source_weights.py` CLI call — it needs to match whatever
+      `seq_len`/`stride`/`val_split` the actual run uses, which the button
+      handles automatically and a hand-rolled call does not), then set
+      `sample_weights_path` before starting pre-training. Still open: no
+      weighted training run has happened yet, so there's no signal on
+      whether these specific multipliers help — revisit with finer-grained
+      tiers (e.g. splitting `rpg_se_*` from official books) only after a
+      baseline weighted-vs-unweighted comparison, not before.
+
 ## Open decisions for next session
 
 - [ ] Once corpus token count is known post-expansion, decide target model
