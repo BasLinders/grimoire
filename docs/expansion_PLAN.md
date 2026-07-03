@@ -87,7 +87,7 @@ recalled from model memory.
         1169-file corpus — no near-duplicates.
 - [x] **Generation-level diversity constraints on derived adventures** —
       satisfied by a small manually-written pilot, growing in batches of 5
-      (15 adventures across 3 batches as of the last update, 16,241 tokens —
+      (20 adventures across 4 batches as of the last update, 21,017 tokens —
       see the running batch log below for the current count, written
       directly rather than via a scripted API pipeline — see note below):
   - [x] Cap adventures derived per source text (one per book): Beowulf
@@ -138,6 +138,7 @@ avoid reusing source books. Token counts measured with the real BPE tokenizer
 | 1 | `adventure_001`-`005` | Beowulf (#16328), Prose Edda (#4785) + Poetic Edda (#23265), The Odyssey (#1727), Grimms' Fairy Tales (#2591) + Yellow Fairy Book (#7154), The Worm Ouroboros (#39058) | dungeon crawl (1-4, mere lair), political intrigue (5-8, mead-hall court), survival (3-6, archipelago), investigation (1-3, village), dungeon crawl (7-10, ruined fortress) | 5,861 | 5,861 |
 | 2 | `adventure_006`-`010` | Le Morte d'Arthur (#1251/#1252), The Mabinogion (#4486), One Thousand and One Nights (#128) + Arabian Nights Entertainments (#558), Myths and Legends of Ancient Greece and Rome (#2680), The Nibelungenlied (#557) | heist (5-8, tournament keep), survival (3-6, fey borderland), investigation (4-6, desert trade city), dungeon crawl (5-8, buried labyrinth), heist (11-14, dragon hoard) | 5,066 | 10,927 |
 | 3 | `adventure_011`-`015` | The Iliad (#6130), Metamorphoses (#348), The Divine Comedy / Inferno (#20), The Witch-cult in Western Europe (#2021), Peter Pan (#16) | political intrigue (6-9, siege camp), investigation (4-6, riverside village), dungeon crawl (13-16, planar rift monastery), political intrigue/investigation (5-7, rural county), survival (3-5, drifting island) | 5,314 | 16,241 |
+| 4 | `adventure_016`-`020` | The Aeneid (#228), Hero Tales and Legends of the Rhine (#7882), The Mythology of the British Islands (#9880), The Golden Bough (#22696), The Lesser Key of Solomon (#46849) | survival (3-5, coastline/isles), dungeon crawl (6-8, sunken forge-hall), investigation (2-4, moorland barrows), political intrigue (4-6, harvest-kingdom court), heist (8-9, sealed tower-library) | 4,776 | 21,017 |
 
 **Source books used so far (do not reuse without deliberate reason):** Beowulf
 #16328, Prose Edda #4785, Poetic Edda #23265, The Odyssey #1727, Grimms' Fairy
@@ -146,21 +147,25 @@ d'Arthur #1251/#1252, The Mabinogion #4486, One Thousand and One Nights #128,
 Arabian Nights Entertainments #558, Myths and Legends of Ancient Greece and
 Rome #2680, The Nibelungenlied #557, The Iliad #6130, Metamorphoses #348,
 The Divine Comedy (Inferno) #20, The Witch-cult in Western Europe #2021,
-Peter Pan #16.
+Peter Pan #16, The Aeneid #228, Hero Tales and Legends of the Rhine #7882,
+The Mythology of the British Islands #9880, The Golden Bough #22696, The
+Lesser Key of Solomon #46849.
 
 **Ground-truth monster CR/XP verified so far (reusable across future
 batches without re-checking):** Kobold CR1/8 (25 XP), Merfolk CR1/8 (25 XP),
-Ghoul CR1 (200 XP), Skeleton/Zombie CR1/4 (50 XP each), Sea Hag CR2 (450 XP),
-Ogre CR2 (450 XP), Griffon CR2 (450 XP), Bandit Captain CR2 (450 XP,
-open5e_monsters.txt), Green Hag CR3 (700 XP), Wight CR3 (700 XP), Minotaur
-CR3 (700 XP), Manticore CR3 (700 XP), Werewolf CR3 (700 XP), Basilisk CR3
-(700 XP), Lamia CR4 (1,100 XP), Troll CR5 (1,800 XP), Night Hag CR5
-(1,800 XP), Hill Giant CR5 (1,800 XP), Chain Devil CR8 (3,900 XP), Young
-Green Dragon CR8 (3,900 XP), Erinyes CR12 (8,400 XP), Djinni CR11
-(7,200 XP, referenced for lore only — not intended as a fought encounter at
-the level ranges used so far). Source: `data/corpus/saga/srd_monsters.txt`
-unless noted otherwise. Verify a monster's CR/XP here before reusing it, and
-add any newly-verified creature to this list.
+Ghoul CR1 (200 XP), Harpy CR1 (200 XP), Skeleton/Zombie CR1/4 (50 XP each),
+Hobgoblin CR1/2 (100 XP), Sea Hag CR2 (450 XP), Ogre CR2 (450 XP), Griffon
+CR2 (450 XP), Bandit Captain CR2 (450 XP, open5e_monsters.txt), Green Hag
+CR3 (700 XP), Wight CR3 (700 XP), Minotaur CR3 (700 XP), Manticore CR3
+(700 XP), Werewolf CR3 (700 XP), Basilisk CR3 (700 XP), Lamia CR4
+(1,100 XP), Ettin CR4 (1,100 XP), Troll CR5 (1,800 XP), Night Hag CR5
+(1,800 XP), Hill Giant CR5 (1,800 XP), Medusa CR6 (2,300 XP), Chain Devil
+CR8 (3,900 XP), Young Green Dragon CR8 (3,900 XP), Erinyes CR12
+(8,400 XP), Djinni CR11 (7,200 XP, referenced for lore only — not intended
+as a fought encounter at the level ranges used so far). Source:
+`data/corpus/saga/srd_monsters.txt` unless noted otherwise. Verify a
+monster's CR/XP here before reusing it, and add any newly-verified creature
+to this list.
 
 ## Open decisions for next session
 
