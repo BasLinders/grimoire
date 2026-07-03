@@ -85,20 +85,82 @@ recalled from model memory.
         cases before trusting the result. Ran it: 0 pairs found at
         `--threshold 0.3` across all 103 Gutenberg files vs. the full
         1169-file corpus — no near-duplicates.
-- [ ] **Generation-level diversity constraints on derived adventures:**
-  - [ ] Cap adventures derived per source text (e.g. one per book) so the
-        output pool isn't a rehash of a small number of idea seeds.
-  - [ ] Force structural variety explicitly per generation — adventure type
-        (dungeon crawl / political intrigue / survival / investigation),
-        level range, environment — rather than leaving it to chance.
-  - [ ] Deduplicate generated adventures against *each other*, not just against
-        source material.
-  - [ ] Verify all mechanical content (stat blocks, DCs, damage, XP budgets)
-        against existing verified corpus data before inclusion.
-- [ ] **Provenance tagging:** keep scraped-raw and derived-synthetic content in
-      separate subdirectories/naming conventions, so ingestion scripts (e.g.
-      `build_finetune_data_from_qa.py` and future equivalents) can weight,
-      filter, or exclude synthetic content independently.
+- [x] **Generation-level diversity constraints on derived adventures** —
+      satisfied by a small manually-written pilot, growing in batches of 5
+      (15 adventures across 3 batches as of the last update, 16,241 tokens —
+      see the running batch log below for the current count, written
+      directly rather than via a scripted API pipeline — see note below):
+  - [x] Cap adventures derived per source text (one per book): Beowulf
+        (#16328), Prose/Poetic Edda (#4785/#23265), The Odyssey (#1727),
+        Grimms'/Yellow Fairy Book (#2591/#7154), The Worm Ouroboros (#39058).
+  - [x] Force structural variety explicitly: adventure types (dungeon crawl,
+        political intrigue, survival, investigation, dungeon crawl again at a
+        deliberately different tier/environment), level ranges spanning
+        tiers 1-2 (1-4, 3-6, 5-8, 7-10), environments (mere lair, mead-hall
+        court, archipelago, village, ruined fortress).
+  - [x] Deduplicated against each other and against the full existing corpus
+        via `scripts/dedup_corpus.py` — 0 near-duplicate pairs at a loose
+        threshold (0.2-0.25, smaller shingle size than the Gutenberg check,
+        since these adventures deliberately reuse some monster vocabulary).
+  - [x] Verified all mechanical content (monster names + CR + XP) against
+        `srd_monsters.txt` by reading the actual stat blocks before citing
+        them (Sea Hag CR2/450XP, Green Hag CR3/700XP, Night Hag CR5/1800XP,
+        Troll CR5/1800XP, Wight CR3/700XP, Ghoul CR1/200XP, Ogre CR2/450XP,
+        Kobold CR1/8/25XP, Griffon CR2/450XP, Skeleton/Zombie CR1/4/50XP) —
+        no invented stat blocks; adventures reference monsters by name/CR
+        rather than reprinting full stat blocks, matching real published-
+        adventure convention.
+- [x] **Provenance tagging** — output written to `data/corpus/saga_derived/`,
+      a directory separate from the raw-scraped `data/corpus/saga/`, with a
+      standard header block per file (source title + Gutenberg ID, adventure
+      type, level range, environment, explicit "Derived-synthetic" marker) so
+      future ingestion scripts can filter/weight this content independently.
+      Not yet added to the `saga` agent's `corpus_dirs` in `agents.json` —
+      that's a separate decision once there's more than a 5-file pilot batch.
+
+**How these are generated:** not via the scripted `generate_derived_adventures.py`
++ Anthropic API pipeline originally envisioned above — the user opted to avoid
+the additional API billing (separate from their existing Claude subscription)
+and instead has Claude write these directly in-session, in batches of 5, each
+verified against corpus ground-truth before inclusion the same way as the
+pilot batch. This is a deliberately slow, steady growth path rather than a
+corpus-scale solution — revisit the scripted API pipeline if/when more volume
+is wanted and the user is ready to spend on it.
+
+## Derived-adventure batch log
+
+Running record of every batch, so a future session can pick up the count and
+avoid reusing source books. Token counts measured with the real BPE tokenizer
+(`data/tokenizer/bpe.json`), not a chars/4 estimate.
+
+| Batch | Files | Source books used (Gutenberg ID) | Types / level ranges / environments | Tokens (batch) | Tokens (cumulative) |
+|---|---|---|---|---|---|
+| 1 | `adventure_001`-`005` | Beowulf (#16328), Prose Edda (#4785) + Poetic Edda (#23265), The Odyssey (#1727), Grimms' Fairy Tales (#2591) + Yellow Fairy Book (#7154), The Worm Ouroboros (#39058) | dungeon crawl (1-4, mere lair), political intrigue (5-8, mead-hall court), survival (3-6, archipelago), investigation (1-3, village), dungeon crawl (7-10, ruined fortress) | 5,861 | 5,861 |
+| 2 | `adventure_006`-`010` | Le Morte d'Arthur (#1251/#1252), The Mabinogion (#4486), One Thousand and One Nights (#128) + Arabian Nights Entertainments (#558), Myths and Legends of Ancient Greece and Rome (#2680), The Nibelungenlied (#557) | heist (5-8, tournament keep), survival (3-6, fey borderland), investigation (4-6, desert trade city), dungeon crawl (5-8, buried labyrinth), heist (11-14, dragon hoard) | 5,066 | 10,927 |
+| 3 | `adventure_011`-`015` | The Iliad (#6130), Metamorphoses (#348), The Divine Comedy / Inferno (#20), The Witch-cult in Western Europe (#2021), Peter Pan (#16) | political intrigue (6-9, siege camp), investigation (4-6, riverside village), dungeon crawl (13-16, planar rift monastery), political intrigue/investigation (5-7, rural county), survival (3-5, drifting island) | 5,314 | 16,241 |
+
+**Source books used so far (do not reuse without deliberate reason):** Beowulf
+#16328, Prose Edda #4785, Poetic Edda #23265, The Odyssey #1727, Grimms' Fairy
+Tales #2591, Yellow Fairy Book #7154, The Worm Ouroboros #39058, Le Morte
+d'Arthur #1251/#1252, The Mabinogion #4486, One Thousand and One Nights #128,
+Arabian Nights Entertainments #558, Myths and Legends of Ancient Greece and
+Rome #2680, The Nibelungenlied #557, The Iliad #6130, Metamorphoses #348,
+The Divine Comedy (Inferno) #20, The Witch-cult in Western Europe #2021,
+Peter Pan #16.
+
+**Ground-truth monster CR/XP verified so far (reusable across future
+batches without re-checking):** Kobold CR1/8 (25 XP), Merfolk CR1/8 (25 XP),
+Ghoul CR1 (200 XP), Skeleton/Zombie CR1/4 (50 XP each), Sea Hag CR2 (450 XP),
+Ogre CR2 (450 XP), Griffon CR2 (450 XP), Bandit Captain CR2 (450 XP,
+open5e_monsters.txt), Green Hag CR3 (700 XP), Wight CR3 (700 XP), Minotaur
+CR3 (700 XP), Manticore CR3 (700 XP), Werewolf CR3 (700 XP), Basilisk CR3
+(700 XP), Lamia CR4 (1,100 XP), Troll CR5 (1,800 XP), Night Hag CR5
+(1,800 XP), Hill Giant CR5 (1,800 XP), Chain Devil CR8 (3,900 XP), Young
+Green Dragon CR8 (3,900 XP), Erinyes CR12 (8,400 XP), Djinni CR11
+(7,200 XP, referenced for lore only — not intended as a fought encounter at
+the level ranges used so far). Source: `data/corpus/saga/srd_monsters.txt`
+unless noted otherwise. Verify a monster's CR/XP here before reusing it, and
+add any newly-verified creature to this list.
 
 ## Open decisions for next session
 
