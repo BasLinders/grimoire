@@ -36,6 +36,7 @@ Arguments
 """
 
 import argparse
+import fnmatch
 import sys
 from pathlib import Path
 from typing import Callable, Optional
@@ -107,6 +108,19 @@ def _sample_texts_for_bpe(
     return [files[i].read_text(encoding=encoding, errors="replace") for i in indices]
 
 
+def _resolve_weight(path: Path, weight_rules: list[tuple[str, float]]) -> float:
+    """Return the weight for *path* from the first matching glob rule.
+
+    Rules are checked in the order given; the first pattern whose
+    ``fnmatch`` matches ``path.name`` wins. Files matching no rule get the
+    neutral weight ``1.0`` — identical to today's unweighted behaviour.
+    """
+    for pattern, weight in weight_rules:
+        if fnmatch.fnmatch(path.name, pattern):
+            return weight
+    return 1.0
+
+
 def preprocess(
     input_path: str,
     output_path: str,
@@ -117,6 +131,7 @@ def preprocess(
     dedup_threshold: float = 0.8,
     bpe_sample_size: Optional[int] = 500,
     extend_vocab: bool = False,
+    weight_rules: Optional[list[tuple[str, float]]] = None,
     on_progress: Optional[Callable[[str], None]] = None,
 ) -> int:
     """Tokenize text files and write a flat binary array of token ids.
@@ -158,6 +173,22 @@ def preprocess(
             an explicit opt-in; the default behaviour (load as-is) is
             unchanged.  Ignored if ``vocab_size`` is not larger than the
             existing vocabulary.
+        weight_rules: Optional list of ``(glob_pattern, weight)`` pairs used
+            to mark which source documents matter more for training, e.g.
+            ``[("rpg_*", 3.0), ("dnd_*", 3.0), ("gutenberg_*", 1.0)]``. Each
+            file is matched against its filename by the first pattern that
+            fits (``fnmatch``); unmatched files default to weight ``1.0`` —
+            identical to today's behaviour. This does *not* change the
+            token stream itself (no data is duplicated or dropped); it
+            writes two small sidecar files next to ``output_path`` —
+            ``<output>.doc_end_offsets.npy`` (cumulative end token-index of
+            each document) and ``<output>.doc_weights.npy`` (weight per
+            document) — that ``scripts/build_source_weights.py`` later
+            converts into a per-window ``sample_weights_path`` array for
+            ``WeightedRandomSampler`` (the same mechanism
+            ``scripts/score_difficulty.py`` already uses for difficulty-based
+            weighting). When ``None`` (default), no sidecar files are
+            written and behaviour is unchanged.
         on_progress: Optional callable invoked with a progress message string
             at each major step and during BPE merge iterations.  When
             ``None`` messages are printed to stdout — existing CLI behaviour
@@ -263,6 +294,8 @@ def preprocess(
     output_p.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = output_p.with_suffix(".bin.tmp")
     total_tokens = 0
+    doc_end_offsets: list[int] = []
+    doc_weights: list[float] = []
     try:
         with open(str(tmp_path), "wb") as f_out:
             for i, path in enumerate(files):
@@ -272,6 +305,9 @@ def preprocess(
                 ids = encoder.encode(text) + [EOS_ID]   # +[EOS_ID] avoids mutating encoder cache
                 np.array(ids, dtype=np.int32).tofile(f_out)
                 total_tokens += len(ids)
+                if weight_rules is not None:
+                    doc_end_offsets.append(total_tokens)
+                    doc_weights.append(_resolve_weight(path, weight_rules))
                 _emit(f"      [{i+1}/{len(files)}] {path.name}: {len(ids):,} tokens")
         tmp_path.replace(output_p)
     except BaseException:
@@ -279,7 +315,22 @@ def preprocess(
         raise
 
     size_mb = output_p.stat().st_size / (1024 ** 2)
-    _emit(f"      Total: {total_tokens:,} tokens ({size_mb:.1f} MB) → {output_p}")
+    _emit(f"      Total: {total_tokens:,} tokens ({size_mb:.1f} MB) -> {output_p}")
+
+    if weight_rules is not None:
+        offsets_path = output_p.with_suffix(output_p.suffix + ".doc_end_offsets.npy")
+        weights_path = output_p.with_suffix(output_p.suffix + ".doc_weights.npy")
+        np.save(str(offsets_path), np.array(doc_end_offsets, dtype=np.int64))
+        np.save(str(weights_path), np.array(doc_weights, dtype=np.float32))
+        _emit(
+            f"      Wrote per-document weight metadata for {len(doc_weights)} "
+            f"document(s) -> {offsets_path.name}, {weights_path.name}"
+        )
+        _emit(
+            "      Run scripts/build_source_weights.py against these to produce "
+            "a per-window sample_weights.npy for training."
+        )
+
     return total_tokens
 
 
@@ -329,7 +380,32 @@ def main() -> None:
              "the embedding/output layers and randomly init the new rows). "
              "Opt-in only — default behaviour loads the existing vocab as-is.",
     )
+    parser.add_argument(
+        "--weight-pattern", action="append", metavar="GLOB:WEIGHT", default=None,
+        help="Mark files matching a glob (against filename only) with a "
+             "training weight, e.g. --weight-pattern 'rpg_*:3' --weight-pattern "
+             "'dnd_*:3' --weight-pattern 'gutenberg_*:1'. Repeatable; first "
+             "matching pattern wins; unmatched files get weight 1.0. Writes "
+             "<output>.doc_end_offsets.npy and <output>.doc_weights.npy "
+             "sidecar files for scripts/build_source_weights.py to consume — "
+             "does not change the corpus.bin itself. Omit entirely for "
+             "today's unweighted behaviour.",
+    )
     args = parser.parse_args()
+
+    weight_rules = None
+    if args.weight_pattern:
+        weight_rules = []
+        for spec in args.weight_pattern:
+            pattern, _, weight_str = spec.rpartition(":")
+            if not pattern:
+                print(f"\nError: --weight-pattern must be GLOB:WEIGHT, got {spec!r}", file=sys.stderr)
+                sys.exit(1)
+            try:
+                weight_rules.append((pattern, float(weight_str)))
+            except ValueError:
+                print(f"\nError: weight in --weight-pattern must be a number, got {spec!r}", file=sys.stderr)
+                sys.exit(1)
 
     try:
         preprocess(
@@ -342,6 +418,7 @@ def main() -> None:
             dedup_threshold=args.dedup_threshold,
             bpe_sample_size=args.bpe_sample,
             extend_vocab=args.extend_vocab,
+            weight_rules=weight_rules,
         )
         print("\nPreprocessing complete.")
     except (FileNotFoundError, ValueError) as exc:

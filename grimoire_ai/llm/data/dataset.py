@@ -125,6 +125,16 @@ class TokenizedDataset(Dataset):
         """
         return len(self._offsets)
 
+    @property
+    def offsets(self) -> list[int]:
+        """Absolute start offset (into the corpus token array) of every window.
+
+        Exposed so external tooling (e.g. a sample-weight builder) can align
+        per-window weights to dataset order without depending on the private
+        ``_offsets`` attribute. Index ``i`` here corresponds to ``self[i]``.
+        """
+        return self._offsets
+
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         """Return the ``idx``-th ``(input_ids, target_ids)`` pair.
 
