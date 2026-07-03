@@ -8,10 +8,11 @@ look like data-scarcity symptoms, not architecture-too-small symptoms.
 ## Why this matters
 
 - Chinchilla-optimal training is ~20 tokens/param. The current model (`small-25M`)
-  has ~90M tokens available (measured with the actual BPE tokenizer, 3.51
-  chars/token — not the ~4 chars/token rule of thumb) against a ~500M-token
-  compute-optimal target. That's 18% of compute-optimal for the model *already
-  in production*, before any consideration of scaling up.
+  has 129,343,636 tokens available (measured 2026-07-03 with the actual BPE
+  tokenizer via `grimoire-preprocess`, 3.51 chars/token — not the ~4
+  chars/token rule of thumb) against a ~500M-token compute-optimal target.
+  That's ~26% of compute-optimal for the model *already in production*,
+  before any consideration of scaling up.
 - `medium-85M` would need ~1.7B tokens to hit the same ratio; the project's own
   preset comments already gate that preset behind "~100M tokens," a threshold
   the corpus doesn't yet clear.
@@ -48,6 +49,18 @@ look like data-scarcity symptoms, not architecture-too-small symptoms.
       further. Fixed a Windows console `UnicodeEncodeError` in
       `scrape_gutenberg_extended.py`'s final summary print (non-cp1252 arrow
       character) — cosmetic, didn't affect the downloaded files.
+- [x] **Project Gutenberg catalog-based bulk expansion.** Follow-up to the
+      hand-curated pass above. Gutenberg's search-result *pages* explicitly
+      warn against scraping them ("you'll only get your IP blocked"), so
+      `scripts/scrape_gutenberg_catalog.py` instead downloads the official
+      bulk catalog CSV (`pg_catalog.csv`, cached under `data/catalogs/`) and
+      filters it locally by subject keyword + language — no hand-guessed IDs.
+      The current keyword set matches ~3,400 candidate English texts; ~300
+      downloaded so far, taking the corpus from 103 to 403 `gutenberg_*`
+      files. Corpus is now 129,343,636 tokens total (measured 2026-07-03 with
+      `grimoire-preprocess`), ~26% of the 500M Chinchilla-optimal target for
+      `small-25M`. The catalog scraper, not more hand-curated lists, is the
+      path to further volume.
 - [ ] **Math/stats textbook-style sources** (Wikibooks full books, OpenStax
       CC-BY texts) as a lower-priority complement to the existing `wp_math_*`
       stub articles, for the "data-science assistant" side of the agent scope.
