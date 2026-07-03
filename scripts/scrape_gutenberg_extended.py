@@ -205,7 +205,7 @@ def scrape(output_dir: str, delay: float) -> None:
         print(f"  [{written}] {title} — {author}")
         time.sleep(delay)
 
-    print(f"\nDone. {written} new, {skipped} skipped, {failed} failed → {out}")
+    print(f"\nDone. {written} new, {skipped} skipped, {failed} failed -> {out}")
     print("Run the Preprocess tab to tokenize the new files.")
 
 
