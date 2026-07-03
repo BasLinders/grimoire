@@ -241,12 +241,38 @@ def _stream_training(
 # Preprocess tab logic
 # ---------------------------------------------------------------------------
 
+def _parse_weight_patterns(text: str) -> Optional[list[tuple[str, float]]]:
+    """Parse a "one GLOB:WEIGHT rule per line" textbox into weight_rules.
+
+    Blank lines and lines starting with ``#`` are ignored. Returns ``None``
+    (not an empty list) when there are no usable rules, so callers can pass
+    the result straight through to ``preprocess(weight_rules=...)`` and get
+    today's unweighted behaviour when the field is left blank.
+    """
+    if not text or not text.strip():
+        return None
+    rules: list[tuple[str, float]] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        pattern, _, weight_str = line.rpartition(":")
+        if not pattern:
+            raise ValueError(f"Weight pattern line must be GLOB:WEIGHT, got {line!r}")
+        try:
+            rules.append((pattern, float(weight_str)))
+        except ValueError:
+            raise ValueError(f"Weight in {line!r} must be a number") from None
+    return rules or None
+
+
 def run_preprocess(
     input_dir: str,
     output_path: str,
     vocab_path: str,
     vocab_size: int,
     bpe_sample_size: Optional[float],  # gr.Number delivers float; None when field is cleared
+    weight_patterns: str = "",
 ) -> Generator[str, None, None]:
     """Train BPE tokenizer and write corpus binary; stream progress live."""
     from grimoire_ai.llm.data.preprocessing import preprocess
@@ -256,12 +282,14 @@ def run_preprocess(
     n_sample: Optional[int] = int(bpe_sample_size) if bpe_sample_size else None
 
     def _task(on_progress):
+        weight_rules = _parse_weight_patterns(weight_patterns)
         preprocess(
             input_path=input_dir.strip(),
             output_path=output_path.strip(),
             vocab_path=vocab_path.strip(),
             vocab_size=int(vocab_size),
             bpe_sample_size=n_sample,
+            weight_rules=weight_rules,
             on_progress=on_progress,
         )
 
@@ -354,6 +382,7 @@ def run_pretrain(
     n_kv_heads: int,
     d_ff: int,
     gradient_checkpointing: bool = False,
+    sample_weights_path: str = "",
 ) -> Generator[str, None, None]:
     """Launch a pre-training run and stream log output.
 
@@ -361,7 +390,14 @@ def run_pretrain(
     as a validation set and a validation loss is logged every ``eval_every``
     steps (averaged over at most ``eval_batches`` batches).  ``val_split = 0``
     disables evaluation and the run behaves exactly as before.
+
+    ``sample_weights_path``, when set, points at a ``.npy`` file (built by
+    the "Build sample weights" button, or ``scripts/score_difficulty.py``)
+    with one weight per training window — used to build a
+    ``WeightedRandomSampler`` instead of uniform shuffling. Left blank,
+    training behaves exactly as before.
     """
+    import numpy as np
     import torch
     from grimoire_ai.llm.model.config import TransformerConfig
     from grimoire_ai.llm.model.transformer import GrimoireTransformer
@@ -387,6 +423,10 @@ def run_pretrain(
             val_split=float(val_split),
             seq_len=model_config.max_seq_len,
         )
+        sample_weights = None
+        swp = sample_weights_path.strip()
+        if swp:
+            sample_weights = np.load(swp)
         Trainer(
             model=model,
             train_dataset=train_dataset,
@@ -403,6 +443,7 @@ def run_pretrain(
             checkpoint_dir=checkpoint_dir,
             device=device,
             gradient_checkpointing=gradient_checkpointing,
+            sample_weights=sample_weights,
             on_log=on_log,
             on_save=on_save,
             on_done=on_done,
@@ -411,6 +452,78 @@ def run_pretrain(
         ).train(resume_from=resume)
 
     yield from _wrap_with_buttons(_stream_training(_train, stop_key="pretrain", stop_event=stop_event))
+
+
+def run_build_sample_weights(
+    corpus_path: str,
+    val_split: float,
+    d_model: int,
+    n_layers: int,
+    n_heads: int,
+    n_kv_heads: int,
+    d_ff: int,
+    output_path: str,
+) -> str:
+    """Build a per-window sample_weights.npy aligned to the exact train region.
+
+    Reuses ``_build_datasets`` — the same function ``run_pretrain`` calls —
+    so the resulting weights array is guaranteed to match the training
+    dataset's window count and order even when a validation split is set
+    (which shortens the train region to ``[0, split)``).
+    """
+    from grimoire_ai.llm.model.config import TransformerConfig
+    from grimoire_ai.llm.training.train import _build_datasets
+    from grimoire_ai.llm.data.sample_weights import (
+        compute_window_weights,
+        load_doc_weight_sidecars,
+    )
+    import numpy as np
+
+    corpus_path = corpus_path.strip()
+    output_path = output_path.strip()
+    if not corpus_path:
+        return "Error: set a corpus path first."
+    if not output_path:
+        return "Error: set a sample weights output path first."
+
+    try:
+        doc_end_offsets, doc_weights = load_doc_weight_sidecars(corpus_path)
+    except FileNotFoundError as exc:
+        return f"Error: {exc}"
+
+    model_config = TransformerConfig(
+        d_model=int(d_model), n_layers=int(n_layers), n_heads=int(n_heads),
+        n_kv_heads=int(n_kv_heads), d_ff=int(d_ff),
+    )
+    try:
+        train_dataset, _ = _build_datasets(
+            corpus_path=corpus_path,
+            val_corpus_path=None,
+            val_split=float(val_split),
+            seq_len=model_config.max_seq_len,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return f"Error: {exc}"
+
+    try:
+        window_weights = compute_window_weights(train_dataset.offsets, doc_end_offsets, doc_weights)
+    except ValueError as exc:
+        return f"Error: {exc}"
+
+    out_p = Path(output_path)
+    out_p.parent.mkdir(parents=True, exist_ok=True)
+    np.save(str(out_p), window_weights)
+
+    unique, counts = np.unique(window_weights, return_counts=True)
+    breakdown = "\n".join(
+        f"  weight {w:.2f} -> {c:,} windows ({100 * c / len(window_weights):.1f}%)"
+        for w, c in sorted(zip(unique.tolist(), counts.tolist()))
+    )
+    return (
+        f"Wrote {len(window_weights):,} window weights to {out_p}\n"
+        f"(train region: {len(train_dataset):,} windows, "
+        f"val_split={val_split})\n{breakdown}"
+    )
 
 
 def stop_pretrain() -> None:
@@ -2256,6 +2369,23 @@ def build_app() -> gr.Blocks:
                     precision=0,
                     info="Max files sampled for BPE vocabulary training. 500 covers typical domain corpora well. Set to 0 to use all files.",
                 )
+            with gr.Accordion("Source weighting (optional)", open=False):
+                gr.Markdown(
+                    "Mark files that matter more for training — e.g. D&D-specific "
+                    "content vs. bulk literature added purely for token volume. "
+                    "This does **not** change the corpus itself; it writes two "
+                    "sidecar files next to the output binary "
+                    "(`<output>.doc_end_offsets.npy`, `<output>.doc_weights.npy`) "
+                    "that the Pre-train tab's **Build sample weights** button "
+                    "turns into a `WeightedRandomSampler` weights file. Leave "
+                    "blank for today's unweighted behaviour."
+                )
+                pp_weight_patterns = gr.Textbox(
+                    label="Weight rules (one GLOB:WEIGHT per line)",
+                    lines=4,
+                    placeholder="rpg_*:3\ndnd_*:3\n5etools_*:2\nsrd_*:2\nopen5e_*:2\ngutenberg_*:1",
+                    info="Matched against each file's name (fnmatch), first matching rule wins. Unmatched files default to weight 1.0.",
+                )
             with gr.Row():
                 pp_run_btn  = gr.Button("Start preprocessing", variant="primary")
                 pp_stop_btn = gr.Button(
@@ -2269,7 +2399,7 @@ def build_app() -> gr.Blocks:
             )
             pp_event = pp_run_btn.click(
                 fn=run_preprocess,
-                inputs=[pp_input, pp_output, pp_vocab, pp_vocab_size, pp_bpe_sample],
+                inputs=[pp_input, pp_output, pp_vocab, pp_vocab_size, pp_bpe_sample, pp_weight_patterns],
                 outputs=[pp_log_box, pp_run_btn, pp_stop_btn],
             )
             pp_stop_btn.click(fn=stop_preprocess, inputs=[], outputs=[], cancels=[pp_event])
@@ -2395,6 +2525,37 @@ def build_app() -> gr.Blocks:
                 outputs=[pt_warmup, pt_log, pt_save, pt_eval_every],
             )
 
+            # ---- Sample weighting -----------------------------------------
+            with gr.Accordion("Sample weighting (optional)", open=False):
+                gr.Markdown(
+                    "If you tagged files with `--weight-pattern` in the "
+                    "Preprocess tab, build a per-window weights file here — "
+                    "training then uses a `WeightedRandomSampler` to see "
+                    "high-weight windows more often, instead of uniform "
+                    "shuffling. Also accepts a difficulty-weights file from "
+                    "`scripts/score_difficulty.py`. Leave the path blank to "
+                    "train unweighted, as before."
+                )
+                pt_sample_weights = gr.Textbox(
+                    label="Sample weights path (.npy)",
+                    value="",
+                    placeholder="data/processed/source_weights.npy",
+                    info="Loaded and passed to WeightedRandomSampler if set; ignored if blank.",
+                )
+                pt_build_weights_btn = gr.Button("Build sample weights from tags")
+                pt_build_weights_log = gr.Textbox(
+                    label="Build weights result", lines=4, interactive=False,
+                )
+                pt_build_weights_btn.click(
+                    fn=run_build_sample_weights,
+                    inputs=[
+                        pt_corpus, pt_val_split,
+                        pt_d_model, pt_n_layers, pt_n_heads, pt_n_kv_heads, pt_d_ff,
+                        pt_sample_weights,
+                    ],
+                    outputs=[pt_build_weights_log],
+                )
+
             with gr.Row():
                 pt_run_btn  = gr.Button("Start pre-training", variant="primary")
                 pt_stop_btn = gr.Button(
@@ -2414,7 +2575,7 @@ def build_app() -> gr.Blocks:
                     pt_batch, pt_accum, pt_log, pt_save,
                     pt_val_split, pt_eval_every, pt_eval_batches,
                     pt_d_model, pt_n_layers, pt_n_heads, pt_n_kv_heads, pt_d_ff,
-                    pt_grad_ckpt,
+                    pt_grad_ckpt, pt_sample_weights,
                 ],
                 outputs=[pt_log_box, pt_run_btn, pt_stop_btn],
             )
