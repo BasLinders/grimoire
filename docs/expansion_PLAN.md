@@ -86,9 +86,10 @@ recalled from model memory.
         `--threshold 0.3` across all 103 Gutenberg files vs. the full
         1169-file corpus — no near-duplicates.
 - [x] **Generation-level diversity constraints on derived adventures** —
-      satisfied by a small manually-written pilot batch (5 adventures,
-      ~5,861 tokens, written directly rather than via a scripted API
-      pipeline — see note below):
+      satisfied by a small manually-written pilot, growing in batches of 5
+      (15 adventures across 3 batches as of the last update, 16,241 tokens —
+      see the running batch log below for the current count, written
+      directly rather than via a scripted API pipeline — see note below):
   - [x] Cap adventures derived per source text (one per book): Beowulf
         (#16328), Prose/Poetic Edda (#4785/#23265), The Odyssey (#1727),
         Grimms'/Yellow Fairy Book (#2591/#7154), The Worm Ouroboros (#39058).
