@@ -124,6 +124,15 @@ def main() -> None:
              "re-embedding everything. Checkpoint lives at "
              "<output-dir>/lora_index_checkpoint/.",
     )
+    parser.add_argument(
+        "--gen-lora", default="", metavar="PATH",
+        help="Path to a .lora file from grimoire_ai.llm.training.finetune's "
+             "--lora-rank generation fine-tuning (NOT scripts/embed_tune.py's "
+             "output -- that one is embedding-only and belongs on --lora "
+             "instead). Applied directly to the generation engine, so it "
+             "does affect quiz/perplexity output. Unrelated to --encoder "
+             "lora/--lora, which adapts a separate embedding-only engine.",
+    )
     args = parser.parse_args()
 
     from grimoire_ai.llm.inference.engine import InferenceEngine
@@ -145,6 +154,10 @@ def main() -> None:
         retrieval_threshold=args.retrieval_threshold,
     )
     print(f"Device: {engine.device}")
+
+    if args.gen_lora:
+        print(f"Loading generation LoRA: {args.gen_lora} …")
+        engine.load_lora(args.gen_lora)
 
     if corpus_dir and Path(corpus_dir).is_dir():
         documents: list[tuple[str, str]] = []
