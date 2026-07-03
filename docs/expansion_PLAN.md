@@ -86,10 +86,12 @@ recalled from model memory.
         `--threshold 0.3` across all 103 Gutenberg files vs. the full
         1169-file corpus — no near-duplicates.
 - [x] **Generation-level diversity constraints on derived adventures** —
-      satisfied by a small manually-written pilot, growing in batches of 5
-      (30 adventures across 6 batches as of the last update, 30,880 tokens —
-      see the running batch log below for the current count, written
-      directly rather than via a scripted API pipeline — see note below):
+      satisfied by a small manually-written pilot, growing in batches (5 per
+      batch through batch 6, 10 per batch from batch 7 onward — see the
+      running batch log below for the current count and per-batch size;
+      40 adventures across 7 batches as of the last update, 40,248 tokens,
+      written directly rather than via a scripted API pipeline — see note
+      below):
   - [x] Cap adventures derived per source text (one per book): Beowulf
         (#16328), Prose/Poetic Edda (#4785/#23265), The Odyssey (#1727),
         Grimms'/Yellow Fairy Book (#2591/#7154), The Worm Ouroboros (#39058).
@@ -121,11 +123,12 @@ recalled from model memory.
 **How these are generated:** not via the scripted `generate_derived_adventures.py`
 + Anthropic API pipeline originally envisioned above — the user opted to avoid
 the additional API billing (separate from their existing Claude subscription)
-and instead has Claude write these directly in-session, in batches of 5, each
-verified against corpus ground-truth before inclusion the same way as the
-pilot batch. This is a deliberately slow, steady growth path rather than a
-corpus-scale solution — revisit the scripted API pipeline if/when more volume
-is wanted and the user is ready to spend on it.
+and instead has Claude write these directly in-session, in batches (5 per
+batch through batch 6, increased to 10 per batch from batch 7 onward at the
+user's request), each verified against corpus ground-truth before inclusion
+the same way as the pilot batch. This is a deliberately slow, steady growth
+path rather than a corpus-scale solution — revisit the scripted API pipeline
+if/when more volume is wanted and the user is ready to spend on it.
 
 ## Derived-adventure batch log
 
@@ -141,6 +144,7 @@ avoid reusing source books. Token counts measured with the real BPE tokenizer
 | 4 | `adventure_016`-`020` | The Aeneid (#228), Hero Tales and Legends of the Rhine (#7882), The Mythology of the British Islands (#9880), The Golden Bough (#22696), The Lesser Key of Solomon (#46849) | survival (3-5, coastline/isles), dungeon crawl (6-8, sunken forge-hall), investigation (2-4, moorland barrows), political intrigue (4-6, harvest-kingdom court), heist (8-9, sealed tower-library) | 4,776 | 21,017 |
 | 5 | `adventure_021`-`025` | The Book of Wonder (#7132), Phantastes (#325), Heroic Romances of Ireland Vol 1 (#10329), The Mahabharata Book 1 (#3972), Irish Fairy Tales (#21451) | investigation (3-5, dream-border city), survival (3-5, shifting enchanted forest), political intrigue (6-8, Irish high-king's court), heist (13-16, rival kingdom's treasury), dungeon crawl (2-4, fairy rath) | 4,916 | 25,933 |
 | 6 | `adventure_026`-`030` | The Ramayana (#7864), The Princess and the Goblin (#947), The Gods of Pegana (#8432), The Wood Beyond the World (#7143), Hawaiian Folk Tales (#17034) | survival (5-7, exile forest), dungeon crawl (2-4, goblin tunnels), political intrigue (6-8, temple-city), heist (6-8, witch-queen's manor), investigation (5-7, volcanic islands) | 4,947 | 30,880 |
+| 7 (batch size increased to 10) | `adventure_031`-`040` | The Once and Future King excerpt (#831), The Canterbury Tales (#583), Theogony and Works and Days (#22381), Paradise Lost (#8789), The Faerie Queene Book 1 (#3071), Household Tales by Brothers Grimm (#5314), Fairy Tales by Hans Christian Andersen (#1597), Treasure Island (#113), Frankenstein (#84), Journey to the Centre of the Earth (#1268) | political intrigue (5-7, royal court), investigation (3-5, pilgrimage road), dungeon crawl (9-11, primordial vault), heist (17-20, fallen-celestial ruin), political intrigue (6-8, illusion-shrouded holding), survival (2-4, unnatural winter), investigation (2-4, fishing town), heist (6-8, treasure island), investigation (7-9, alchemist's tower), dungeon crawl (8-10, deep caverns) | 9,368 | 40,248 |
 
 **Source books used so far (do not reuse without deliberate reason):** Beowulf
 #16328, Prose Edda #4785, Poetic Edda #23265, The Odyssey #1727, Grimms' Fairy
@@ -155,7 +159,11 @@ Lesser Key of Solomon #46849, The Book of Wonder #7132, Phantastes #325,
 Heroic Romances of Ireland Vol 1 #10329, The Mahabharata Book 1 #3972,
 Irish Fairy Tales #21451, The Ramayana #7864, The Princess and the Goblin
 #947, The Gods of Pegana #8432, The Wood Beyond the World #7143, Hawaiian
-Folk Tales #17034.
+Folk Tales #17034, The Once and Future King excerpt #831, The Canterbury
+Tales #583, Theogony and Works and Days #22381, Paradise Lost #8789, The
+Faerie Queene Book 1 #3071, Household Tales by Brothers Grimm #5314, Fairy
+Tales by Hans Christian Andersen #1597, Treasure Island #113, Frankenstein
+#84, Journey to the Centre of the Earth #1268.
 
 **Ground-truth monster CR/XP verified so far (reusable across future
 batches without re-checking):** Kobold CR1/8 (25 XP), Merfolk CR1/8 (25 XP),
@@ -168,8 +176,11 @@ CR3 (700 XP), Basilisk CR3 (700 XP), Doppelganger CR3 (700 XP), Lamia CR4
 (1,100 XP), Ettin CR4 (1,100 XP), Troll CR5 (1,800 XP), Night Hag CR5
 (1,800 XP), Hill Giant CR5 (1,800 XP), Fire Elemental CR5 (1,800 XP,
 Salamander is the same CR/XP if a fire-themed alternative is wanted),
-Medusa CR6 (2,300 XP), Chain Devil CR8 (3,900 XP), Young Green Dragon CR8
-(3,900 XP), Erinyes CR12 (8,400 XP), Rakshasa CR13 (10,000 XP), Djinni
+Otyugh CR5 (1,800 XP), Flesh Golem CR5 (1,800 XP), Medusa CR6 (2,300 XP),
+Stone Giant CR7 (2,900 XP), Chain Devil CR8 (3,900 XP), Young Green Dragon
+CR8 (3,900 XP), Erinyes CR12 (8,400 XP), Rakshasa CR13 (10,000 XP), Pit
+Fiend CR20 (25,000 XP, deliberately overwhelming — used only as an
+avoid-not-fight guardian, not a straight combat encounter), Djinni
 CR11 (7,200 XP, referenced for lore only — not intended as a fought
 encounter at the level ranges used so far). Source:
 `data/corpus/saga/srd_monsters.txt` unless noted otherwise. Verify a
