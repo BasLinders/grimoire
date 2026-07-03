@@ -258,6 +258,43 @@ _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 # character budget.
 _LINE_SPLIT = re.compile(r"\n+")
 
+# Sentence-level "fluff" markers: forum-answer conventions (hedging, quoting
+# other users, addressing the asker directly, rhetorical bounce-back
+# questions) that carry no factual content but, left in, teach the generator
+# to imitate discussion-board voice instead of stating the answer. Checked
+# against a single sentence/line unit at a time so the surrounding factual
+# sentences in the same answer are unaffected.
+_FLUFF_SENTENCE_RE = re.compile(
+    r"""
+    \b(
+        i\s+(think|believe|guess) |
+        in\s+my\s+opinion |
+        as\s+far\s+as\s+i\s+know |
+        correct\s+me\s+if | i'?m\s+not\s+sure |
+        edit\s*: | update\s*: | related\s*: | see\s+also | possible\s+duplicate |
+        welcome\s+to | thanks?\s+for |
+        [a-z][a-z0-9_.-]{2,20}\s+(mentioned|said|wrote|noted|pointed\s+out|answered) |
+        as\s+\S+\s+(mentioned|noted|said) |
+        \b(the|this|your)\s+question\b | you\s+(asked|mean)\b | \bOP\b
+    )
+    """,
+    re.I | re.X,
+)
+
+
+def _is_fluff_sentence(unit: str) -> bool:
+    """Return True for a sentence/line that is forum framing, not fact.
+
+    Covers two patterns: sentences matching a hedge/quote/meta-reference
+    phrase anywhere in the text, and sentences that are themselves a
+    rhetorical question directed at the reader rather than a statement (the
+    actual answer to such a question is virtually always a *separate*
+    sentence, so dropping the question loses no signal).
+    """
+    if _FLUFF_SENTENCE_RE.search(unit):
+        return True
+    return unit.strip().endswith("?")
+
 
 @dataclass(frozen=True)
 class FinetuneExample:
@@ -272,6 +309,45 @@ class FinetuneExample:
     def to_json_line(self) -> str:
         """Serialize to one JSONL line (no trailing newline)."""
         return json.dumps({"user": self.user, "assistant": self.assistant, "context": self.context})
+
+
+def _split_units(text: str) -> list[str]:
+    """Split text into line-then-sentence units (see ``_take_sentences_within_budget``)."""
+    units: list[str] = []
+    for line in _LINE_SPLIT.split(text.strip()):
+        line = line.strip()
+        if not line:
+            continue
+        units.extend(s.strip() for s in _SENTENCE_SPLIT.split(line) if s.strip())
+    return units
+
+
+def _pack_units(units: list[str], max_chars: int) -> str:
+    """Greedily pack ``units`` up to ``max_chars``, joined with spaces.
+
+    Always keeps the first unit even if it alone exceeds ``max_chars`` --
+    truncating mid-unit would risk cutting off the actual answer rather
+    than just trailing detail. Callers that pre-filter ``units`` (e.g. to
+    drop fluff sentences) get "" for free when filtering removes
+    everything, since an empty list short-circuits below.
+
+    Args:
+        units: Ordered candidate units (already filtered, if desired).
+        max_chars: Target maximum length in characters.
+
+    Returns:
+        The packed slice, stripped. Empty only if ``units`` is empty.
+    """
+    if not units:
+        return ""
+    taken = [units[0]]
+    total = len(units[0])
+    for unit in units[1:]:
+        if total + 1 + len(unit) > max_chars:
+            break
+        taken.append(unit)
+        total += 1 + len(unit)
+    return " ".join(taken)
 
 
 def _take_sentences_within_budget(text: str, max_chars: int) -> str:
@@ -296,54 +372,104 @@ def _take_sentences_within_budget(text: str, max_chars: int) -> str:
     Returns:
         The extracted slice, stripped. Empty only if ``text`` is blank.
     """
-    units: list[str] = []
-    for line in _LINE_SPLIT.split(text.strip()):
-        line = line.strip()
-        if not line:
-            continue
-        units.extend(s.strip() for s in _SENTENCE_SPLIT.split(line) if s.strip())
-    if not units:
-        return ""
-    taken = [units[0]]
-    total = len(units[0])
-    for unit in units[1:]:
-        if total + 1 + len(unit) > max_chars:
-            break
-        taken.append(unit)
-        total += 1 + len(unit)
-    return " ".join(taken)
+    return _pack_units(_split_units(text), max_chars)
+
+
+def _take_clean_sentences_within_budget(text: str, max_chars: int) -> str:
+    """Like ``_take_sentences_within_budget``, but skips forum-voice fluff.
+
+    Drops hedges, quotes of other users, meta-references to "the question",
+    and rhetorical questions directed at the reader (see
+    ``_is_fluff_sentence``) before packing -- these are the sentences most
+    real StackExchange answers open with, so packing the *raw* leading
+    slice (as ``_take_sentences_within_budget`` does) systematically front-
+    loads discussion-board framing ahead of the actual fact. Like the raw
+    packer, the first surviving unit is always kept even if it alone
+    exceeds ``max_chars``. Only returns "" if filtering removes every
+    unit -- an answer that is fluff from end to end, which the caller
+    treats the same as "too short to use".
+
+    Args:
+        text: Source text (typically a full community answer).
+        max_chars: Target maximum length in characters.
+
+    Returns:
+        The packed, fluff-filtered slice, stripped. Empty only if every
+        unit was flagged as fluff.
+    """
+    clean_units = [u for u in _split_units(text) if not _is_fluff_sentence(u)]
+    return _pack_units(clean_units, max_chars)
 
 
 def qa_pair_to_finetune_example(
     pair: QAPair,
     context_max_chars: int = _DEFAULT_CONTEXT_MAX_CHARS,
     answer_max_chars: int = _DEFAULT_ANSWER_MAX_CHARS,
+    context_pair: Optional["QAPair"] = None,
 ) -> Optional[FinetuneExample]:
     """Convert one ``QAPair`` into a ``FinetuneExample``, or ``None``.
 
-    Both ``context`` and ``assistant`` are leading slices of the *same*
-    ``pair.answer`` text, extracted independently with ``answer_max_chars <=
-    context_max_chars`` so the assistant target is consistent with (a prefix
-    of, in practice) what the context shows -- the model is being taught to
-    state the direct answer the context already contains, not to introduce
-    information absent from it.
+    ``context`` is a raw leading slice of ``context_pair.answer`` (defaults
+    to ``pair.answer`` itself when no ``context_pair`` is given) --
+    deliberately unfiltered, since it stands in for what a retriever would
+    actually hand the model (including whatever hedging or framing the real
+    passage opens with). ``assistant`` is a *fluff-filtered* slice of
+    ``pair.answer`` (see ``_take_clean_sentences_within_budget``):
+    forum-voice hedges, quotes of other users, and rhetorical questions are
+    dropped before packing, so the model is taught to state the fact the
+    community answer contains, not to reproduce discussion-board framing
+    verbatim.
+
+    Passing a *different* answer to the same question as ``context_pair``
+    (see ``qa_pairs_to_finetune_examples``) breaks the context/assistant
+    overlap that the default same-source behaviour otherwise has -- without
+    it, ``context`` is always a superset-prefix of ``assistant``, which in
+    practice taught the generator to echo/loop through whatever passage it's
+    given at inference instead of extracting the answer from it.
 
     Args:
-        pair: A parsed question/answer pair.
+        pair: The question/answer pair supplying ``user`` and ``assistant``.
         context_max_chars: Budget for the ``context`` slice.
         answer_max_chars: Budget for the ``assistant`` slice. Should not
             exceed ``context_max_chars``.
+        context_pair: Optional different answer to the same question, used
+            as the source for ``context`` instead of ``pair`` itself.
 
     Returns:
-        ``None`` when the answer is too short to form a meaningful pair
-        (e.g. a one-word "Yes." with no elaboration) -- there is nothing
-        useful to extract twice.
+        ``None`` when the answer is too short (or too fluff-heavy) to form
+        a meaningful pair -- there is nothing useful to extract twice.
     """
-    context = _take_sentences_within_budget(pair.answer, context_max_chars)
-    assistant = _take_sentences_within_budget(pair.answer, answer_max_chars)
+    context_source = context_pair if context_pair is not None else pair
+    context = _take_sentences_within_budget(context_source.answer, context_max_chars)
+    assistant = _take_clean_sentences_within_budget(pair.answer, answer_max_chars)
     if len(context) < 20 or len(assistant) < 10:
         return None
     return FinetuneExample(user=pair.question, assistant=assistant, context=context)
+
+
+def _pick_context_pair(others: list[QAPair]) -> Optional[QAPair]:
+    """Pick the best *different* answer to use as ``context`` for a pair.
+
+    Prefers the asker's accepted answer among the others; falls back to the
+    highest-scored one, then to whichever came first -- the same "best
+    answer wins" heuristic ``load_qa_pairs``' ``min_score``/``accepted_only``
+    filtering already uses elsewhere in this module.
+
+    Args:
+        others: The other answers to the same question (``pair`` excluded).
+
+    Returns:
+        The chosen ``QAPair``, or ``None`` if ``others`` is empty.
+    """
+    if not others:
+        return None
+    accepted = [o for o in others if o.accepted]
+    if accepted:
+        return accepted[0]
+    scored = [o for o in others if o.answer_score is not None]
+    if scored:
+        return max(scored, key=lambda o: o.answer_score)
+    return others[0]
 
 
 def qa_pairs_to_finetune_examples(
@@ -352,6 +478,14 @@ def qa_pairs_to_finetune_examples(
     answer_max_chars: int = _DEFAULT_ANSWER_MAX_CHARS,
 ) -> list[FinetuneExample]:
     """Convert many ``QAPair``s, dropping any too short to split meaningfully.
+
+    Groups pairs by question first. For a question with multiple community
+    answers, each example's ``context`` is drawn from a *different* answer
+    than its ``assistant`` (see ``_pick_context_pair``), so the model
+    practices extracting the fact from an independent passage instead of
+    echoing a near-duplicate of its own target. Questions with only one
+    answer fall back to the same-source behaviour (there is no independent
+    text to draw ``context`` from).
 
     Args:
         pairs: Parsed question/answer pairs, e.g. from ``load_qa_pairs``.
@@ -362,7 +496,18 @@ def qa_pairs_to_finetune_examples(
         A list of ``FinetuneExample``, shorter than ``pairs`` by however many
         were dropped as too short.
     """
-    examples = (
-        qa_pair_to_finetune_example(p, context_max_chars, answer_max_chars) for p in pairs
-    )
-    return [ex for ex in examples if ex is not None]
+    by_question: dict[str, list[QAPair]] = {}
+    for p in pairs:
+        by_question.setdefault(p.question, []).append(p)
+
+    examples: list[FinetuneExample] = []
+    for group in by_question.values():
+        for i, pair in enumerate(group):
+            others = group[:i] + group[i + 1 :]
+            context_pair = _pick_context_pair(others)
+            ex = qa_pair_to_finetune_example(
+                pair, context_max_chars, answer_max_chars, context_pair=context_pair
+            )
+            if ex is not None:
+                examples.append(ex)
+    return examples
