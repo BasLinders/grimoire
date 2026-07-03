@@ -38,14 +38,23 @@ look like data-scarcity symptoms, not architecture-too-small symptoms.
 
 ## Sources to pursue
 
-- [ ] **Project Gutenberg fantasy/mythology expansion.** Currently only 17
-      files scraped — the single largest realistic volume opportunity, cleanly
-      public domain, and stylistically distinct (long-form literary prose)
-      from everything else in the corpus (forum Q&A, encyclopedic articles,
-      structured rules text).
+- [x] **Project Gutenberg fantasy/mythology expansion.** Ran
+      `scrape_gutenberg.py` + `scrape_gutenberg_extended.py` (curated lists
+      already existed in the repo, just hadn't been executed) — went from 17
+      to 103 files, adding ~14.3M tokens (measured with the real BPE
+      tokenizer). Corpus is now ~92.8M tokens total. 3 book IDs had no working
+      plain-text mirror (Parzival #9934, Symbolic Logic #38986, An
+      Introduction to Mathematics #21076) and were skipped; not investigated
+      further. Fixed a Windows console `UnicodeEncodeError` in
+      `scrape_gutenberg_extended.py`'s final summary print (non-cp1252 arrow
+      character) — cosmetic, didn't affect the downloaded files.
 - [ ] **Math/stats textbook-style sources** (Wikibooks full books, OpenStax
       CC-BY texts) as a lower-priority complement to the existing `wp_math_*`
       stub articles, for the "data-science assistant" side of the agent scope.
+      Note: the extended Gutenberg scrape incidentally added 6 math/logic
+      titles (Hardy, Russell, Venn, Dudeney, Abbott, Couturat) as a side
+      effect — this item is still about the Wikibooks/OpenStax sources
+      specifically, not covered by that.
 
 ## Derived-adventure pipeline (Gutenberg → structured D&D content)
 
@@ -55,16 +64,27 @@ mechanical content (stat blocks, DCs, XP budgets) verified against the existing
 corpus's ground-truth rules data (5etools bestiary/SRD) rather than invented or
 recalled from model memory.
 
-- [ ] **Resolve licensing scope for source material** before scraping — public
+- [x] **Resolve licensing scope for source material** before scraping — public
       domain / clearly open-licensed only. No bulk scraping of
-      copyright-ambiguous web fiction.
-- [ ] **Source-level dedup on the raw scrape:**
-  - [ ] Strip Gutenberg boilerplate license header/footer (byte-identical
+      copyright-ambiguous web fiction. (Both scrapers pull only curated,
+      known-public-domain Gutenberg IDs — no change needed here.)
+- [x] **Source-level dedup on the raw scrape:**
+  - [x] Strip Gutenberg boilerplate license header/footer (byte-identical
         across every book — the crudest possible duplication if left in).
-  - [ ] Avoid pulling multiple translations/editions of the same underlying
-        work unless deliberately wanted for stylistic variety.
-  - [ ] Run near-duplicate detection (MinHash/shingling) across the new scrape
-        *and* against the existing corpus before merging.
+        Already handled by both scrapers' `_clean()` regex; spot-checked a
+        scraped file's head/tail, boilerplate is gone.
+  - [x] Avoid pulling multiple translations/editions of the same underlying
+        work unless deliberately wanted for stylistic variety. Checked the
+        curated lists — no duplicate editions, only one incidental double
+        listing (Yellow Fairy Book, same Gutenberg ID in both scripts, so it
+        just downloads once).
+  - [x] Run near-duplicate detection (MinHash/shingling) across the new scrape
+        *and* against the existing corpus before merging. Wrote
+        `scripts/dedup_corpus.py` (word-shingle MinHash, no new heavy
+        dependency) and validated it against synthetic exact/partial-copy
+        cases before trusting the result. Ran it: 0 pairs found at
+        `--threshold 0.3` across all 103 Gutenberg files vs. the full
+        1169-file corpus — no near-duplicates.
 - [ ] **Generation-level diversity constraints on derived adventures:**
   - [ ] Cap adventures derived per source text (e.g. one per book) so the
         output pool isn't a rehash of a small number of idea seeds.
