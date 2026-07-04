@@ -241,16 +241,34 @@ match-wins (`grimoire_ai/llm/data/preprocessing.py`'s `_resolve_weight`).
       weighting only adds sidecars, doesn't retokenize differently), wrote
       `corpus.bin.doc_end_offsets.npy` / `corpus.bin.doc_weights.npy` for all
       1,469 documents.
-- [ ] **Build `sample_weights.npy` and use it in a real training run.** Use
-      the Pre-train tab's "Build sample weights from tags" button (not a raw
-      `build_source_weights.py` CLI call — it needs to match whatever
-      `seq_len`/`stride`/`val_split` the actual run uses, which the button
-      handles automatically and a hand-rolled call does not), then set
-      `sample_weights_path` before starting pre-training. Still open: no
-      weighted training run has happened yet, so there's no signal on
-      whether these specific multipliers help — revisit with finer-grained
-      tiers (e.g. splitting `rpg_se_*` from official books) only after a
-      baseline weighted-vs-unweighted comparison, not before.
+- [x] **Build `sample_weights.npy` and use it in a real training run.** Built
+      via `scripts/build_source_weights.py` (`seq_len=1024`, `stride=512`,
+      `val_split=0.0` — matching `Trainer`'s own defaults; the file assumes
+      no held-out region since the run below used `val_split=0`): 252,623
+      windows total, 41.6% at weight 0.5, 48.5% at weight 1.0, 9.9% at
+      weight 1.75.
+- [x] **Paired baseline-vs-weighted comparison, `small-25M`, 15,258 steps
+      each (2026-07-03).** Same corpus, same hyperparameters, only
+      `sample_weights_path` differed:
+      | | Baseline | Weighted |
+      |---|---|---|
+      | Val loss @ step 9,156/9,156 | 2.9548 | (not recorded) |
+      | Val loss @ step 10,682/10,682 | 2.9046 | (not recorded) |
+      | Val loss @ step 13,734 | 2.8524 | **2.6944** |
+      | Wall-clock | 24,143.5s | 24,140.7s |
+      **Result: weighting helps.** 0.158 absolute / ~5.5% relative
+      reduction in validation loss at the matching checkpoint, at
+      effectively zero wall-clock cost. Train loss also tracked lower
+      throughout (~2.97–2.99 vs ~3.08–3.12 in the same step range), and val
+      loss improving *more* than train loss argues against this being
+      overfitting to the reweighted mix.
+- [ ] **Promote the weighted checkpoint** (`checkpoints/pretrain/weighted/`)
+      into `agents.json` — pending a qualitative check of its actual
+      generations first, not just the val-loss number.
+- [ ] Revisit finer-grained weight tiers (e.g. splitting `rpg_se_*` Q&A
+      prose from official-book prose, both currently lumped at/near
+      baseline) now that there's a positive signal that weighting works at
+      all — no longer blocked on "no signal yet."
 
 ## Open decisions for next session
 
