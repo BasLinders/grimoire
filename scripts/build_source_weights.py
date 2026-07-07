@@ -38,9 +38,15 @@ Usage
 
 The seq_len/stride here MUST match what you pass to TokenizedDataset at
 training time (i.e. whatever grimoire-train actually uses) -- the weights
-array is only valid for windows in that exact configuration. If you train
-with a validation split, build the weights against the same train-only
-region (see the Pre-train tab, which handles this automatically).
+array is only valid for windows in that exact configuration.
+
+If you train with a validation split, pass --val-split with the same value
+your training config uses (e.g. --val-split 0.01) -- this truncates the
+scored region to the same train-only ``[0, split)`` window range that
+``grimoire-train`` (via ``_build_datasets``) actually trains on, using the
+same function the Pre-train tab's "Build sample weights from tags" button
+uses. Omitting --val-split (or passing 0) scores the full corpus, which only
+matches a training run with no validation split.
 
 Requirements
 ------------
@@ -67,14 +73,31 @@ def build(
     output_path: str,
     doc_end_offsets_path: str | None = None,
     doc_weights_path: str | None = None,
+    val_split: float = 0.0,
 ) -> None:
     doc_end_offsets, doc_weights = load_doc_weight_sidecars(
         corpus_path, doc_end_offsets_path, doc_weights_path
     )
     print(f"Loaded {len(doc_weights)} document weight(s)")
 
-    dataset = TokenizedDataset(corpus_path, seq_len=seq_len, stride=stride)
-    print(f"Corpus has {len(dataset):,} windows (seq_len={seq_len}, stride={stride})")
+    if val_split and val_split > 0.0:
+        # Match _build_datasets exactly (same function grimoire-train and the
+        # UI's "Build sample weights from tags" button use) so the train
+        # region -- and therefore the window count/order -- lines up bit for
+        # bit with what training will actually see. Note _build_datasets has
+        # no stride parameter of its own; it always uses TokenizedDataset's
+        # default (seq_len // 2), so --stride is ignored in this branch.
+        from grimoire_ai.llm.training.train import _build_datasets
+
+        dataset, _ = _build_datasets(
+            corpus_path=corpus_path, val_corpus_path=None,
+            val_split=val_split, seq_len=seq_len,
+        )
+        print(f"Train region has {len(dataset):,} windows "
+              f"(seq_len={seq_len}, val_split={val_split})")
+    else:
+        dataset = TokenizedDataset(corpus_path, seq_len=seq_len, stride=stride)
+        print(f"Corpus has {len(dataset):,} windows (seq_len={seq_len}, stride={stride})")
 
     window_weights = compute_window_weights(dataset.offsets, doc_end_offsets, doc_weights)
 
@@ -112,6 +135,11 @@ def main() -> None:
     parser.add_argument("--doc-weights", default=None,
                         help="Override path to the doc_weights.npy sidecar "
                              "(default: <corpus>.doc_weights.npy).")
+    parser.add_argument("--val-split", type=float, default=0.0,
+                        help="Fraction of the corpus tail held out for validation "
+                             "in your training config. Must match exactly, or the "
+                             "resulting window count won't align with training. "
+                             "0 (default) scores the full corpus.")
     args = parser.parse_args()
 
     try:
@@ -122,6 +150,7 @@ def main() -> None:
             output_path=args.output,
             doc_end_offsets_path=args.doc_end_offsets,
             doc_weights_path=args.doc_weights,
+            val_split=args.val_split,
         )
     except (FileNotFoundError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
