@@ -21,7 +21,7 @@ A trained checkpoint is required. If you do not have one yet, see [setup-trainin
 ### CPU only
 
 ```bash
-git clone https://github.com/BasLinders/grimoire_ai.git
+git clone https://github.com/BasLinders/grimoire.git
 cd grimoire
 pip install -e "."
 ```
@@ -340,7 +340,7 @@ The checkpoint was not fine-tuned. Run `finetune_saga.py` (or your own fine-tuni
 Check `engine.retrieval_threshold`. If it is set higher than the scores your retriever produces, every query will route to pure-chat. Lower the threshold or set it to `None` to always inject context. At early training steps, embedding quality is low — semantic scores will be broadly similar across passages; reducing the threshold helps.
 
 **"Load model" hangs when semantic retrieval is enabled**
-The model is embedding all corpus passages — this is the one-time index build. A large corpus (hundreds of thousands of passages) can take minutes on CPU. On GPU with a typical D&D corpus (~81M tokens tokenised into passages) expect a few seconds to a minute. The status line updates when done.
+The model is embedding all corpus passages — this is the one-time index build. A large corpus (hundreds of thousands of passages) can take minutes on CPU. On GPU, expect a few seconds to a minute for a corpus of a similar order of magnitude to Saga's current corpus (see [expansion_PLAN.md](expansion_PLAN.md) for its current token count — it grows over time, so no fixed number is given here). The status line updates when done.
 
 **CUDA out of memory**
 The default ~25 M parameter model (~100 MB fp32) fits comfortably in 4 GB VRAM. If you hit OOM, force CPU: `InferenceEngine(..., device="cpu")`.

@@ -141,6 +141,22 @@ On Pre-train tab load (or when `pt_corpus` changes), read the binary's token cou
 | 100 M – 500 M | `medium-85M` |
 | > 500 M | `large-250M` |
 
+> **Caveat — this heuristic can suggest a preset that's actually *worse* on
+> the 20:1 Chinchilla ratio than staying smaller, right around the
+> thresholds.** Each preset needs `20 × n_params` tokens to hit that ratio
+> for *its own* size — 500M for `small-25M`, 1.7B for `medium-85M`. A corpus
+> that just clears 100M tokens (e.g. ~129M) crosses into the `medium-85M`
+> bucket and gets suggested that preset, but 129M/1.7B ≈ 7.6% of
+> `medium-85M`'s own optimum — *worse* than the 129M/500M ≈ 25.9% it already
+> has against `small-25M`'s optimum. This isn't hypothetical — it happened
+> on a real ~129M-token run and had to be manually overridden (preset
+> switched back, `pt_steps` recomputed by hand, since `pt_preset.change`
+> doesn't touch `pt_steps`). Always sanity-check the suggested preset against
+> the actual 20:1 ratio for *both* candidate sizes before accepting it,
+> especially just above a threshold — see
+> [expansion_PLAN.md](expansion_PLAN.md)'s "Open decisions" for the standing
+> reminder not to jump to `medium-85M` without checking this.
+
 When `pt_preset` changes, the following fields auto-update (already handled by `app.py` preset logic):
 
 `pt_d_model`, `pt_n_layers`, `pt_n_heads`, `pt_n_kv_heads`, `pt_d_ff`

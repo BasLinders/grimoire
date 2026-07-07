@@ -17,8 +17,8 @@
 | **7** | Conversation state: `ConversationState`, `InferenceEngine.chat()`, terminal chat CLI | ✓ done |
 | **7.5** | Integration test suite: full pipeline from BPE training to multi-turn `chat()` | ✓ done |
 | **8** | Agent registry (`agents.json`) + agent selector dropdown in Chat UI | ✓ done |
-| **9** | Saga corpus: D&D 5e SRD (24 sections) + encounter math + probability references | ✓ done |
-| **10** | Saga instruction fine-tuning: 30-example JSONL dataset + fine-tune + validation scripts | ✓ done |
+| **9** | Saga corpus: D&D 5e SRD (24 sections) + encounter math + probability references — this is the *initial seed*; see "Corpus & Data Quality" below for what it grew into | ✓ done |
+| **10** | Saga instruction fine-tuning: 30-example JSONL dataset + fine-tune + validation scripts — likewise superseded as the primary fine-tune data source; see [expansion_PLAN.md](expansion_PLAN.md) | ✓ done |
 | **11** | Training optimisations: Flash Attention (SDPA), `torch.compile`, `cudnn.benchmark`, non-blocking transfers | ✓ done |
 | **12** | Semantic retrieval: `GrimoireTransformer.embed()`, `SemanticRetriever` (cosine over model embeddings), `InferenceEngine.build_semantic_corpus()` | ✓ done |
 | **13** | Retrieval router: score-threshold gate in `InferenceEngine._retrieve()` — routes per-query to grounded or pure-chat generation | ✓ done |
@@ -133,6 +133,26 @@ Dynamic int8 quantization via `torch.quantization.quantize_dynamic` / `torchao`.
 | 6 | Agent routing | Low (after 5) | ✓ done | Automatic multi-domain dispatch |
 | 7 | Persistent RAG index | Medium | ✓ done | Startup time at 500M token corpus scale |
 | 8 | GGUF export | High | ✓ done | Widest deployment, no Python dependency |
+
+---
+
+## Corpus & Data Quality (parallel track, ongoing)
+
+### Context
+
+Fine-tuning experiments converged on a conclusion that shifted priorities: the model's failure modes (context-copying, question-echoing, factual hallucination) look like data-scarcity symptoms, not architecture-too-small symptoms — see [expansion_PLAN.md](expansion_PLAN.md) for the full analysis. This track runs alongside the engineering phases above rather than sequentially after them; it's about corpus scale and quality, not new features.
+
+### Items
+
+- **Gutenberg expansion** (hand-curated, then catalog-based): grew the corpus from a handful of hand-picked public-domain texts to hundreds of files via `scripts/scrape_gutenberg_catalog.py`, which filters Gutenberg's official bulk CSV catalog locally rather than scraping search-result pages (which explicitly warn against it).
+- **Stack Exchange RPG Q&A**: `scripts/scrape_stackexchange_rpg.py` downloads the official rpg.stackexchange.com data dump (not live scraping) and pairs each question with its top answers.
+- **Near-duplicate dedup**: `scripts/dedup_corpus.py` (MinHash + LSH, word 5-gram shingling) checks new additions against the existing corpus before merging.
+- **Derived-adventure pilot**: hand-written D&D adventures derived from public-domain source texts, with all cited monster stats verified against the actual SRD/Open5e stat blocks rather than invented — a deliberately slow, quality-over-volume complement to bulk scraping. Not yet wired into training (`saga_derived/` sits outside `agents.json`'s `corpus_dirs`).
+- **Source-based sample weighting**: `--weight-pattern` on `grimoire-preprocess` tags documents by filename glob; `scripts/build_source_weights.py` turns tags into a per-window `sample_weights.npy` consumed by `Trainer`'s `WeightedRandomSampler`. Validated with a paired before/after pretrain comparison — reduced validation loss by ~5.5% relative at no wall-clock cost.
+- **Stack Exchange markup cleanup**: `scripts/clean_stackexchange_markup.py` strips vote-score/tag/Markdown-header scaffolding from the SE dump files — this scaffolding was observed bleeding into model generations verbatim (e.g. a literal `## Answer (score: 4)` fragment in output).
+- **Validation-split fix**: `_build_datasets`'s `val_split` previously held out the corpus's alphabetically-last files as "the tail," which for this corpus meant validating almost entirely on short Wikipedia/Wikibooks stub articles — not a representative sample. Fixed to hold out many small blocks scattered across the whole corpus instead (`train.py`'s `_split_blocks`).
+
+Full source list, current scale, and open decisions (target model size vs. actual token count, whether to fold `saga_derived/` into training, finer-grained weight tiers) live in [expansion_PLAN.md](expansion_PLAN.md) — that document is updated as the corpus changes; this section is a stable summary of what shipped.
 
 ---
 
