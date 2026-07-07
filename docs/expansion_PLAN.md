@@ -262,13 +262,84 @@ match-wins (`grimoire_ai/llm/data/preprocessing.py`'s `_resolve_weight`).
       throughout (~2.97–2.99 vs ~3.08–3.12 in the same step range), and val
       loss improving *more* than train loss argues against this being
       overfitting to the reweighted mix.
-- [ ] **Promote the weighted checkpoint** (`checkpoints/pretrain/weighted/`)
-      into `agents.json` — pending a qualitative check of its actual
-      generations first, not just the val-loss number.
+- [x] **Stack Exchange markup cleanup.** Qualitative generation check on the
+      `weighted` checkpoint above surfaced a literal `## Answer (score: 4)`
+      fragment bleeding into output — raw StackExchange dump scaffolding
+      (`Score: N`, `Tags:`, `## Answer (accepted) (score: N)`, `---`
+      separators) hadn't been stripped from `rpg_se_*` files.
+      `scripts/clean_stackexchange_markup.py` strips it in place across all
+      217 files (originals backed up to
+      `data/corpus/saga_backup_pre_se_cleanup/` first, since `data/` is
+      gitignored). Corpus dropped from 129,343,636 to 128,096,453 tokens
+      (~1.0% — scaffolding removal, not content loss). Re-tagged with the
+      same `--weight-pattern` rules and rebuilt `sample_weights.npy`.
+- [x] **Found and fixed a real bug in the validation split.** Retraining
+      from scratch on the cleaned+re-tagged corpus (`weighted_clean`,
+      `small-25M`, 15,258 steps, 2026-07-07) gave a val loss (3.5059 @ step
+      13,734) that looked like a severe regression against the earlier
+      2.6944. Root cause: `_build_datasets`' `val_split` held out "the
+      final N% of the corpus" by raw token position, and since files
+      concatenate in alphabetically-sorted order, that tail was almost
+      entirely short Wikipedia/Wikibooks stub articles — not a
+      representative sample, and not comparable to a properly representative
+      one. This was true of *every* prior run, not something the cleanup
+      introduced. Fixed in `train.py`'s `_split_blocks`: partitions the
+      corpus into 500 scattered blocks and randomly assigns ~`val_split`
+      fraction to validation, so held-out data is a real cross-section of
+      the corpus. `TokenizedDataset` gained a `regions` parameter
+      (multiple `(start, end)` pairs) to support this.
+- [x] **Per-tier val loss breakdown — the actual answer on whether weighting
+      helps.** A single aggregate val-loss number can't distinguish
+      "weighting made things worse" from "weighting is working exactly as
+      intended, and this metric isn't the right one" — a weighted model
+      is deliberately trying to minimize loss on the *weighted*
+      distribution, not the corpus's natural one, so a representative
+      validation set will always show it doing worse on down-weighted
+      content it saw less of. Broke the `weighted_clean` checkpoint's loss
+      down by tier instead:
+      | Tier | Held-out val loss | Train-inclusive sample* |
+      |---|---|---|
+      | 0.5 (down-weighted) | 3.5822 | 3.2628 |
+      | 1.0 (baseline) | 3.1202 | 3.0170 |
+      | 1.75 (up-weighted) | — (none in this held-out sample) | **2.1863** |
+
+      *sampled from the full corpus since the held-out set (only 5 scattered
+      blocks) happened to miss the up-weighted tier entirely by chance — see
+      the stratified-split fix below. Train-inclusion gives an optimistic
+      bias, but the other two tiers only shifted 0.10–0.32 nats between
+      held-out and train-inclusive measurement, so it isn't wildly inflated.
+
+      **Result: weighting is working as designed.** Monotonic ordering
+      exactly matching the intended prioritization (down-weighted > baseline
+      > up-weighted), with a large 0.83-nat gap to the up-weighted tier —
+      the official rulebooks/SRD/5etools/open5e content this whole effort
+      is about is fit substantially better than everything else. The
+      elevated aggregate number was misleading on its own.
+- [x] **Stratified validation split**, so future comparisons don't depend on
+      luck to cover every tier. `train.py` gained `_split_by_tier`: within
+      each `--weight-pattern` tier separately (using the document-level tag
+      sidecars), shuffles that tier's documents and holds out `val_split`
+      fraction of *its own* tokens — guarantees every tier present in the
+      corpus gets proportional validation coverage, whole documents only
+      (never splits one mid-file). Exposed as:
+      - `--val-stratified` on `grimoire-train` (config key
+        `"val_stratified": true`) and on `scripts/build_source_weights.py`
+        (must match between the two, same as `--val-split` already had to)
+      - A "Stratify validation by weight tags" checkbox in the Pre-train
+        tab, next to Validation split
+      Requires the corpus to have `--weight-pattern` tag sidecars; errors
+      clearly if they're missing rather than silently falling back.
+- [ ] **Promote a checkpoint into `agents.json`.** `weighted_clean`
+      (`checkpoints/pretrain/weighted_clean/`) supersedes both `baseline`
+      and the pre-cleanup `weighted` checkpoint. The per-tier breakdown
+      above is real signal that weighting is working, but a qualitative
+      generation check specifically on `weighted_clean` (the earlier
+      generation comparison was baseline vs. the pre-cleanup `weighted`
+      checkpoint) hasn't been done yet — still open before promoting.
 - [ ] Revisit finer-grained weight tiers (e.g. splitting `rpg_se_*` Q&A
       prose from official-book prose, both currently lumped at/near
-      baseline) now that there's a positive signal that weighting works at
-      all — no longer blocked on "no signal yet."
+      baseline) — now with a much clearer per-tier signal to design against
+      (via `--val-stratified`) instead of guessing blind.
 
 ## Open decisions for next session
 

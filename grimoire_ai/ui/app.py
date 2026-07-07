@@ -383,6 +383,7 @@ def run_pretrain(
     d_ff: int,
     gradient_checkpointing: bool = False,
     sample_weights_path: str = "",
+    val_stratified: bool = False,
 ) -> Generator[str, None, None]:
     """Launch a pre-training run and stream log output.
 
@@ -393,6 +394,15 @@ def run_pretrain(
     last -- and a validation loss is logged every ``eval_every`` steps
     (averaged over at most ``eval_batches`` batches).  ``val_split = 0``
     disables evaluation and the run behaves exactly as before.
+
+    ``val_stratified``, when ``True`` (and ``val_split > 0``), holds out
+    ``val_split`` fraction *within each --weight-pattern tier separately*
+    (see ``train.py``'s ``_split_by_tier``) instead of scattering blocks
+    corpus-wide -- guarantees every weight tier is represented in
+    validation proportional to its own size, so a thin tier can't end up
+    with zero validation windows purely by chance. Requires the corpus to
+    have been tagged with ``--weight-pattern``; errors if the tag sidecars
+    are missing.
 
     ``sample_weights_path``, when set, points at a ``.npy`` file (built by
     the "Build sample weights" button, or ``scripts/score_difficulty.py``)
@@ -425,6 +435,7 @@ def run_pretrain(
             val_corpus_path=None,
             val_split=float(val_split),
             seq_len=model_config.max_seq_len,
+            val_stratified=val_stratified,
         )
         sample_weights = None
         swp = sample_weights_path.strip()
@@ -466,6 +477,7 @@ def run_build_sample_weights(
     n_kv_heads: int,
     d_ff: int,
     output_path: str,
+    val_stratified: bool = False,
 ) -> str:
     """Build a per-window sample_weights.npy aligned to the exact train region.
 
@@ -473,7 +485,9 @@ def run_build_sample_weights(
     so the resulting weights array is guaranteed to match the training
     dataset's window count and order even when a validation split is set
     (which excludes a scatter of validation blocks from the train region;
-    see ``train.py``'s ``_split_blocks``).
+    see ``train.py``'s ``_split_blocks``, or ``_split_by_tier`` when
+    ``val_stratified`` is set — must match whatever ``run_pretrain`` will
+    actually use).
     """
     from grimoire_ai.llm.model.config import TransformerConfig
     from grimoire_ai.llm.training.train import _build_datasets
@@ -505,6 +519,7 @@ def run_build_sample_weights(
             val_corpus_path=None,
             val_split=float(val_split),
             seq_len=model_config.max_seq_len,
+            val_stratified=bool(val_stratified),
         )
     except (FileNotFoundError, ValueError) as exc:
         return f"Error: {exc}"
@@ -2471,6 +2486,14 @@ def build_app() -> gr.Blocks:
                     label="Eval batches", value=50, precision=0,
                     info="Max validation batches averaged per eval pass. 0 uses the whole held-out set; a small cap keeps eval fast.",
                 )
+            pt_val_stratified = gr.Checkbox(
+                label="Stratify validation by weight tags", value=False,
+                info="Hold out Validation split's fraction within each --weight-pattern tier separately, "
+                     "instead of scattering blocks corpus-wide. Guarantees every tier (e.g. official-book "
+                     "content) gets validation windows proportional to its own size, rather than a thin "
+                     "tier possibly getting zero by chance. Requires the corpus to have been tagged with "
+                     "--weight-pattern in the Preprocess tab; errors otherwise.",
+            )
 
             # ---- Memory options -----------------------------------------
             with gr.Row():
@@ -2555,7 +2578,7 @@ def build_app() -> gr.Blocks:
                     inputs=[
                         pt_corpus, pt_val_split,
                         pt_d_model, pt_n_layers, pt_n_heads, pt_n_kv_heads, pt_d_ff,
-                        pt_sample_weights,
+                        pt_sample_weights, pt_val_stratified,
                     ],
                     outputs=[pt_build_weights_log],
                 )
@@ -2579,7 +2602,7 @@ def build_app() -> gr.Blocks:
                     pt_batch, pt_accum, pt_log, pt_save,
                     pt_val_split, pt_eval_every, pt_eval_batches,
                     pt_d_model, pt_n_layers, pt_n_heads, pt_n_kv_heads, pt_d_ff,
-                    pt_grad_ckpt, pt_sample_weights,
+                    pt_grad_ckpt, pt_sample_weights, pt_val_stratified,
                 ],
                 outputs=[pt_log_box, pt_run_btn, pt_stop_btn],
             )

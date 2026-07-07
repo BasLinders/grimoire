@@ -279,6 +279,21 @@ python scripts/build_source_weights.py \
 
 Then point `sample_weights_path` at the resulting file in your training config (see §3 below). Prefer the Pre-train tab's **"Build sample weights from tags"** button over this CLI when using the UI — it derives `--val-split` from whatever the tab's own Validation split field is set to, so the two can't drift out of sync.
 
+**Validation coverage for thin tiers.** The default validation split scatters blocks uniformly by raw token position — representative of the corpus as a whole, but with no guarantee that a tier that's a small fraction of the corpus (e.g. official rulebooks at ~10%) ends up with *any* validation windows; a handful of random blocks can miss a thin category entirely. If you want to evaluate per-tier loss (e.g. to check whether up-weighted content actually improved) reliably, add `--val-stratified` to both commands — it holds out `val_split` fraction *within each weight tier separately*, so every tier gets validation coverage proportional to its own size:
+
+```bash
+python -m grimoire_ai.llm.training.train --config your_config.json --val-stratified
+
+python scripts/build_source_weights.py \
+    --corpus         data/processed/corpus.bin \
+    --seq-len        1024 --stride 512 \
+    --val-split      0.01 \
+    --val-stratified \
+    --output         data/processed/source_weights.npy
+```
+
+Both commands must agree on `--val-stratified` (same as `--val-split`) or the resulting window count won't align. In the UI, this is the Pre-train tab's **"Stratify validation by weight tags"** checkbox, next to Validation split.
+
 ---
 
 ## 3 — Pre-train
