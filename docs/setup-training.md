@@ -25,7 +25,7 @@ This guide covers everything needed to prepare a corpus, pre-train a Grimoire mo
 ### CPU only
 
 ```bash
-git clone https://github.com/BasLinders/grimoire_ai.git
+git clone https://github.com/BasLinders/grimoire.git
 cd grimoire
 pip install -e ".[dev]"
 ```
@@ -154,7 +154,7 @@ pip install -e ".[scraper-ocr]"     # + image OCR via Tesseract
 
 ## 2 — Prepare your corpus
 
-### Option A — Use the Saga corpus (D&D 5e SRD)
+### Option A — Use the Saga corpus (D&D 5e SRD seed)
 
 Download and process the CC-BY 4.0 D&D 5e SRD in one step:
 
@@ -163,6 +163,14 @@ python scripts/build_saga_corpus.py
 ```
 
 This downloads the SRD (~1.5 MB from GitHub), splits it into 24 rule sections, converts each to plain text, and copies four hand-authored probability and encounter-math reference files into `data/corpus/saga/`.
+
+This is a **minimal seed**, not the corpus actually used in production — that corpus has grown to over a thousand files across many sources (Gutenberg, Stack Exchange RPG Q&A, official rulebooks/adventures, Wikipedia/Wikibooks, and more), deduplicated and source-weighted. To reproduce it:
+
+1. Run whichever `scripts/scrape_*.py` scripts match the sources you want (e.g. `scrape_gutenberg_catalog.py` for bulk public-domain fiction, `scrape_stackexchange_rpg.py` for the official RPG Stack Exchange data dump).
+2. Run `scripts/dedup_corpus.py` (MinHash + LSH) to catch near-duplicates across everything you've added.
+3. Tag categories with `--weight-pattern GLOB:WEIGHT` during preprocessing (§2 below) so bulk/generic content doesn't dilute domain-specific content at training time.
+
+See [expansion_PLAN.md](expansion_PLAN.md) for the current source list, scale, and the reasoning behind the weighting scheme in use.
 
 ### Option B — Ingest your own sources
 
@@ -234,6 +242,43 @@ What it does:
 - Tokenises every `.txt` file under `--input`
 - Writes a single `int32` memory-mapped binary to `--output`
 
+### Source-based sample weighting (optional)
+
+If your corpus mixes domain-specific content with bulk/generic filler (e.g. curated D&D rules text alongside a large volume of general public-domain fiction added for language variety), tag files by filename glob so training samples them at different rates instead of uniformly:
+
+```bash
+python -m grimoire_ai.llm.data.preprocessing \
+    --input  data/corpus/saga/ \
+    --output data/processed/corpus.bin \
+    --vocab  data/tokenizer/bpe.json \
+    --weight-pattern "gutenberg_*:0.5" \
+    --weight-pattern "srd_*:1.75" \
+    --weight-pattern "*:1"
+```
+
+Rules are matched in order against each file's name (`fnmatch`), first match wins; unmatched files default to weight `1.0`. This writes `<output>.doc_end_offsets.npy` / `<output>.doc_weights.npy` sidecars — `corpus.bin` itself is unchanged.
+
+Turn those into the per-window array training actually consumes:
+
+```bash
+python scripts/build_source_weights.py \
+    --corpus   data/processed/corpus.bin \
+    --seq-len  1024 --stride 512 \
+    --output   data/processed/source_weights.npy
+```
+
+If you're training with a validation split (`val_split` > 0 below), pass the **same** `--val-split` value here — the corpus is concatenated in alphabetically-sorted file order, so leaving this out (or mismatching it) silently scores the wrong region and eventually causes a window-count mismatch when `Trainer` tries to use it:
+
+```bash
+python scripts/build_source_weights.py \
+    --corpus     data/processed/corpus.bin \
+    --seq-len    1024 --stride 512 \
+    --val-split  0.01 \
+    --output     data/processed/source_weights.npy
+```
+
+Then point `sample_weights_path` at the resulting file in your training config (see §3 below). Prefer the Pre-train tab's **"Build sample weights from tags"** button over this CLI when using the UI — it derives `--val-split` from whatever the tab's own Validation split field is set to, so the two can't drift out of sync.
+
 ---
 
 ## 3 — Pre-train
@@ -259,8 +304,9 @@ All flags are optional. Defaults are tuned for a 4 GB VRAM GPU:
 
 ```json
 {
-    "corpus_path":    "data/processed/corpus.bin",
-    "checkpoint_dir": "checkpoints/pretrain/",
+    "corpus_path":         "data/processed/corpus.bin",
+    "checkpoint_dir":      "checkpoints/pretrain/",
+    "sample_weights_path": "data/processed/source_weights.npy",
 
     "model": {
         "vocab_size":  16384,
@@ -280,10 +326,15 @@ All flags are optional. Defaults are tuned for a 4 GB VRAM GPU:
         "batch_size":       4,
         "accumulate_steps": 8,
         "log_every":        50,
-        "save_every":       1000
+        "save_every":       1000,
+        "val_split":        0.01,
+        "eval_every":       1000,
+        "eval_batches":     50
     }
 }
 ```
+
+`sample_weights_path` is optional — omit it entirely for uniform sampling. `val_split` holds out that fraction of the corpus for a validation loss logged every `eval_every` steps; it's scattered across many small blocks rather than one contiguous chunk, so it stays a representative sample no matter how the corpus is structured.
 
 On a 4 GB GPU with defaults, expect ~2–4 hours for 10 000 steps depending on corpus size. On CPU, this takes much longer — reduce `total_steps` for experimentation.
 
@@ -323,7 +374,9 @@ This reports example count, token length statistics, and the proportion of examp
 
 ### Saga fine-tuning dataset
 
-A ready-to-use dataset is included at `scripts/finetune_data/saga_v1.jsonl` — 30 examples covering D&D 5e rules, encounter math, and probability/statistics. Use the dedicated script:
+`scripts/finetune_data/` has several ready-to-use JSONL sets, grown well past the original 30-example seed (`saga_v1.jsonl`): `saga_v2.jsonl` and `saga_dnd_math.jsonl` (D&D rules/encounter math, the latter rewritten to use `<TOOL:python>` tags instead of declining arithmetic — see the Math Tool item in [PLAN.md](PLAN.md)), `tool_call_examples.jsonl` (15 math-tool-call examples), and `general_conversations.jsonl` (64 pairs for base instruction fine-tuning, used by LoRA agent fine-tuning). The production checkpoint referenced in `agents.json` is fine-tuned on data built by `scripts/build_finetune_data_from_qa.py` from the cleaned Q&A corpus, not the seed dataset alone.
+
+For a quick end-to-end run on the seed dataset:
 
 ```bash
 python scripts/finetune_saga.py \
@@ -333,6 +386,8 @@ python scripts/finetune_saga.py \
 ```
 
 Defaults: 300 steps, peak lr 5e-5, batch 4, gradient accumulation 4. Per-step loss is printed to stdout.
+
+For LoRA-based agent fine-tuning (freezes base weights, trains ~0.5% of parameters as a small `.lora` adapter) rather than a full fine-tune, use the Fine-tune tab's **Mode** dropdown (Base instruction fine-tune vs. Agent LoRA adapter) or the `--lora-rank`/`--lora-alpha` flags on `grimoire-finetune`.
 
 ### Via CLI (general)
 
@@ -530,7 +585,7 @@ Training is **step-count based**, not corpus-size based. The trainer samples ran
 
 Step 2 reuses the existing `bpe.json` — tokenizer training is skipped automatically if the file already exists, so preprocessing is fast.
 
-Step 3 is the important one: **resume, don't restart**. The model continues from its current weights and now draws from the richer corpus. A few thousand additional steps is usually enough to absorb new material; you do not need to redo the full original run.
+Step 3 is usually **resume, don't restart**: the model continues from its current weights and now draws from the richer corpus. A few thousand additional steps is usually enough to absorb a modest, incremental addition; you do not need to redo the full original run.
 
 ```bash
 # Re-preprocess (fast — tokenizer already trained)
@@ -545,7 +600,14 @@ python -m grimoire_ai.llm.training.train \
     --resume checkpoints/pretrain/step_0010000.pt
 ```
 
-The same applies to fine-tuning: if you add new JSONL examples, resume from the existing fine-tuned checkpoint rather than the pre-trained one.
+**When to restart from scratch instead.** Resuming only works well when the checkpoint still has meaningful learning rate left in its cosine schedule and the corpus change is incremental, not substantial. Prefer a fresh run when either is true:
+
+- **The corpus content changed materially**, not just grew — e.g. a cleanup pass rewrote a large fraction of existing text (markup stripped, boilerplate removed), not just new files appended. The old checkpoint was shaped by the *previous* version of that text.
+- **The existing checkpoint is near the end of its schedule** (LR has decayed close to `min_lr`, i.e. ~10% of peak). Resuming there applies the new material at a learning rate too small to meaningfully absorb it — you'd get a checkpoint that's barely different from before, not one that's actually learned from the change.
+
+If either applies, start over with `--resume` omitted (or blank in the UI) rather than continuing a run whose weights and LR schedule were shaped by a meaningfully different corpus.
+
+The same reasoning applies to fine-tuning: if you add new JSONL examples, resume from the existing fine-tuned checkpoint rather than the pre-trained one — unless the fine-tune data changed substantially enough that the same restart-vs-resume tradeoff applies.
 
 The semantic embedding index is built from corpus `.txt` files at inference startup — it does not live inside the checkpoint and does not need a training step when you add corpus files.
 
