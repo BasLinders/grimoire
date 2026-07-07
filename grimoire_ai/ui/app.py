@@ -386,9 +386,12 @@ def run_pretrain(
 ) -> Generator[str, None, None]:
     """Launch a pre-training run and stream log output.
 
-    When ``val_split`` is greater than 0, the tail of the corpus is held out
-    as a validation set and a validation loss is logged every ``eval_every``
-    steps (averaged over at most ``eval_batches`` batches).  ``val_split = 0``
+    When ``val_split`` is greater than 0, that fraction of the corpus is held
+    out as a validation set -- scattered across many small blocks rather than
+    one contiguous tail (see ``train.py``'s ``_split_blocks``), so the held-
+    out set is a representative sample rather than whatever happens to sort
+    last -- and a validation loss is logged every ``eval_every`` steps
+    (averaged over at most ``eval_batches`` batches).  ``val_split = 0``
     disables evaluation and the run behaves exactly as before.
 
     ``sample_weights_path``, when set, points at a ``.npy`` file (built by
@@ -469,7 +472,8 @@ def run_build_sample_weights(
     Reuses ``_build_datasets`` — the same function ``run_pretrain`` calls —
     so the resulting weights array is guaranteed to match the training
     dataset's window count and order even when a validation split is set
-    (which shortens the train region to ``[0, split)``).
+    (which excludes a scatter of validation blocks from the train region;
+    see ``train.py``'s ``_split_blocks``).
     """
     from grimoire_ai.llm.model.config import TransformerConfig
     from grimoire_ai.llm.training.train import _build_datasets
@@ -2457,7 +2461,7 @@ def build_app() -> gr.Blocks:
             with gr.Row():
                 pt_val_split = gr.Number(
                     label="Validation split", value=0.0,
-                    info="Fraction of the corpus tail held out for validation (e.g. 0.01 = 1%). 0 disables eval. The split is by token, so train and val share no text.",
+                    info="Fraction of the corpus held out for validation (e.g. 0.01 = 1%), scattered across many blocks rather than one contiguous chunk. 0 disables eval. Train and val share no text.",
                 )
                 pt_eval_every = gr.Number(
                     label="Eval every N steps", value=1000, precision=0,

@@ -74,11 +74,13 @@ wasting compute once genuine progress has plateaued.
 
 Validation loss
 ---------------
-Set ``"val_split"`` (e.g. 0.01) under ``"training"`` to hold out the final
-fraction of the corpus as a validation set; a validation loss is then logged
-every ``"eval_every"`` steps.  Alternatively point ``"val_corpus_path"`` at a
-separate ``.bin`` file.  Watching train-vs-val divergence is the simplest way
-to tell a high-LR plateau (both still falling) from overfitting (val rising).
+Set ``"val_split"`` (e.g. 0.01) under ``"training"`` to hold out that
+fraction of the corpus -- scattered across many small blocks, not one
+contiguous chunk (see ``_split_blocks``) -- as a validation set; a
+validation loss is then logged every ``"eval_every"`` steps.  Alternatively
+point ``"val_corpus_path"`` at a separate ``.bin`` file.  Watching
+train-vs-val divergence is the simplest way to tell a high-LR plateau (both
+still falling) from overfitting (val rising).
 
 Device selection
 ----------------
@@ -285,9 +287,11 @@ def _build_datasets(
 
     1. ``val_corpus_path`` — a separate ``.bin`` file used in full.  The
        training corpus is used in full as well.
-    2. ``val_split`` — a fraction (0 < f < 1) of the *tail* of the training
-       corpus is held out.  The split is by token index, so the train and
-       validation regions share no tokens (no window overlap / leakage).
+    2. ``val_split`` — a fraction (0 < f < 1) of the training corpus, held
+       out as a scatter of many small blocks across the whole token range
+       (see ``_split_blocks``) rather than one contiguous tail.  Each block
+       is windowed independently, so train and validation regions still
+       share no tokens (no window overlap / leakage).
 
     If neither is set, the validation dataset is ``None`` and no evaluation
     runs.
@@ -295,8 +299,9 @@ def _build_datasets(
     Args:
         corpus_path: Path to the training corpus ``.bin`` file.
         val_corpus_path: Optional path to a separate validation corpus.
-        val_split: Fraction of the training corpus tail to hold out when no
-            separate validation corpus is given.  Ignored if ``<= 0``.
+        val_split: Fraction of the training corpus to hold out (scattered
+            across many blocks, see ``_split_blocks``) when no separate
+            validation corpus is given.  Ignored if ``<= 0``.
         seq_len: Sequence length for each window.
 
     Returns:
@@ -308,19 +313,71 @@ def _build_datasets(
         return train_dataset, val_dataset
 
     if val_split and val_split > 0.0:
-        # Peek the token count to choose a clean split boundary, then build
-        # train over [0, split) and validation over [split, end).
         n_tokens = len(np.memmap(corpus_path, dtype=np.int32, mode="r"))
-        split = int(n_tokens * (1.0 - val_split))
+        train_regions, val_regions = _split_blocks(n_tokens, val_split, seq_len)
         train_dataset = TokenizedDataset(
-            corpus_path=corpus_path, seq_len=seq_len, end=split
+            corpus_path=corpus_path, seq_len=seq_len, regions=train_regions
         )
         val_dataset = TokenizedDataset(
-            corpus_path=corpus_path, seq_len=seq_len, start=split
+            corpus_path=corpus_path, seq_len=seq_len, regions=val_regions
         )
         return train_dataset, val_dataset
 
     return TokenizedDataset(corpus_path=corpus_path, seq_len=seq_len), None
+
+
+# Fixed (not time-based) seed so _build_datasets is a pure function of its
+# arguments -- a training run and a separate scripts/build_source_weights.py
+# invocation must independently derive the identical split for the resulting
+# sample_weights.npy to line up with the training windows.
+_VAL_SPLIT_SEED = 0
+_VAL_SPLIT_N_BLOCKS = 500
+
+
+def _split_blocks(
+    n_tokens: int, val_split: float, seq_len: int,
+    n_blocks: int = _VAL_SPLIT_N_BLOCKS, seed: int = _VAL_SPLIT_SEED,
+) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """Partition the corpus into many contiguous blocks and randomly assign
+    ~val_split fraction of them to validation.
+
+    Corpus files are concatenated in alphabetically-sorted order
+    (``preprocessing.py``'s ``_collect_text_files``), so a single contiguous
+    "hold out the last N%" split -- the previous behavior -- ends up
+    validating on whatever happens to sort last, e.g. entirely on a run of
+    Wikipedia/Wikibooks stub articles rather than a representative sample of
+    the corpus. Scattering many small blocks across the whole token range
+    instead makes the held-out set a much more representative sample, at the
+    cost of losing a small number of windows at each of the extra block
+    boundaries (no window straddles a boundary, same no-leakage guarantee as
+    the single-split version, just paid at ``n_blocks`` boundaries instead
+    of 1 -- roughly ``n_blocks * seq_len`` tokens' worth of windows, a small
+    fraction of a real corpus).
+
+    Args:
+        n_tokens: Total tokens in the corpus.
+        val_split: Fraction of blocks (by count, not token weight) to assign
+            to validation.
+        seq_len: Used only to keep blocks from being pointlessly smaller
+            than a single window; does not otherwise affect the split.
+        n_blocks: Number of contiguous blocks to partition the corpus into.
+        seed: Fixed RNG seed for reproducibility across separate processes.
+
+    Returns:
+        ``(train_regions, val_regions)``, each a list of ``(start, end)``
+        token-index pairs suitable for ``TokenizedDataset(regions=...)``.
+    """
+    n_blocks = max(2, min(n_blocks, n_tokens // max(seq_len + 1, 1)))
+    boundaries = np.linspace(0, n_tokens, n_blocks + 1).astype(np.int64)
+    block_ranges = list(zip(boundaries[:-1].tolist(), boundaries[1:].tolist()))
+
+    n_val_blocks = min(n_blocks - 1, max(1, round(n_blocks * val_split)))
+    rng = np.random.RandomState(seed)
+    val_idx = set(rng.choice(n_blocks, size=n_val_blocks, replace=False).tolist())
+
+    train_regions = [r for i, r in enumerate(block_ranges) if i not in val_idx]
+    val_regions = [r for i, r in enumerate(block_ranges) if i in val_idx]
+    return train_regions, val_regions
 
 
 if __name__ == "__main__":

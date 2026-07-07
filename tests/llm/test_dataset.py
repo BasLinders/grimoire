@@ -168,6 +168,44 @@ def test_dataset_range_too_short_raises() -> None:
             TokenizedDataset(path, seq_len=8, start=35, end=40)
 
 
+def test_dataset_regions_scattered_no_overlap() -> None:
+    """Multiple scattered regions should each be windowed independently with
+    no window straddling a region boundary, matching what a single
+    contiguous region would give if regions were merged."""
+    seq_len = 4
+    tokens = list(range(60))
+    regions = [(0, 15), (20, 35), (50, 60)]
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _write_corpus(tokens, tmp)
+        ds = TokenizedDataset(path, seq_len=seq_len, stride=seq_len, regions=regions)
+
+        seen: set[int] = set()
+        for i in range(len(ds)):
+            inp, tgt = ds[i]
+            seen.update(inp.tolist())
+            seen.update(tgt.tolist())
+
+    # Every observed token must fall inside one of the given regions.
+    for tok in seen:
+        assert any(s <= tok < e for s, e in regions), (
+            f"Token {tok} fell outside all regions {regions}."
+        )
+    # Matches windowing each region independently and concatenating offsets.
+    expected = sum(
+        len(range(s, e - seq_len, seq_len)) for s, e in regions
+    )
+    assert len(ds) == expected
+
+
+def test_dataset_regions_too_short_raises() -> None:
+    """Regions that collectively can't form a single window must raise ValueError."""
+    tokens = list(range(40))
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _write_corpus(tokens, tmp)
+        with pytest.raises(ValueError, match="too short"):
+            TokenizedDataset(path, seq_len=8, regions=[(0, 3), (10, 12)])
+
+
 # ---------------------------------------------------------------------------
 # PaddingCollator
 # ---------------------------------------------------------------------------

@@ -41,8 +41,8 @@ training time (i.e. whatever grimoire-train actually uses) -- the weights
 array is only valid for windows in that exact configuration.
 
 If you train with a validation split, pass --val-split with the same value
-your training config uses (e.g. --val-split 0.01) -- this truncates the
-scored region to the same train-only ``[0, split)`` window range that
+your training config uses (e.g. --val-split 0.01) -- this excludes the same
+scatter of validation blocks (see train.py's _split_blocks) that
 ``grimoire-train`` (via ``_build_datasets``) actually trains on, using the
 same function the Pre-train tab's "Build sample weights from tags" button
 uses. Omitting --val-split (or passing 0) scores the full corpus, which only
@@ -136,10 +136,12 @@ def main() -> None:
                         help="Override path to the doc_weights.npy sidecar "
                              "(default: <corpus>.doc_weights.npy).")
     parser.add_argument("--val-split", type=float, default=0.0,
-                        help="Fraction of the corpus tail held out for validation "
-                             "in your training config. Must match exactly, or the "
-                             "resulting window count won't align with training. "
-                             "0 (default) scores the full corpus.")
+                        help="Fraction of the corpus held out for validation "
+                             "in your training config (scattered across many "
+                             "blocks, not one contiguous chunk -- see "
+                             "train.py's _split_blocks). Must match exactly, or "
+                             "the resulting window count won't align with "
+                             "training. 0 (default) scores the full corpus.")
     args = parser.parse_args()
 
     try:
