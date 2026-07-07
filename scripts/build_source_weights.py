@@ -48,6 +48,13 @@ same function the Pre-train tab's "Build sample weights from tags" button
 uses. Omitting --val-split (or passing 0) scores the full corpus, which only
 matches a training run with no validation split.
 
+If you also pass --val-stratified on grimoire-train (so validation holds out
+a proportional slice of every --weight-pattern tier rather than scattering
+blocks corpus-wide -- see train.py's _split_by_tier), pass --val-stratified
+here too. Mismatching this flag between the two commands silently changes
+which windows land in train vs val and causes the same window-count
+mismatch --val-split alone would.
+
 Requirements
 ------------
     numpy  (already a core dependency)
@@ -74,6 +81,7 @@ def build(
     doc_end_offsets_path: str | None = None,
     doc_weights_path: str | None = None,
     val_split: float = 0.0,
+    val_stratified: bool = False,
 ) -> None:
     doc_end_offsets, doc_weights = load_doc_weight_sidecars(
         corpus_path, doc_end_offsets_path, doc_weights_path
@@ -91,10 +99,11 @@ def build(
 
         dataset, _ = _build_datasets(
             corpus_path=corpus_path, val_corpus_path=None,
-            val_split=val_split, seq_len=seq_len,
+            val_split=val_split, seq_len=seq_len, val_stratified=val_stratified,
         )
         print(f"Train region has {len(dataset):,} windows "
-              f"(seq_len={seq_len}, val_split={val_split})")
+              f"(seq_len={seq_len}, val_split={val_split}, "
+              f"val_stratified={val_stratified})")
     else:
         dataset = TokenizedDataset(corpus_path, seq_len=seq_len, stride=stride)
         print(f"Corpus has {len(dataset):,} windows (seq_len={seq_len}, stride={stride})")
@@ -142,6 +151,11 @@ def main() -> None:
                              "train.py's _split_blocks). Must match exactly, or "
                              "the resulting window count won't align with "
                              "training. 0 (default) scores the full corpus.")
+    parser.add_argument("--val-stratified", action="store_true", default=False,
+                        help="Must match --val-stratified on grimoire-train "
+                             "exactly. Stratifies the val split by weight "
+                             "tier (train.py's _split_by_tier) instead of "
+                             "scattering blocks corpus-wide.")
     args = parser.parse_args()
 
     try:
@@ -153,6 +167,7 @@ def main() -> None:
             doc_end_offsets_path=args.doc_end_offsets,
             doc_weights_path=args.doc_weights,
             val_split=args.val_split,
+            val_stratified=args.val_stratified,
         )
     except (FileNotFoundError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)

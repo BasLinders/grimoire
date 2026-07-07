@@ -193,6 +193,15 @@ def main() -> None:
         "--gradient-checkpointing", action="store_true", default=False,
         help="Enable gradient checkpointing to reduce VRAM at ~20%% training speed cost.",
     )
+    parser.add_argument(
+        "--val-stratified", action="store_true", default=False,
+        help="Stratify the validation split by --weight-pattern document "
+             "tags instead of scattering blocks corpus-wide, so every "
+             "weight tier is represented in validation proportional to its "
+             "own size. Requires the corpus to have been tagged with "
+             "--weight-pattern during preprocessing. Ignored if val_split "
+             "is 0.",
+    )
     args = parser.parse_args()
 
     # --- Load config --------------------------------------------------------
@@ -217,6 +226,7 @@ def main() -> None:
     # ``val_split`` is a data-splitting concern handled here, not a Trainer
     # constructor argument — pop it out before forwarding the rest.
     val_split = train_cfg_dict.pop("val_split", 0.0)
+    val_stratified = train_cfg_dict.pop("val_stratified", False) or args.val_stratified
 
     # --- Build model --------------------------------------------------------
     model_config = TransformerConfig(**model_cfg_dict)
@@ -232,6 +242,7 @@ def main() -> None:
             val_corpus_path=val_corpus_path,
             val_split=val_split,
             seq_len=seq_len,
+            val_stratified=val_stratified,
         )
     except (FileNotFoundError, ValueError) as exc:
         print(f"\nError loading corpus: {exc}", file=sys.stderr)
@@ -280,29 +291,41 @@ def _build_datasets(
     val_corpus_path: Optional[str],
     val_split: float,
     seq_len: int,
+    val_stratified: bool = False,
 ) -> tuple[TokenizedDataset, Optional[TokenizedDataset]]:
     """Build the train dataset and, optionally, a validation dataset.
 
-    Validation data comes from one of two sources, in priority order:
+    Validation data comes from one of three sources, in priority order:
 
     1. ``val_corpus_path`` — a separate ``.bin`` file used in full.  The
        training corpus is used in full as well.
-    2. ``val_split`` — a fraction (0 < f < 1) of the training corpus, held
-       out as a scatter of many small blocks across the whole token range
-       (see ``_split_blocks``) rather than one contiguous tail.  Each block
-       is windowed independently, so train and validation regions still
-       share no tokens (no window overlap / leakage).
+    2. ``val_stratified`` (with ``val_split`` and ``--weight-pattern`` tag
+       sidecars present) — holds out ``val_split`` fraction *within each
+       weight tier separately* (see ``_split_by_tier``), so every tier is
+       represented in validation proportional to its own size instead of
+       leaving thin categories to chance.
+    3. ``val_split`` alone — a fraction (0 < f < 1) of the training corpus,
+       held out as a scatter of many small blocks across the whole token
+       range (see ``_split_blocks``) rather than one contiguous tail. Each
+       block is windowed independently, so train and validation regions
+       still share no tokens (no window overlap / leakage).
 
-    If neither is set, the validation dataset is ``None`` and no evaluation
+    If none is set, the validation dataset is ``None`` and no evaluation
     runs.
 
     Args:
         corpus_path: Path to the training corpus ``.bin`` file.
         val_corpus_path: Optional path to a separate validation corpus.
-        val_split: Fraction of the training corpus to hold out (scattered
-            across many blocks, see ``_split_blocks``) when no separate
-            validation corpus is given.  Ignored if ``<= 0``.
+        val_split: Fraction of the training corpus to hold out when no
+            separate validation corpus is given. Ignored if ``<= 0``.
         seq_len: Sequence length for each window.
+        val_stratified: If ``True`` (and ``val_split > 0``), stratify the
+            split by the corpus's ``--weight-pattern`` document tags instead
+            of scattering blocks corpus-wide. Requires the
+            ``<corpus_path>.doc_end_offsets.npy`` / ``.doc_weights.npy``
+            sidecar files (written by ``grimoire-preprocess
+            --weight-pattern``); raises ``FileNotFoundError`` if they're
+            missing, since a stratified split is meaningless without them.
 
     Returns:
         ``(train_dataset, val_dataset)`` where ``val_dataset`` may be ``None``.
@@ -313,8 +336,16 @@ def _build_datasets(
         return train_dataset, val_dataset
 
     if val_split and val_split > 0.0:
-        n_tokens = len(np.memmap(corpus_path, dtype=np.int32, mode="r"))
-        train_regions, val_regions = _split_blocks(n_tokens, val_split, seq_len)
+        if val_stratified:
+            from grimoire_ai.llm.data.sample_weights import load_doc_weight_sidecars
+
+            doc_end_offsets, doc_weights = load_doc_weight_sidecars(corpus_path)
+            train_regions, val_regions = _split_by_tier(
+                doc_end_offsets, doc_weights, val_split, seq_len
+            )
+        else:
+            n_tokens = len(np.memmap(corpus_path, dtype=np.int32, mode="r"))
+            train_regions, val_regions = _split_blocks(n_tokens, val_split, seq_len)
         train_dataset = TokenizedDataset(
             corpus_path=corpus_path, seq_len=seq_len, regions=train_regions
         )
@@ -377,6 +408,98 @@ def _split_blocks(
 
     train_regions = [r for i, r in enumerate(block_ranges) if i not in val_idx]
     val_regions = [r for i, r in enumerate(block_ranges) if i in val_idx]
+    return train_regions, val_regions
+
+
+def _split_by_tier(
+    doc_end_offsets: np.ndarray,
+    doc_weights: np.ndarray,
+    val_split: float,
+    seq_len: int,
+    seed: int = _VAL_SPLIT_SEED,
+) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """Split the corpus into train/val, holding out ``val_split`` fraction
+    *within each --weight-pattern tier separately*.
+
+    ``_split_blocks`` scatters val blocks uniformly across raw token
+    position, which is representative of the corpus as a whole but gives no
+    guarantee that a thin category (e.g. a tier that's only ~10% of the
+    corpus) ends up with any windows in val at all -- a small number of
+    random blocks can miss it entirely by chance. Stratifying by tier
+    guarantees every tier present in the corpus gets its own proportional
+    share of validation windows, so per-tier evaluation (e.g. checking
+    whether up-weighted content actually improved) doesn't depend on luck.
+
+    Splits at the document level, not sub-document blocks: within each
+    tier, documents are shuffled (fixed seed) and greedily assigned to val
+    until val's accumulated token count reaches ``val_split`` fraction of
+    that tier's total, the rest go to train. Held-out documents may be
+    scattered anywhere in the corpus -- since each document's own region is
+    contiguous and windowed independently (same as any other region list),
+    train and validation still share no tokens.
+
+    Args:
+        doc_end_offsets: Cumulative end token-index of each document,
+            ascending (as written by ``preprocessing.py``'s
+            ``--weight-pattern``, and loaded via
+            ``sample_weights.load_doc_weight_sidecars``).
+        doc_weights: Weight tag assigned to each document, same length/order
+            as ``doc_end_offsets``.
+        val_split: Target fraction of each tier's tokens to hold out.
+        seq_len: Used only to skip tiers too small to hold out a single
+            window's worth of validation data.
+        seed: Fixed RNG seed for reproducibility across separate processes
+            (training and ``scripts/build_source_weights.py`` must
+            independently derive the identical split).
+
+    Returns:
+        ``(train_regions, val_regions)``, each a list of ``(start, end)``
+        token-index pairs suitable for ``TokenizedDataset(regions=...)``.
+    """
+    doc_starts = np.concatenate(([0], doc_end_offsets[:-1]))
+    doc_regions = list(zip(doc_starts.tolist(), doc_end_offsets.tolist()))
+
+    tiers: dict[float, list[tuple[int, int]]] = {}
+    for region, weight in zip(doc_regions, doc_weights.tolist()):
+        tiers.setdefault(weight, []).append(region)
+
+    rng = np.random.RandomState(seed)
+    train_regions: list[tuple[int, int]] = []
+    val_regions: list[tuple[int, int]] = []
+
+    for tier in sorted(tiers):
+        tier_docs = tiers[tier]
+        tier_tokens = sum(e - s for s, e in tier_docs)
+        # A tier too small to hold out anything meaningful, or reduced to a
+        # single document, can't be split without either losing all val
+        # coverage or all train coverage for it -- keep it entirely in
+        # train, since training coverage matters more than validation
+        # coverage for a tier this thin.
+        if tier_tokens < seq_len + 1 or len(tier_docs) <= 1:
+            train_regions.extend(tier_docs)
+            continue
+
+        order = rng.permutation(len(tier_docs))
+        target_val_tokens = tier_tokens * val_split
+        val_tokens_so_far = 0
+        tier_train: list[tuple[int, int]] = []
+        tier_val: list[tuple[int, int]] = []
+        for idx in order:
+            region = tier_docs[idx]
+            region_tokens = region[1] - region[0]
+            if val_tokens_so_far < target_val_tokens:
+                tier_val.append(region)
+                val_tokens_so_far += region_tokens
+            else:
+                tier_train.append(region)
+        # Guarantee at least one document survives on each side if the tier
+        # has more than one -- an all-or-nothing split defeats the purpose
+        # of stratifying by tier in the first place.
+        if len(tier_docs) > 1 and not tier_train:
+            tier_train.append(tier_val.pop())
+        train_regions.extend(tier_train)
+        val_regions.extend(tier_val)
+
     return train_regions, val_regions
 
 
