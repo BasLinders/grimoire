@@ -438,12 +438,25 @@ match-wins (`grimoire_ai/llm/data/preprocessing.py`'s `_resolve_weight`).
       ~26%-of-Chinchilla-optimal pretraining limitation as ever, not a
       fine-tuning failure. Checkpoint:
       `checkpoints/finetune/saga-se-qa-weighted-clean-v2/step_0007288.pt`.
-- [ ] **Update `agents.json`** to point `saga`'s checkpoint at
-      `saga-se-qa-weighted-clean-v2/step_0007288.pt`, replacing
-      `saga-se-qa-clean-v2` — pending a side-by-side comparison against the
-      current production checkpoint specifically (the checks above compare
-      against no-fine-tune and against the broken accepted-only attempt,
-      not against what's actually live today).
+- [x] **Side-by-side comparison against the actual production checkpoint —
+      found the currently-live checkpoint is itself severely degenerate.**
+      7 prompts (the 5 above plus 2 more: grapple, cantrip), same
+      `repetition_penalty=1.3` as `agents.json`. `saga-se-qa-clean-v2`
+      (what was live) failed on **every single prompt** with the same
+      question-echo-then-repetition-loop collapse diagnosed above
+      (`does does does...`, `the the the...`, `I I I I...`, `one one
+      one...`) — not a marginal quality gap, unusable output across the
+      board. `saga-se-qa-weighted-clean-v2` stayed coherent on all 7,
+      facts sometimes wrong/muddled but no collapse. Strongly suggests the
+      live checkpoint was built the same `--accepted-only` way and shipped
+      without this qualitative check ever having been run against it.
+- [x] **Updated `agents.json`** — `saga`'s checkpoint now points at
+      `saga-se-qa-weighted-clean-v2/step_0007288.pt`, replacing the
+      degenerate `saga-se-qa-clean-v2`.
+- [ ] **Run the formal evaluation harness** (`scripts/evaluate.py` —
+      perplexity, retrieval hit-rate, Q&A quiz) on the new checkpoint for a
+      quantitative read alongside the qualitative one, and to have a
+      baseline recorded before the next round of changes.
 - [ ] Revisit finer-grained weight tiers (e.g. splitting `rpg_se_*` Q&A
       prose from official-book prose, both currently lumped at/near
       baseline) — now with a much clearer per-tier signal to design against
