@@ -404,15 +404,46 @@ match-wins (`grimoire_ai/llm/data/preprocessing.py`'s `_resolve_weight`).
       backup path all updated to point at/use the new name, and both
       scripts' empty-pairs errors now name this exact gotcha instead of a
       generic "no pairs found" message.
-- [ ] **Fine-tune `weighted_clean` and promote the result into `agents.json`.**
-      `weighted_clean` (`checkpoints/pretrain/weighted_clean/`) is a raw
-      pretrain checkpoint, not directly comparable to the production
-      checkpoint (`saga-se-qa-clean-v2`, which is fine-tuned). The qualitative
-      check above clears it to move forward, but "promoting" means running
-      `scripts/build_finetune_data_from_qa.py --corpus-dir
-      data/corpus/saga_se_qa_source/` + fine-tuning on top of it — same as
-      how the current production checkpoint was made — not swapping the raw
-      pretrain checkpoint in directly.
+- [x] **Fine-tuned `weighted_clean` — found and fixed a second regression
+      from the same cleanup, in the fine-tune data itself.** First attempt
+      used `--accepted-only` (following `build_finetune_data_from_qa.py`'s
+      own docstring example) — 31,294 examples, `small-25M`, 3,000 steps
+      (~1.5 epochs at effective batch 16). Training loss collapsed to
+      ~0.09, suspiciously low; qualitative check confirmed why:
+      **severely degenerate**, every response echoing the question then
+      collapsing into token loops (`encounter encounter encounter...`,
+      `is is is is...`), even with the correct `repetition_penalty=1.3` —
+      not a sampling-config artifact, a genuinely broken checkpoint.
+
+      Root cause: `--accepted-only` keeps exactly one (the accepted)
+      answer per question, so **0 of 31,305 questions had a second answer
+      available**. `qa_pairs_to_finetune_examples`'s `_pick_context_pair`
+      mechanism — which exists specifically to draw `context` from a
+      *different* answer than `assistant` — never had anything to pick
+      from, so 100% of examples fell back to the same-source path. That
+      fallback is the module's own documented risk: *"context is always a
+      superset-prefix of assistant, which in practice taught the generator
+      to echo/loop through whatever passage it's given."* `--accepted-only`
+      structurally guaranteed the worst case of exactly that, for the
+      entire dataset.
+
+      Rebuilt with `--min-score 1` instead (77,740 examples; 23,401 of
+      43,202 questions have multiple answers, so the context/assistant
+      separation actually functions for most of the data), 7,288 steps
+      (~1.5 epochs at the larger size). Loss settled around 2.7–2.8 instead
+      of collapsing. Qualitative check: coherent, on-topic, real
+      terminology (Player's Handbook, CR, HP, DMG, advantage/disadvantage,
+      spell slots), no repetition loops, no question-echoing. Facts are
+      still sometimes wrong or muddled — expected, same
+      ~26%-of-Chinchilla-optimal pretraining limitation as ever, not a
+      fine-tuning failure. Checkpoint:
+      `checkpoints/finetune/saga-se-qa-weighted-clean-v2/step_0007288.pt`.
+- [ ] **Update `agents.json`** to point `saga`'s checkpoint at
+      `saga-se-qa-weighted-clean-v2/step_0007288.pt`, replacing
+      `saga-se-qa-clean-v2` — pending a side-by-side comparison against the
+      current production checkpoint specifically (the checks above compare
+      against no-fine-tune and against the broken accepted-only attempt,
+      not against what's actually live today).
 - [ ] Revisit finer-grained weight tiers (e.g. splitting `rpg_se_*` Q&A
       prose from official-book prose, both currently lumped at/near
       baseline) — now with a much clearer per-tier signal to design against
