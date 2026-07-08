@@ -329,13 +329,66 @@ match-wins (`grimoire_ai/llm/data/preprocessing.py`'s `_resolve_weight`).
         tab, next to Validation split
       Requires the corpus to have `--weight-pattern` tag sidecars; errors
       clearly if they're missing rather than silently falling back.
-- [ ] **Promote a checkpoint into `agents.json`.** `weighted_clean`
-      (`checkpoints/pretrain/weighted_clean/`) supersedes both `baseline`
-      and the pre-cleanup `weighted` checkpoint. The per-tier breakdown
-      above is real signal that weighting is working, but a qualitative
-      generation check specifically on `weighted_clean` (the earlier
-      generation comparison was baseline vs. the pre-cleanup `weighted`
-      checkpoint) hasn't been done yet — still open before promoting.
+- [x] **Qualitative generation check on `weighted_clean` (2026-07-08).** Same
+      5 prompts as the earlier `baseline`-vs-`weighted` check, same sampling
+      config, three-way comparison across all three checkpoints.
+      - **The specific bug this cleanup targeted is confirmed fixed.** The
+        `weighted` checkpoint's Fireball-prompt output contained a literal
+        `## Answer (score: 4)` StackExchange markup fragment (the finding
+        that motivated the cleanup). `weighted_clean`'s output on the same
+        prompt has no such artifact.
+      - **Not a uniform win.** The dragon's-lair prompt was clearly the best
+        output of any checkpoint tested (`weighted_clean` produced
+        consistent scenario description with numbered dungeon areas, e.g.
+        "area 16c" — a real published-adventure convention). But a new
+        pattern also appeared: on the narrative (rogue/crypt) prompt,
+        `weighted_clean` derailed into a structured wiki-infobox-style item
+        card (`Rarity: Common, Daggerford`, `Type: Weapon... CR: 8 HP: 1`,
+        a plausible-looking URL) — a different flavor of topic drift, likely
+        reflecting more exposure to structured wiki/database corpus content.
+      - **A real regression on one specific fact, investigated below (CR/XP
+        recall).**
+      - No checkpoint reliably states correct facts overall — expected,
+        unchanged from the earlier check; still raw pretraining at ~26% of
+        Chinchilla-optimal tokens, no fine-tuning or retrieval grounding.
+      - **Verdict: cleared to move forward.** No new regression that
+        outweighs the confirmed fix and the per-tier loss evidence above;
+        remaining incoherence is the same pre-existing limitation of a
+        sub-optimal-data small pretrained model.
+- [x] **Dug into the CR5/XP-recall regression.** Single-seed sampling on the
+      "Challenge Rating... grants" prompt showed `weighted_clean` producing
+      more rambling, less grounded output than `weighted`. Repeated with 5
+      seeds each to check it wasn't noise:
+      | | XP mentioned | Correct XP (1,800)? | Register |
+      |---|---|---|---|
+      | `weighted` | 2/5 seeds | Yes, exactly (seed 3) | Stayed in stat-block/CR-table register throughout, even when wrong |
+      | `weighted_clean` | 1/5 seeds | No (nonsensical "50 XP... for every 1 hour") | 3/5 seeds rambled into confused meta-discussion ("Factors to Monsters") |
+
+      **Real and reproducible, not single-seed noise** — but hard to
+      attribute cleanly to any one change, because `weighted` and
+      `weighted_clean` differ in three ways at once: the cleaned corpus, the
+      validation-split *method* (the old buggy contiguous-tail split vs. the
+      new scattered-block split — meaning a **different ~1% of the corpus
+      was excluded from training** in each run, so CR/XP-table-adjacent
+      content may simply have landed in one run's held-out blocks and not
+      the other's by chance), and ordinary run-to-run training noise
+      (different init/shuffle order, no replicate run exists to rule this
+      out). A narrow, 10-sample finding from one prompt family — doesn't
+      overturn the per-tier loss evidence (thousands of windows) that
+      up-weighted content is fit substantially better overall; consistent
+      with an aggregate metric hiding one specific pocket of weakness.
+      **Not disqualifying**: the production system relies on retrieval, not
+      raw pretrain memorization, to inject verified CR/XP facts — exactly
+      the gap this weakness represents is what retrieval grounding exists to
+      cover.
+- [ ] **Fine-tune `weighted_clean` and promote the result into `agents.json`.**
+      `weighted_clean` (`checkpoints/pretrain/weighted_clean/`) is a raw
+      pretrain checkpoint, not directly comparable to the production
+      checkpoint (`saga-se-qa-clean-v2`, which is fine-tuned). The qualitative
+      check above clears it to move forward, but "promoting" means running
+      `scripts/build_finetune_data_from_qa.py` + fine-tuning on top of it —
+      same as how the current production checkpoint was made — not swapping
+      the raw pretrain checkpoint in directly.
 - [ ] Revisit finer-grained weight tiers (e.g. splitting `rpg_se_*` Q&A
       prose from official-book prose, both currently lumped at/near
       baseline) — now with a much clearer per-tier signal to design against
