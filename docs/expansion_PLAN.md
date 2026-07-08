@@ -268,9 +268,11 @@ match-wins (`grimoire_ai/llm/data/preprocessing.py`'s `_resolve_weight`).
       (`Score: N`, `Tags:`, `## Answer (accepted) (score: N)`, `---`
       separators) hadn't been stripped from `rpg_se_*` files.
       `scripts/clean_stackexchange_markup.py` strips it in place across all
-      217 files (originals backed up to
-      `data/corpus/saga_backup_pre_se_cleanup/` first, since `data/` is
-      gitignored). Corpus dropped from 129,343,636 to 128,096,453 tokens
+      217 files (originals backed up to `data/corpus/saga_se_qa_source/`
+      first, since `data/` is gitignored — later renamed from
+      `saga_backup_pre_se_cleanup/` once it turned out to serve an ongoing
+      purpose, not just a revert point; see below). Corpus dropped from
+      129,343,636 to 128,096,453 tokens
       (~1.0% — scaffolding removal, not content loss). Re-tagged with the
       same `--weight-pattern` rules and rebuilt `sample_weights.npy`.
 - [x] **Found and fixed a real bug in the validation split.** Retraining
@@ -381,14 +383,36 @@ match-wins (`grimoire_ai/llm/data/preprocessing.py`'s `_resolve_weight`).
       raw pretrain memorization, to inject verified CR/XP facts — exactly
       the gap this weakness represents is what retrieval grounding exists to
       cover.
+- [x] **Found and fixed a real regression the SE cleanup caused in a
+      different pipeline.** Preparing to actually run
+      `scripts/build_finetune_data_from_qa.py` against `weighted_clean`
+      surfaced it: `grimoire_ai.llm.data.qa_pairs.load_qa_pairs` (used by
+      that script and by `embed_tune.py`'s `--qa-corpus-dir`) parses Q&A
+      structure by keying off the exact markers
+      `clean_stackexchange_markup.py` strips (`# title`, `Score: N`,
+      `## Answer (score: N)`, `---`). Pointed at the live, cleaned
+      `data/corpus/saga/`, it now silently returns **zero** pairs
+      (confirmed: 0 vs. 77,797 from the pre-cleanup copy, 31,202
+      accepted-only) — the cleanup fixed pretraining-corpus quality at the
+      cost of breaking this downstream consumer, undetected until actually
+      needed. Fix: the pre-cleanup backup already had exactly what this
+      needs, so it was renamed from `saga_backup_pre_se_cleanup/` (implies
+      "revert point only") to `saga_se_qa_source/` (its real, ongoing
+      role) rather than left as an accidental dependency on a directory
+      named like a one-off safety net. `build_finetune_data_from_qa.py`,
+      `embed_tune.py`, and `clean_stackexchange_markup.py`'s own default
+      backup path all updated to point at/use the new name, and both
+      scripts' empty-pairs errors now name this exact gotcha instead of a
+      generic "no pairs found" message.
 - [ ] **Fine-tune `weighted_clean` and promote the result into `agents.json`.**
       `weighted_clean` (`checkpoints/pretrain/weighted_clean/`) is a raw
       pretrain checkpoint, not directly comparable to the production
       checkpoint (`saga-se-qa-clean-v2`, which is fine-tuned). The qualitative
       check above clears it to move forward, but "promoting" means running
-      `scripts/build_finetune_data_from_qa.py` + fine-tuning on top of it —
-      same as how the current production checkpoint was made — not swapping
-      the raw pretrain checkpoint in directly.
+      `scripts/build_finetune_data_from_qa.py --corpus-dir
+      data/corpus/saga_se_qa_source/` + fine-tuning on top of it — same as
+      how the current production checkpoint was made — not swapping the raw
+      pretrain checkpoint in directly.
 - [ ] Revisit finer-grained weight tiers (e.g. splitting `rpg_se_*` Q&A
       prose from official-book prose, both currently lumped at/near
       baseline) — now with a much clearer per-tier signal to design against
