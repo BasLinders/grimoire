@@ -18,6 +18,15 @@ directly optimising the actual retrieval task instead of a same-passage
 proxy. Use this when real query/relevant-passage pairs are available --
 self-supervised training on the SAME corpus measurably underperforms it.
 
+--qa-corpus-dir must point at files that still have their original
+StackExchange structural markers -- qa_pairs.py's parser keys off them
+directly (see qa_pairs.py's module docstring). data/corpus/saga/'s
+rpg_se_*.txt files no longer qualify: scripts/clean_stackexchange_markup.py
+strips those markers from the live pretraining corpus, so point this at
+data/corpus/saga_se_qa_source/ (the pre-cleanup copy) instead. --corpus-dir
+(self-supervised mode, below) is unaffected -- it just chunks plain text,
+cleaned or not.
+
 Usage
 -----
 # Self-supervised, any corpus of .txt files:
@@ -31,7 +40,7 @@ python scripts/embed_tune.py \\
 python scripts/embed_tune.py \\
     --checkpoint checkpoints/saga/step_0000500.pt \\
     --vocab      data/tokenizer/bpe.json \\
-    --qa-corpus-dir data/corpus/saga/ \\
+    --qa-corpus-dir data/corpus/saga_se_qa_source/ \\
     --output     checkpoints/saga/embed-qa.lora
 
 Output: a .lora file (grimoire_ai.llm.model.lora.save_lora format).
@@ -46,7 +55,7 @@ chunked passages) checkpoints periodically to --checkpoint-path (default
 python scripts/embed_tune.py \\
     --checkpoint checkpoints/saga/step_0000500.pt \\
     --vocab      data/tokenizer/bpe.json \\
-    --qa-corpus-dir data/corpus/saga/ \\
+    --qa-corpus-dir data/corpus/saga_se_qa_source/ \\
     --output     checkpoints/saga/embed-qa.lora \\
     --resume     checkpoints/saga/embed-qa.lora.ckpt.pt \\
     --total-steps 1000
@@ -191,7 +200,13 @@ def main(argv: list[str] | None = None) -> None:
             args.qa_corpus_dir, min_score=args.qa_min_score, accepted_only=args.qa_accepted_only,
         )
         if not qa_pairs:
-            raise ValueError(f"No Q&A pairs found in {args.qa_corpus_dir}")
+            raise ValueError(
+                f"No Q&A pairs found in {args.qa_corpus_dir}. If this directory has "
+                "been cleaned by scripts/clean_stackexchange_markup.py, its "
+                "structural markers are gone and qa_pairs.py can no longer parse "
+                "it -- point --qa-corpus-dir at data/corpus/saga_se_qa_source/ (or "
+                "another pre-cleanup copy) instead."
+            )
         print(f"Q&A corpus: {len(qa_pairs)} pair(s) from {args.qa_corpus_dir}")
         if len(qa_pairs) < args.batch_size:
             raise ValueError(

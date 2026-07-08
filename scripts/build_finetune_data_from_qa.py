@@ -7,10 +7,22 @@ format, so the *generator* can be instruction-tuned on the same real data
 instead of the ~30 hand-authored examples it's seen so far (60 fine-tune
 steps total on the currently-shipped checkpoint).
 
+--corpus-dir must point at Q&A files that still have their original
+StackExchange structural markers (`# title`, `Score: N`, `## Answer
+(accepted)? (score: N)`, `---` separators) -- qa_pairs.py's parser keys off
+them directly. data/corpus/saga/'s rpg_se_*.txt files no longer qualify:
+scripts/clean_stackexchange_markup.py strips exactly those markers (they
+were bleeding into pretraining generations verbatim), so pointing this
+script at the live pretraining corpus now silently returns zero pairs.
+Point it at data/corpus/saga_se_qa_source/ instead -- the pre-cleanup
+copy, kept specifically because this script (and embed_tune.py's
+--qa-corpus-dir) needs the structured format the pretraining corpus no
+longer has.
+
 Usage
 -----
 python scripts/build_finetune_data_from_qa.py \\
-    --corpus-dir data/corpus/saga/ \\
+    --corpus-dir data/corpus/saga_se_qa_source/ \\
     --output     data/finetune/saga_se_qa.jsonl \\
     --accepted-only
 
@@ -70,7 +82,13 @@ def main(argv: list[str] | None = None) -> None:
     pairs = load_qa_pairs(args.corpus_dir, min_score=args.min_score, accepted_only=args.accepted_only)
     print(f"Loaded {len(pairs)} Q&A pair(s) from {args.corpus_dir}")
     if not pairs:
-        raise ValueError(f"No Q&A pairs found in {args.corpus_dir}")
+        raise ValueError(
+            f"No Q&A pairs found in {args.corpus_dir}. If this directory has been "
+            "cleaned by scripts/clean_stackexchange_markup.py, its structural "
+            "markers ('# title', 'Score: N', '## Answer (score: N)', '---') are "
+            "gone and qa_pairs.py can no longer parse it -- point --corpus-dir at "
+            "data/corpus/saga_se_qa_source/ (or another pre-cleanup copy) instead."
+        )
 
     examples = qa_pairs_to_finetune_examples(
         pairs, context_max_chars=args.context_max_chars, answer_max_chars=args.answer_max_chars,

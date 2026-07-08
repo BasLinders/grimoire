@@ -23,9 +23,15 @@ scaffolding in place, keeping the actual question/answer prose (including the
 question title itself, with its leading ``# `` heading marker stripped, since
 the title text is real content worth keeping).
 
-Originals are backed up to ``<corpus_dir>/../saga_backup_pre_se_cleanup/``
-before anything is overwritten, since ``data/`` is gitignored and there is no
-git history to fall back on.
+Originals are backed up to ``<corpus_dir>/../saga_se_qa_source/`` before
+anything is overwritten, since ``data/`` is gitignored and there is no git
+history to fall back on. This backup turned out to serve an ongoing purpose,
+not just a one-off revert point: ``grimoire_ai.llm.data.qa_pairs.load_qa_pairs``
+(used by ``scripts/build_finetune_data_from_qa.py`` and ``embed_tune.py``'s
+``--qa-corpus-dir``) parses Q&A structure by keying off exactly the markers
+this script strips -- pointed at the live, cleaned corpus, it silently
+returns zero pairs. Point those tools at this directory instead of
+``data/corpus/saga/`` going forward.
 
 Usage
 -----
@@ -64,7 +70,7 @@ def main() -> None:
     parser.add_argument(
         "--backup-dir", default=None,
         help="Where originals are copied before overwriting. "
-             "Default: <corpus-dir>/../saga_backup_pre_se_cleanup/",
+             "Default: <corpus-dir>/../saga_se_qa_source/",
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -78,7 +84,7 @@ def main() -> None:
         print(f"No files matched {args.pattern!r} in {corpus_dir}", file=sys.stderr)
         sys.exit(1)
 
-    backup_dir = Path(args.backup_dir) if args.backup_dir else corpus_dir.parent / "saga_backup_pre_se_cleanup"
+    backup_dir = Path(args.backup_dir) if args.backup_dir else corpus_dir.parent / "saga_se_qa_source"
 
     total_before = 0
     total_after = 0
