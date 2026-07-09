@@ -453,10 +453,53 @@ match-wins (`grimoire_ai/llm/data/preprocessing.py`'s `_resolve_weight`).
 - [x] **Updated `agents.json`** — `saga`'s checkpoint now points at
       `saga-se-qa-weighted-clean-v2/step_0007288.pt`, replacing the
       degenerate `saga-se-qa-clean-v2`.
-- [ ] **Run the formal evaluation harness** (`scripts/evaluate.py` —
-      perplexity, retrieval hit-rate, Q&A quiz) on the new checkpoint for a
-      quantitative read alongside the qualitative one, and to have a
-      baseline recorded before the next round of changes.
+- [x] **Ran the formal evaluation harness on both checkpoints (2026-07-08)** —
+      quantitative confirmation of the qualitative finding above, not just
+      a "seems better" impression:
+      | Metric | Old (`saga-se-qa-clean-v2`) | New (`saga-se-qa-weighted-clean-v2`) |
+      |---|---|---|
+      | Perplexity | 23,133.19 | 195.95 |
+      | BPC | 14.4977 | 7.6143 |
+      | Retrieval hit-rate | 5.0% (1/20) | 5.0% (1/20) |
+      | Quiz pass-rate | 2.0% (1/49) | 20.4% (10/49) |
+      | Quiz kw-recall | 1.36% | 11.56% |
+      | Quiz token-F1 | 0.0675 | 0.1768 |
+
+      Both run with `--quiz-repetition-penalty 1.3`, matching
+      `agents.json`'s actual generation setting, on the same
+      `data/corpus/saga/` + `data/processed/corpus.bin`.
+
+      **Perplexity 23,133 is worse than random guessing** — with a
+      16,384-token vocabulary, uniform-random guessing gives perplexity
+      ≈16,384. As unambiguous a confirmation of "genuinely broken" as a
+      number can give, matching the repetition-loop qualitative finding
+      exactly.
+
+      **Retrieval hit-rate is identical (5.0%, exactly 1/20) on both** —
+      exactly as expected, since the lexical encoder never touches the
+      model's embeddings. Confirms it's a separate, pre-existing gap (see
+      the per-query inspection below), not something either checkpoint's
+      fine-tuning affects.
+
+      **Quiz pass-rate is a full order of magnitude better** (2.0% →
+      20.4%), directly validating the fine-tune fix on the metric that
+      actually reflects usefulness.
+
+      **The retrieval gap itself is worth a closer look separately** (not
+      blocking the checkpoint swap): inspected the saved report's
+      per-query detail — retrieved top passages are consistently
+      irrelevant to the query (e.g. "grapple speed movement" surfaces a
+      random adventure-module encounter description, "frightened condition
+      disadvantage" surfaces illithid lore). The lexical (stemmed 4-gram
+      Jaccard) engine was likely tuned against a much smaller, rules-dense
+      corpus; at 1,469 files now dominated by adventure modules and bulk
+      fiction, simple word-overlap has a much harder time surfacing the
+      right SRD passage among far more volume. Matches the project's own
+      stated design (semantic retrieval, not lexical, was always meant to
+      be the primary path) — a pre-existing structural gap, not a
+      regression from anything in this session. Candidate for its own
+      follow-up (semantic/LoRA retrieval wiring is already tracked
+      separately in `PLAN.md`'s Phase 5 gap).
 - [ ] Revisit finer-grained weight tiers (e.g. splitting `rpg_se_*` Q&A
       prose from official-book prose, both currently lumped at/near
       baseline) — now with a much clearer per-tier signal to design against
