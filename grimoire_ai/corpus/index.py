@@ -90,13 +90,12 @@ class CorpusIndex:
                 surrounding this multi-token. Defaults to ``None``.
         """
         if multi_token in self._store:
-            entry = self._store[multi_token]
-            entry.increment()
-            # Update metadata to the most recent occurrence so query results
-            # reflect a representative context rather than always the first one.
-            entry.next_token = next_token
-            entry.source = source
-            entry.excerpt = excerpt
+            # Keep the first-seen context. Overwriting on every duplicate
+            # meant a high-frequency multi-token's excerpt/source ended up
+            # being whatever document happened to be ingested *last* in a
+            # large corpus -- effectively arbitrary, and decoupled from
+            # which occurrence is actually relevant to a given query.
+            self._store[multi_token].increment()
         else:
             self._store[multi_token] = IndexEntry(
                 next_token=next_token, source=source, excerpt=excerpt
