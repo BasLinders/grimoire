@@ -14,9 +14,9 @@ Typical usage:
 
 Retrieval backends
 ------------------
-``GrimoireCorpus.query`` scores results with Jaccard similarity weighted by
-frequency — a fast, dependency-free *lexical* matcher. It remains the default
-for ingest-time previews and environments without a trained model.
+``GrimoireCorpus.query`` scores results by Jaccard similarity (frequency only
+breaks ties) — a fast, dependency-free *lexical* matcher. It remains the
+default for ingest-time previews and environments without a trained model.
 
 For *semantic* retrieval (matching on meaning, e.g. "frightened" ≈ "fear"),
 use ``grimoire_ai.llm.inference.semantic.SemanticRetriever``, which embeds
@@ -193,16 +193,26 @@ class GrimoireCorpus:
         1. Stem the query text.
         2. Derive a query token set (multi-token members, or individual
            stems if the query is shorter than ``n``).
-        3. Score every index entry by Jaccard similarity × frequency.
+        3. Score every index entry by Jaccard similarity, using frequency
+           only to break exact ties.
         4. Return the ``top_k`` highest-scoring entries as ``QueryResult``
            objects, sorted descending by score.
 
         Scoring note:
             Jaccard similarity measures the overlap between two token sets
-            as ``|A ∩ B| / |A ∪ B|``. It is multiplied by the entry's
-            frequency so that common corpus phrases rank higher than rare
-            ones. See ``SemanticRetriever`` for cosine-similarity scoring
-            over the model's own embeddings as a semantic alternative.
+            as ``|A ∩ B| / |A ∪ B|``; this is the returned ``score`` and is
+            always in ``[0, 1]``. Frequency is used only as a sort
+            tie-breaker between candidates with equal Jaccard, never
+            blended into the score itself. An earlier version multiplied
+            Jaccard by (a damped function of) frequency directly, which let
+            ubiquitous, mostly-irrelevant n-grams (common word combinations
+            that recur thousands of times across a large corpus) outscore
+            candidates with much stronger, more specific word overlap —
+            even a 9x frequency gap could overwhelm a 4x overlap advantage.
+            Word overlap is the actual relevance signal here; frequency
+            alone is not. See ``SemanticRetriever`` for cosine-similarity
+            scoring over the model's own embeddings as a semantic
+            alternative.
 
         Args:
             text: The query string in plain language, e.g.
@@ -228,24 +238,26 @@ class GrimoireCorpus:
             else set(query_tokens)
         )
 
-        scores: dict[tuple[str, ...], float] = {}
+        # (jaccard, frequency) per candidate -- frequency only decides sort
+        # order between ties, never inflates the score itself (see the
+        # scoring note above).
+        scores: dict[tuple[str, ...], tuple[float, int]] = {}
         for mt, entry in self._index.all_entries().items():
             overlap = len(set(mt) & query_set)
             if overlap > 0:
-                # Jaccard similarity weighted by frequency
                 union = len(set(mt) | query_set)
-                scores[mt] = (overlap / union) * entry.frequency
+                scores[mt] = (overlap / union, entry.frequency)
 
         ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
         return [
             QueryResult(
                 multi_token=mt,
                 next_token=self._index.get(mt).next_token,
-                score=score,
+                score=jaccard,
                 source=self._index.get(mt).source,
                 excerpt=self._index.get(mt).excerpt,
             )
-            for mt, score in ranked
+            for mt, (jaccard, _frequency) in ranked
         ]
 
     @property
