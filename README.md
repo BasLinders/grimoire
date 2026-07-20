@@ -368,3 +368,7 @@ See [docs/setup-training.md](docs/setup-training.md) and [docs/setup-inference.m
 - Shazeer, N. (2020). *GLU Variants Improve Transformer*. arXiv.
 - Ainslie, J. et al. (2023). *GQA: Training Generalised Multi-Query Transformer Models from Multi-Head Checkpoints*. EMNLP.
 - Loshchilov, I. & Hutter, F. (2019). *Decoupled Weight Decay Regularization*. ICLR.
+
+## License
+This repository is not licensed for use, modification, or distribution.
+All rights reserved.
