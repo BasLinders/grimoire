@@ -82,10 +82,10 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import torch
 from torch.utils.data import DataLoader
 
 from grimoire_ai.llm.data.qa_pairs import load_qa_pairs
+from grimoire_ai.llm.device import select_device
 from grimoire_ai.llm.inference.semantic import chunk_text
 from grimoire_ai.llm.model.config import TransformerConfig
 from grimoire_ai.llm.model.lora import load_lora, save_lora
@@ -184,7 +184,7 @@ def main(argv: list[str] | None = None) -> None:
             "(supervised), not both and not neither."
         )
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = select_device()
     print(f"Device: {device}")
 
     ckpt = load_checkpoint(args.checkpoint)

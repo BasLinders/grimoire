@@ -102,7 +102,7 @@ When the user selects an agent from `agent_dropdown`, auto-populate generation a
 
 ## Phase 4 — Device-aware suggestions ✓
 
-Use `torch.cuda.is_available()` and `torch.cuda.get_device_properties()` at startup. Already partially done in `engine.py:133–134`.
+Use `torch.cuda.is_available()` / `torch.cuda.get_device_properties()`, and `torch.backends.mps.is_available()` on Apple Silicon, at startup. Shared across the codebase via `grimoire_ai/llm/device.py::select_device()`.
 
 | Parameter | Tab(s) | Logic |
 |-----------|--------|-------|
@@ -125,9 +125,9 @@ Use `torch.cuda.is_available()` and `torch.cuda.get_device_properties()` at star
 **Implementation notes:**
 - Added `_detect_device_profile()` helper in `app.py`; called once at the top of `build_app()`, result stored in `_dp`.
 - `sc_batch` and `sc_accum` (Scale tab) are synced to `_dp["pt_batch"]` / `_dp["pt_accum"]` so the Chinchilla calculator always reflects the actual training config.
-- CPU with no CUDA: `quantize=True`, `batch=1`, `accum=32/16`. CUDA: `quantize=False`, batch/accum derived from VRAM, `grad_ckpt=True` when VRAM < 16 GB.
-- MPS (Apple Metal) falls into the CPU path — int8 quantization suggested, batch=1. Acceptable for now.
-- If `torch` is unavailable or CUDA probe fails, returns neutral defaults identical to the previous hardcoded values.
+- CPU with no CUDA/MPS: `quantize=True`, `batch=1`, `accum=32/16`. CUDA: `quantize=False`, batch/accum derived from VRAM, `grad_ckpt=True` when VRAM < 16 GB.
+- MPS (Apple Silicon) now gets its own GPU branch instead of falling into the CPU path: `quantize=False`, batch/accum derived from unified memory the same way CUDA derives from VRAM (via `torch.mps.recommended_max_memory()`, falling back to total system RAM through `os.sysconf`). int8 quantization stays CPU-only, since dynamic quantization isn't supported on MPS either.
+- If `torch` is unavailable or the device probe fails, returns neutral defaults identical to the previous hardcoded values.
 
 ---
 

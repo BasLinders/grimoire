@@ -46,9 +46,8 @@ from __future__ import annotations
 import argparse
 import sys
 
-import torch
-
 from grimoire_ai.llm.data.conversation import ConversationDataset
+from grimoire_ai.llm.device import select_device
 from grimoire_ai.llm.model.config import TransformerConfig
 from grimoire_ai.llm.model.transformer import GrimoireTransformer
 from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
@@ -100,7 +99,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = select_device()
     print(f"Device: {device}")
 
     # Load checkpoint and reconstruct model.

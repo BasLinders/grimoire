@@ -99,14 +99,14 @@ def run_eval(
         _log("⏹  Stopped before perplexity eval.")
     elif corpus_bin and Path(corpus_bin).is_file():
         _log("─── Perplexity eval ───────────────────────────────────")
+        from grimoire_ai.llm.device import select_device
         from grimoire_ai.llm.eval.perplexity import eval_perplexity
-        import torch
 
         model = engine.model if engine is not None else None
         if model is None:
             _log("  ⚠  No model available — skipping perplexity eval.")
         else:
-            device = engine.device if engine is not None else ("cuda" if torch.cuda.is_available() else "cpu")
+            device = engine.device if engine is not None else select_device()
             seq_len = engine.model.config.max_seq_len if engine is not None else 1024
             ppl_result = eval_perplexity(
                 model=model,

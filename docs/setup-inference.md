@@ -12,7 +12,7 @@ A trained checkpoint is required. If you do not have one yet, see [setup-trainin
 |---|---|---|
 | Python | 3.10 | |
 | RAM | 4 GB | More if using a large corpus |
-| GPU | — (CPU works) | CUDA auto-detected; 10–30× faster generation |
+| GPU | — (CPU works) | CUDA or Apple Silicon (MPS) auto-detected; 10–30× faster generation |
 
 ---
 
@@ -30,6 +30,16 @@ pip install -e "."
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cu124
+pip install -e "."
+```
+
+### Apple Silicon (macOS, MPS)
+
+No separate install — MPS support ships in the standard PyPI `torch` wheel:
+
+```bash
+git clone https://github.com/BasLinders/grimoire.git
+cd grimoire
 pip install -e "."
 ```
 
@@ -90,7 +100,7 @@ response = engine.respond("What is the speed of a grappled creature?")
 print(response)
 ```
 
-The engine auto-detects CUDA and falls back to CPU.
+The engine auto-detects CUDA, falls back to MPS on Apple Silicon, then CPU.
 
 ---
 

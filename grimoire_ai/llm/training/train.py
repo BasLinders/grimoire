@@ -84,10 +84,14 @@ still falling) from overfitting (val rising).
 
 Device selection
 ----------------
-The device is chosen automatically: CUDA if available, otherwise CPU.
+The device is chosen automatically: CUDA if available, otherwise MPS on
+Apple Silicon Macs, otherwise CPU.
 On Windows with an RTX card, PyTorch must be installed with CUDA support:
 
     pip install torch --index-url https://download.pytorch.org/whl/cu124
+
+MPS ships in the standard PyPI ``torch`` wheel, so no separate install step
+is needed on macOS.
 """
 
 import argparse

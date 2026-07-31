@@ -39,6 +39,7 @@ from torch.utils.data import DataLoader
 
 from grimoire_ai.llm.data.collator import PaddingCollator
 from grimoire_ai.llm.data.dataset import TokenizedDataset
+from grimoire_ai.llm.device import select_device
 from grimoire_ai.llm.model.config import TransformerConfig
 from grimoire_ai.llm.model.transformer import GrimoireTransformer
 from grimoire_ai.llm.tokenizer.special_tokens import PAD_ID
@@ -91,15 +92,15 @@ def run_lr_range_test(
         diverge_factor: Stop early once smoothed loss exceeds this multiple of
             the best smoothed loss (the loss has clearly blown up).
         smooth_beta: EMA coefficient for smoothing the noisy step loss.
-        device: ``"cpu"`` / ``"cuda"`` (auto-detected when ``None``).
+        device: ``"cpu"`` / ``"cuda"`` / ``"mps"`` (auto-detected when
+            ``None``: CUDA, then MPS on Apple Silicon, then CPU).
 
     Returns:
         A dict with ``lrs``, ``losses``, ``smoothed`` (lists, equal length),
         ``suggested_lr`` (float or ``None`` if not determinable), and
         ``steepest_lr`` (the LR at the steepest loss decrease, or ``None``).
     """
-    if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = select_device(device)
 
     config = TransformerConfig(**model_config)
     model = GrimoireTransformer(config).to(device)
@@ -252,7 +253,9 @@ def main() -> None:
     parser.add_argument("--num-iters", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--accumulate", type=int, default=1)
-    parser.add_argument("--device", default=None, help="cpu / cuda (auto if omitted).")
+    parser.add_argument("--device", default=None,
+                         help="cpu / cuda / mps (auto if omitted: CUDA, then "
+                              "MPS on Apple Silicon, then CPU).")
     args = parser.parse_args()
 
     try:

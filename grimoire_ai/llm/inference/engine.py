@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Callable, Iterable, Optional, Union
 import torch
 
 from grimoire_ai.corpus.corpus import GrimoireCorpus, QueryResult
+from grimoire_ai.llm.device import select_device
 from grimoire_ai.llm.inference.prompt import PromptBuilder
 from grimoire_ai.llm.inference.sampler import GenerationConfig, generate, generate_stream
 from grimoire_ai.llm.inference.semantic import SemanticRetriever
@@ -115,8 +116,9 @@ class InferenceEngine:
                 ``GenerationConfig()`` if ``None``.
             max_context_tokens: Token budget passed to ``PromptBuilder``.
                 Must be at most ``model.config.max_seq_len``.
-            device: PyTorch device (``"cpu"``, ``"cuda"``, etc.).  Auto-
-                detected (CUDA if available, otherwise CPU) when ``None``.
+            device: PyTorch device (``"cpu"``, ``"cuda"``, ``"mps"``, etc.).
+                Auto-detected when ``None``: CUDA if available, otherwise
+                MPS on Apple Silicon, otherwise CPU.
             retrieval_threshold: Minimum score the top corpus result must
                 reach for context to be injected into the prompt. When the
                 best match scores below this value, the query is treated as
@@ -128,12 +130,12 @@ class InferenceEngine:
                 positive value (e.g. ``0.1``) is more appropriate.
             quantize: Apply dynamic int8 quantization to all ``nn.Linear``
                 layers after loading.  Reduces memory footprint roughly 4×
-                and speeds up CPU inference.  Silently skipped on CUDA (where
-                dynamic quantization is not supported by standard PyTorch).
+                and speeds up CPU inference.  Silently skipped on CUDA/MPS
+                (where dynamic quantization is not supported by standard
+                PyTorch).
         """
-        if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.device = device
+        self.device = select_device(device)
+        device = self.device
 
         # Load checkpoint and reconstruct the model.
         ckpt = load_checkpoint(checkpoint_path)
