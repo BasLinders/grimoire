@@ -10,13 +10,21 @@ This guide covers everything needed to prepare a corpus, pre-train a Grimoire mo
 |---|---|---|
 | Python | 3.10 | 3.11–3.13 (see CUDA note below) |
 | RAM | 8 GB | 16 GB |
-| GPU | — (CPU works) | NVIDIA RTX with 4 GB+ VRAM |
+| GPU | — (CPU works) | NVIDIA RTX with 4 GB+ VRAM, or Apple Silicon (M1+) |
 | CUDA | — | 12.4 (for RTX cards) |
 
-> **For GPU use, keep Python within the range PyTorch ships CUDA wheels for**
+The goal is "runs on consumer hardware" as broadly as possible — CPU-only
+always works, on any OS. GPU acceleration is available two ways: NVIDIA
+CUDA (Windows/Linux) or Apple's Metal backend, **MPS** (macOS on Apple
+Silicon). There's no CUDA on macOS at all, which is why MPS exists as its
+dedicated GPU path.
+
+> **For CUDA use, keep Python within the range PyTorch ships CUDA wheels for**
 > (currently up to 3.13). A newer Python still works CPU-only. See
 > [§1 — CUDA](#cuda-windows--linux-rtx-card) for a dedicated-venv workaround
-> if your default interpreter is too new.
+> if your default interpreter is too new. MPS has no such constraint — it
+> ships in the same PyPI `torch` wheel used for CPU, so there's no separate
+> version matrix to track.
 
 ---
 
@@ -57,14 +65,46 @@ print(torch.cuda.get_device_name(0))
 > the latest CUDA wheel, use a dedicated CUDA venv (next section) pinned to a
 > supported version rather than changing your system Python.
 
+### Apple Silicon (macOS, MPS)
+
+No separate install step — the standard PyPI wheel already includes MPS
+support:
+
+```bash
+git clone https://github.com/BasLinders/grimoire.git
+cd grimoire
+pip install -e ".[dev]"
+```
+
+Verify MPS is visible:
+
+```python
+import torch
+print(torch.backends.mps.is_available())   # True on M1/M2/M3/M4 Macs
+```
+
+Training/eval scripts and the UI auto-detect MPS the same way they
+auto-detect CUDA: CUDA first, then MPS, then CPU, so **no script flags
+change** on Apple Silicon either. Mixed-precision (fp16 AMP) and
+`torch.compile`, which are CUDA-specific optimizations in this codebase,
+don't apply on MPS — training still runs on the GPU, just without those
+extra speedups, so it's still meaningfully faster than CPU.
+
+> **Docker note:** the provided `Dockerfile` targets CPU/CUDA — Docker
+> Desktop on macOS runs containers inside a Linux VM with no Metal
+> passthrough, so a container can never reach the GPU on a Mac. Run
+> natively (as above) for MPS acceleration; use Docker only for CPU-only
+> workflows on a Mac.
+
 #### A dedicated CUDA virtual environment
 
 The cleanest way to get GPU acceleration without disturbing your main
 environment — and the recommended approach if your default `python` is too
 new for the CUDA wheels — is a separate venv pinned to a supported Python
 version. Training/eval scripts auto-detect CUDA (`InferenceEngine` and the
-trainers pick `cuda` when `torch.cuda.is_available()`), so **no script flags
-change** — only which interpreter you run them with.
+trainers pick `cuda` when `torch.cuda.is_available()`, falling back to `mps`
+on Apple Silicon and `cpu` otherwise), so **no script flags change** — only
+which interpreter you run them with.
 
 **Create it** (example pins Python 3.13 via the `py` launcher on Windows; on
 Linux use `python3.13 -m venv`):
@@ -136,12 +176,13 @@ Behaviour once launched:
 
 | Tab | Device control | On CPU-launched UI |
 |---|---|---|
-| Pre-train / Fine-tune | **none** — auto-detects `cuda` if available, else `cpu` | always CPU; no override |
-| Evaluate | **Device** dropdown (`Auto` / `CPU` / `CUDA`) | selecting `CUDA` errors — the process has no GPU torch |
+| Pre-train / Fine-tune | **none** — auto-detects `cuda`, else `mps` (Apple Silicon), else `cpu` | always CPU; no override |
+| Evaluate | **Device** dropdown (`Auto` / `CPU` / `CUDA` / `MPS`) | selecting `CUDA` or `MPS` errors — the process has no GPU torch |
 
 Confirm which device is actually in use from the on-screen log, not the fan
-noise: training prints `Training on CUDA | …` / `Training on CPU | …`, and the
-Evaluate tab prints `Model loaded on cuda` / `Model loaded on cpu`.
+noise: training prints `Training on CUDA | …` / `Training on MPS | …` /
+`Training on CPU | …`, and the Evaluate tab prints `Model loaded on cuda` /
+`Model loaded on mps` / `Model loaded on cpu`.
 
 ### Corpus scraper (optional — for ingesting web/PDF/DOCX sources)
 

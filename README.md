@@ -8,7 +8,7 @@ The first agent built on Grimoire is **Saga**: a focused domain chatbot covering
 
 ## Goals
 
-- Run on consumer hardware (CPU or CUDA GPU — no cloud required)
+- Run on consumer hardware (CPU, NVIDIA CUDA, or Apple Silicon MPS — no cloud required)
 - Grounded domain facts from semantic retrieval; coherent conversation from the LLM
 - Automatic routing: only inject corpus context when retrieval finds a confident match
 - Full conversational coherence with multi-turn context tracking
@@ -156,7 +156,7 @@ Three size presets (all share `vocab_size=16384`, `max_seq_len=1024`):
 
 With `InferenceEngine(quantize=True)` the fp32 size shrinks ~4× (int8 Linear layers).
 
-**Training optimisations:** Flash Attention (SDPA), `torch.compile`, `cudnn.benchmark`, non-blocking GPU transfers, fp16 AMP, gradient accumulation, gradient checkpointing (halves VRAM at ~20% speed cost), Stochastic Weight Averaging, bootstrap-confidence early stopping, difficulty-weighted sampling.
+**Training optimisations:** Flash Attention (SDPA), `torch.compile`, `cudnn.benchmark`, non-blocking GPU transfers, fp16 AMP, gradient accumulation, gradient checkpointing (halves VRAM at ~20% speed cost), Stochastic Weight Averaging, bootstrap-confidence early stopping, difficulty-weighted sampling. `torch.compile`/`cudnn.benchmark`/AMP are CUDA-specific; on Apple Silicon (MPS) training still runs on the GPU, just without those extra speedups.
 
 ## Agents
 

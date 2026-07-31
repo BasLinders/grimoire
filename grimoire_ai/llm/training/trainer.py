@@ -39,7 +39,9 @@ Mixed precision (fp16 AMP)
     A ``GradScaler`` multiplies the loss by a large scale factor before
     the backward pass to prevent fp16 underflow (very small gradients
     rounding to zero), then unscales before the optimizer step.
-    On CPU the scaler is a no-op and the autocast context is skipped.
+    On CPU and MPS (Apple Silicon) the scaler is a no-op and the autocast
+    context is skipped — training still runs on the GPU on MPS, just
+    without fp16 mixed precision.
 """
 
 import logging
@@ -55,6 +57,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
 from grimoire_ai.llm.data.collator import PaddingCollator
+from grimoire_ai.llm.device import select_device
 from grimoire_ai.llm.model.transformer import GrimoireTransformer
 from grimoire_ai.llm.tokenizer.special_tokens import PAD_ID
 from grimoire_ai.llm.training.checkpoint import (
@@ -86,7 +89,7 @@ class Trainer:
     Attributes:
         model: The ``GrimoireTransformer`` being trained.
         config: The model's ``TransformerConfig``.
-        device: ``"cuda"`` or ``"cpu"`` as a string.
+        device: ``"cuda"``, ``"mps"``, or ``"cpu"`` as a string.
         peak_lr: Maximum learning rate reached after the warmup phase.
         min_lr: Minimum LR at the end of cosine decay (10 % of peak).
         warmup_steps: Number of optimizer steps over which LR rises linearly.
@@ -165,7 +168,8 @@ class Trainer:
             log_every: Print a log line every this many optimizer steps.
             save_every: Write a checkpoint every this many optimizer steps.
             checkpoint_dir: Directory for checkpoint files.
-            device: ``"cuda"``, ``"cpu"``, or ``None`` (auto-detect).
+            device: ``"cuda"``, ``"mps"``, ``"cpu"``, or ``None`` (auto-detect:
+                CUDA, then MPS on Apple Silicon, then CPU).
             num_workers: Number of DataLoader worker processes.  Keep at 0
                 on Windows to avoid multiprocessing issues.
             val_dataset: Optional held-out ``Dataset`` (same item format as
@@ -248,8 +252,12 @@ class Trainer:
         self._stop_event = stop_event
 
         # --- Device setup -----------------------------------------------
-        if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+        # CUDA > MPS (Apple Silicon) > CPU. The CUDA-only optimizations below
+        # (cuDNN benchmark, torch.compile, AMP/GradScaler, pinned memory) are
+        # deliberately not extended to MPS — GradScaler is CUDA-specific in
+        # PyTorch and MPS autocast support is still immature — so MPS runs
+        # the plain fp32 path, getting its speedup purely from GPU placement.
+        device = select_device(device)
         self.device = device
         self._use_amp = device == "cuda"
 

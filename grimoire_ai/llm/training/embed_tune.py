@@ -83,6 +83,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 
+from grimoire_ai.llm.device import select_device
 from grimoire_ai.llm.model.transformer import GrimoireTransformer
 from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
 from grimoire_ai.llm.tokenizer.special_tokens import BOS_ID, PAD_ID
@@ -349,7 +350,7 @@ class EmbedTuner:
 
     Attributes:
         model: The model being tuned, moved to ``device``.
-        device: ``"cuda"`` or ``"cpu"``.
+        device: ``"cuda"``, ``"mps"``, or ``"cpu"``.
         temperature: Forwarded to ``contrastive_loss`` on every step.
         optimizer: ``AdamW`` over the model's trainable parameters — every
             parameter with ``requires_grad=True`` at construction time. Call
@@ -371,11 +372,11 @@ class EmbedTuner:
             model: A ``GrimoireTransformer`` to train in place.
             lr: AdamW learning rate.
             temperature: Forwarded to ``contrastive_loss``.
-            device: ``"cuda"``, ``"cpu"``, or ``None`` (auto-detect).
+            device: ``"cuda"``, ``"mps"``, ``"cpu"``, or ``None`` (auto-detect:
+                CUDA, then MPS on Apple Silicon, then CPU).
         """
-        if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.device = device
+        self.device = select_device(device)
+        device = self.device
         self.model = model.to(device)
         self.temperature = temperature
         self.optimizer = torch.optim.AdamW(

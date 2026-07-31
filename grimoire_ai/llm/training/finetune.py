@@ -41,6 +41,7 @@ import torch
 from torch.utils.data import Dataset, random_split
 
 from grimoire_ai.llm.data.conversation import ConversationDataset
+from grimoire_ai.llm.device import select_device
 from grimoire_ai.llm.model.config import TransformerConfig
 from grimoire_ai.llm.model.lora import save_lora
 from grimoire_ai.llm.model.transformer import GrimoireTransformer
@@ -114,7 +115,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--max-seq-len",    type=int,   default=512,
                    help="Maximum sequence length for fine-tuning examples.")
     p.add_argument("--device",         default=None,
-                   help="Device override (cpu / cuda). Auto-detected if omitted.")
+                   help="Device override (cpu / cuda / mps). Auto-detected if "
+                        "omitted: CUDA, then MPS on Apple Silicon, then CPU.")
     p.add_argument("--lora-rank",    type=int,   default=0,
                    help="LoRA rank r. 0 (default) = full fine-tuning. Typical: 8 or 16.")
     p.add_argument("--lora-alpha",   type=float, default=16.0,
@@ -138,7 +140,7 @@ def main(argv: list[str] | None = None) -> None:
 
     args = _parse_args(argv)
 
-    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    device = select_device(args.device)
     print(f"Fine-tuning on device: {device}")
 
     # Load pre-trained checkpoint and reconstruct model.

@@ -163,8 +163,8 @@ def _detect_device_profile() -> dict:
     """Probe the available compute device and derive safe training/inference defaults.
 
     Returns a dict with keys:
-      device    – "cuda" or "cpu"
-      vram_gb   – total GPU VRAM in GiB (0.0 on CPU)
+      device    – "cuda", "mps", or "cpu"
+      vram_gb   – total GPU/unified memory in GiB (0.0 on CPU)
       pt_batch  – recommended pre-train batch size
       pt_accum  – recommended pre-train gradient accumulation steps
       ft_batch  – recommended fine-tune batch size
@@ -174,14 +174,34 @@ def _detect_device_profile() -> dict:
     """
     try:
         import torch
-        if not torch.cuda.is_available():
+
+        if torch.cuda.is_available():
+            device = "cuda"
+            vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+        elif torch.backends.mps.is_available():
+            device = "mps"
+            # Apple Silicon uses unified memory — there's no separate VRAM
+            # pool to query. ``recommended_max_memory`` (torch >= 2.3) is the
+            # closest available signal; fall back to total system RAM (the
+            # unified pool the GPU shares) via the POSIX sysconf API when the
+            # torch API isn't present, then to a conservative neutral default.
+            try:
+                vram_gb = torch.mps.recommended_max_memory() / (1024 ** 3)
+            except Exception:
+                try:
+                    import os
+                    vram_gb = (
+                        os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+                    ) / (1024 ** 3)
+                except Exception:
+                    vram_gb = 8.0
+        else:
             return dict(device="cpu", vram_gb=0.0,
                         pt_batch=1, pt_accum=32,
                         ft_batch=1, ft_accum=16,
                         grad_ckpt=False, quantize=True)
-        vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
     except Exception:
-        # torch unavailable or CUDA probe failed — return neutral defaults.
+        # torch unavailable or device probe failed — return neutral defaults.
         return dict(device="cpu", vram_gb=0.0,
                     pt_batch=4, pt_accum=8,
                     ft_batch=4, ft_accum=4,
@@ -198,7 +218,7 @@ def _detect_device_profile() -> dict:
         pt_batch, ft_batch = 8, 8
 
     return dict(
-        device="cuda",
+        device=device,
         vram_gb=vram_gb,
         pt_batch=pt_batch,
         pt_accum=max(1, 32 // pt_batch),
@@ -411,7 +431,7 @@ def run_pretrain(
     training behaves exactly as before.
     """
     import numpy as np
-    import torch
+    from grimoire_ai.llm.device import select_device
     from grimoire_ai.llm.model.config import TransformerConfig
     from grimoire_ai.llm.model.transformer import GrimoireTransformer
     from grimoire_ai.llm.training.train import _build_datasets
@@ -421,7 +441,7 @@ def run_pretrain(
     resume = resume_from.strip() or None
 
     def _train(on_log, on_save, on_done, on_eval):
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = select_device()
         model_config = TransformerConfig(
             d_model=int(d_model),
             n_layers=int(n_layers),
@@ -591,8 +611,8 @@ def run_finetune(
     requires a validation set; if ``val_split`` is 0 a 10% split is used
     automatically so early stopping has data to act on.
     """
-    import torch
     from grimoire_ai.llm.data.conversation import ConversationDataset
+    from grimoire_ai.llm.device import select_device
     from grimoire_ai.llm.model.config import TransformerConfig
     from grimoire_ai.llm.model.transformer import GrimoireTransformer
     from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
@@ -618,7 +638,7 @@ def run_finetune(
         from pathlib import Path as _Path
         from grimoire_ai.llm.model.lora import save_lora as _save_lora
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = select_device()
         ckpt = load_checkpoint(pretrain_ckpt)
         config = TransformerConfig.from_dict(ckpt["config"])
         model = GrimoireTransformer(config)
@@ -2957,10 +2977,11 @@ def build_app() -> gr.Blocks:
                     info="0 = evaluate the full held-out split. 50 batches ≈ 30–60 s on CPU.",
                 )
                 ev_device = gr.Dropdown(
-                    choices=["Auto", "CPU", "CUDA"],
+                    choices=["Auto", "CPU", "CUDA", "MPS"],
                     value="Auto",
                     label="Device",
-                    info="Auto picks CUDA if a GPU is available, otherwise CPU.",
+                    info="Auto picks CUDA (NVIDIA) if available, otherwise MPS "
+                         "(Apple Silicon), otherwise CPU.",
                 )
                 ev_math_tool = gr.Checkbox(
                     label="Enable math tool",
@@ -3223,7 +3244,7 @@ def build_app() -> gr.Blocks:
                     chat_quantize = gr.Checkbox(
                         label="int8 quantization",
                         value=_dp["quantize"],
-                        info="Quantize Linear layers to int8 after loading. Cuts memory ~4× and speeds up CPU inference. Ignored on CUDA.",
+                        info="Quantize Linear layers to int8 after loading. Cuts memory ~4× and speeds up CPU inference. Ignored on CUDA/MPS.",
                         scale=0,
                         min_width=200,
                     )

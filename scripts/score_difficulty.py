@@ -41,6 +41,7 @@ from torch.utils.data import DataLoader
 
 from grimoire_ai.llm.data.collator import PaddingCollator
 from grimoire_ai.llm.data.dataset import TokenizedDataset
+from grimoire_ai.llm.device import select_device
 from grimoire_ai.llm.model.config import TransformerConfig
 from grimoire_ai.llm.model.transformer import GrimoireTransformer
 from grimoire_ai.llm.tokenizer.special_tokens import PAD_ID
@@ -146,10 +147,12 @@ def main() -> None:
                              "<1 flattens. 1.0 = weight directly proportional to loss.")
     parser.add_argument("--weight-floor", type=float, default=0.05,
                         help="Minimum weight so easy windows are still occasionally seen.")
-    parser.add_argument("--device", default=None, help="cpu / cuda (auto if omitted).")
+    parser.add_argument("--device", default=None,
+                         help="cpu / cuda / mps (auto if omitted: CUDA, then "
+                              "MPS on Apple Silicon, then CPU).")
     args = parser.parse_args()
 
-    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    device = select_device(args.device)
     try:
         score(
             checkpoint=args.checkpoint,
