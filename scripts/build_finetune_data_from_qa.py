@@ -63,6 +63,13 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--corpus-dir", required=True, metavar="DIR",
                          help="Directory of StackExchange-format Q&A .txt files "
                               "(rpg_se_*.txt) -- see grimoire_ai.llm.data.qa_pairs.")
+    parser.add_argument("--pattern", default="rpg_se_*.txt", metavar="GLOB",
+                         help="Glob (within --corpus-dir) selecting which Q&A files "
+                              "to load (default: 'rpg_se_*.txt', matching "
+                              "scrape_stackexchange_rpg.py's output). Use "
+                              "'*_se_*.txt' to pick up every site scraped by "
+                              "scrape_stackexchange.py at once, or e.g. "
+                              "'history_se_*.txt' for a single site.")
     parser.add_argument("--output", required=True, metavar="PATH",
                          help="Output .jsonl path.")
     parser.add_argument("--min-score", type=int, default=1, metavar="N",
@@ -79,7 +86,10 @@ def main(argv: list[str] | None = None) -> None:
                               "answer (default: 350). Should not exceed --context-max-chars.")
     args = parser.parse_args(argv)
 
-    pairs = load_qa_pairs(args.corpus_dir, min_score=args.min_score, accepted_only=args.accepted_only)
+    pairs = load_qa_pairs(
+        args.corpus_dir, pattern=args.pattern,
+        min_score=args.min_score, accepted_only=args.accepted_only,
+    )
     print(f"Loaded {len(pairs)} Q&A pair(s) from {args.corpus_dir}")
     if not pairs:
         raise ValueError(
