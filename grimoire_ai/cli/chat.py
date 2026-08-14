@@ -96,6 +96,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "value instead of hoping the model got it right. Decode-time only; "
              "does not affect prose generation elsewhere in the response.",
     )
+    p.add_argument(
+        "--loop-guard", action="store_true",
+        help="Hard-ban a token that would extend an already-established repeating "
+             "loop ('does does does...' or short-phrase loops), a structural "
+             "backstop stronger than the soft repetition_penalty discount. Uses "
+             "RepetitionLoopGuard's defaults (max_repeats=3, max_period=4).",
+    )
     return p.parse_args(argv)
 
 
@@ -176,7 +183,10 @@ def main(argv: list[str] | None = None) -> None:
         temperature=args.temperature,
         top_k=args.top_k,
         top_p=args.top_p,
+        loop_guard_max_repeats=3 if args.loop_guard else 0,
     )
+    if args.loop_guard:
+        print("Loop guard enabled — repeating token/phrase loops are hard-blocked.")
 
     state = ConversationState(max_turns=args.max_turns)
 

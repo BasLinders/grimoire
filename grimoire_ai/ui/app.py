@@ -1629,6 +1629,7 @@ def chat(
     top_p: float,
     max_new_tokens: int,
     adaptive_temperature: bool = False,
+    loop_guard_enabled: bool = False,
 ) -> Generator[tuple[str, object, str], None, None]:
     """Stream a response token-by-token and update the conversation state."""
     if engine_state is None:
@@ -1645,6 +1646,11 @@ def chat(
         top_k=top_k,
         top_p=top_p,
         adaptive_temperature=adaptive_temperature,
+        # RepetitionLoopGuard defaults (max_repeats=3, max_period=4) — see
+        # constrained_decoding.py. 0 disables; the checkbox only offers an
+        # on/off toggle since these two knobs are tightly coupled and the
+        # class's own defaults are already sensible for general chat.
+        loop_guard_max_repeats=3 if loop_guard_enabled else 0,
     )
     if conv_state is None:
         conv_state = ConversationState()
@@ -3387,6 +3393,15 @@ def build_app() -> gr.Blocks:
                 inputs=[chat_adaptive_temp],
                 outputs=[chat_temp],
             )
+            chat_loop_guard = gr.Checkbox(
+                value=False,
+                label="Prevent repetition loops",
+                info="Hard-bans a token that would extend an already-established "
+                     "repeating loop ('does does does...' or short-phrase loops), "
+                     "instead of just discounting it like repetition_penalty does. "
+                     "Structural backstop, decode-time only — see "
+                     "docs/architecture_optimization.md item #5.",
+            )
 
             chat_query    = gr.Textbox(label="Your query", lines=3)
             chat_response = gr.Textbox(label="Response", lines=8, interactive=False)
@@ -3478,7 +3493,7 @@ def build_app() -> gr.Blocks:
                 fn=chat,
                 inputs=[chat_query, engine_state, conv_state,
                         chat_temp, chat_top_k, chat_top_p, chat_tokens,
-                        chat_adaptive_temp],
+                        chat_adaptive_temp, chat_loop_guard],
                 outputs=[chat_response, conv_state, chat_routing],
             )
             clear_btn.click(
