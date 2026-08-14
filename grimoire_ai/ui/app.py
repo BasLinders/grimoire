@@ -1321,6 +1321,7 @@ def load_agent(
     quantize: bool = False,
     math_tool_enabled: bool = False,
     routing_threshold: float = 0.05,
+    stat_block_constraint_enabled: bool = False,
 ) -> tuple[object, object, str, str, str]:
     """Load an agent by display name, applying the chosen retrieval backend.
 
@@ -1348,6 +1349,9 @@ def load_agent(
         if math_tool_enabled:
             from grimoire_ai.tools.math_tool import MathTool
             engine._engine.math_tool = MathTool()
+        if stat_block_constraint_enabled:
+            from grimoire_ai.llm.inference.constrained_decoding import StatBlockConstraint
+            engine._engine.stat_block_constraint = StatBlockConstraint(engine._engine.tokenizer)
         default_cfg = registry.get(registry.default_key)
         n_agents = len(registry.keys())
         return (
@@ -1370,6 +1374,9 @@ def load_agent(
     if math_tool_enabled:
         from grimoire_ai.tools.math_tool import MathTool
         engine.math_tool = MathTool()
+    if stat_block_constraint_enabled:
+        from grimoire_ai.llm.inference.constrained_decoding import StatBlockConstraint
+        engine.stat_block_constraint = StatBlockConstraint(engine.tokenizer)
 
     if not use_lexical and engine.corpus is not None:
         # Resolve via the registry so paths are correct regardless of cwd.
@@ -1433,6 +1440,7 @@ def load_engine(
     quantize: bool = False,
     lora_path: str = "",
     math_tool_enabled: bool = False,
+    stat_block_constraint_enabled: bool = False,
 ) -> tuple[object, object, str]:
     """Load an ``InferenceEngine`` and a fresh ``ConversationState``.
 
@@ -1501,6 +1509,9 @@ def load_engine(
         quantize=quantize,
         math_tool=math_tool,
     )
+    if stat_block_constraint_enabled:
+        from grimoire_ai.llm.inference.constrained_decoding import StatBlockConstraint
+        engine.stat_block_constraint = StatBlockConstraint(engine.tokenizer)
 
     if lora_path:
         try:
@@ -3327,6 +3338,19 @@ def build_app() -> gr.Blocks:
                     scale=0,
                     min_width=200,
                 )
+                chat_stat_block_constraint = gr.Checkbox(
+                    label="Enable stat-block constraint",
+                    value=False,
+                    info=(
+                        "Restrict Challenge Rating / XP / AC / HP values to well-formed "
+                        "continuations at decode time — structurally blocks a hallucinated "
+                        "value (e.g. an invalid CR) rather than hoping the model got it "
+                        "right. Decode-time only; does not affect prose generation "
+                        "elsewhere in the reply."
+                    ),
+                    scale=0,
+                    min_width=200,
+                )
                 load_status = gr.Textbox(label="Status", interactive=False)
 
             # ---- Generation controls ------------------------------------
@@ -3439,12 +3463,12 @@ def build_app() -> gr.Blocks:
             )
             agent_load_btn.click(
                 fn=load_agent,
-                inputs=[agent_dropdown, chat_encoder, chat_threshold, chat_quantize, chat_math_tool, chat_routing_threshold],
+                inputs=[agent_dropdown, chat_encoder, chat_threshold, chat_quantize, chat_math_tool, chat_routing_threshold, chat_stat_block_constraint],
                 outputs=[engine_state, conv_state, agent_status, chat_ckpt, chat_vocab],
             )
             load_btn.click(
                 fn=load_engine,
-                inputs=[chat_ckpt, chat_vocab, chat_corpus_dir, chat_encoder, chat_threshold, chat_quantize, chat_lora, chat_math_tool],
+                inputs=[chat_ckpt, chat_vocab, chat_corpus_dir, chat_encoder, chat_threshold, chat_quantize, chat_lora, chat_math_tool, chat_stat_block_constraint],
                 outputs=[engine_state, conv_state, load_status, chat_quantize],
             )
             chat_tab.select(fn=_refresh_ckpts_all, outputs=[chat_ckpt])

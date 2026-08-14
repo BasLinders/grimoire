@@ -89,6 +89,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "and inject the result as context before generation.  Also resolves "
              "<TOOL:python>...</TOOL> tags in model responses (for fine-tuned models).",
     )
+    p.add_argument(
+        "--stat-block-constraint", action="store_true",
+        help="Restrict Challenge Rating / XP / AC / HP values to well-formed "
+             "continuations at decode time — structurally blocks a hallucinated "
+             "value instead of hoping the model got it right. Decode-time only; "
+             "does not affect prose generation elsewhere in the response.",
+    )
     return p.parse_args(argv)
 
 
@@ -140,6 +147,10 @@ def main(argv: list[str] | None = None) -> None:
         retrieval_threshold=args.retrieval_threshold,
         math_tool=math_tool,
     )
+    if args.stat_block_constraint:
+        from grimoire_ai.llm.inference.constrained_decoding import StatBlockConstraint
+        engine.stat_block_constraint = StatBlockConstraint(engine.tokenizer)
+        print("Stat-block constraint enabled — CR/XP/AC/HP values are restricted to well-formed continuations.")
     print(f"Model ready on {engine.device.upper()}.")
 
     # --- Build semantic index -------------------------------------------
