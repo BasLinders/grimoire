@@ -538,6 +538,25 @@ class BytePairEncoder:
         _flush_bytes()
         return "".join(text_parts)
 
+    def incremental_decoder(self) -> "IncrementalDecoder":
+        """Return a fresh stateful decoder for streaming, token-by-token output.
+
+        Repeatedly calling ``decode(all_ids_so_far)`` in a generation loop is
+        O(n) per call and O(n^2) over a full response — every call re-decodes
+        tokens already decoded on the previous call. ``IncrementalDecoder``
+        does the same byte-buffer accounting ``decode`` does internally, but
+        processes one new token per call and only re-does work for the bytes
+        that arrived since the last call.
+
+        See ``IncrementalDecoder`` for the correctness argument (relies on
+        UTF-8 being a self-synchronizing encoding, so flushing early whenever
+        the buffered bytes happen to form complete characters produces
+        exactly the same output as accumulating everything and decoding once
+        at the end).
+        """
+        self._require_trained()
+        return IncrementalDecoder(self)
+
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
@@ -626,3 +645,80 @@ class BytePairEncoder:
             and base byte symbols.
         """
         return self.vocab_size
+
+
+class IncrementalDecoder:
+    """Stateful, token-at-a-time counterpart to ``BytePairEncoder.decode``.
+
+    Built via ``BytePairEncoder.incremental_decoder()`` rather than directly.
+    Feed it one new token id per call with ``push()``; it returns only the
+    text that has newly become safe to emit, instead of requiring the whole
+    id list to be re-decoded from scratch on every call.
+
+    Why "safe to emit" needs tracking at all
+    -----------------------------------------
+    ``decode``'s symbols are byte-level: a single UTF-8 character can be
+    split across two adjacent token ids (their merge boundaries don't have
+    to land on character boundaries). Decoding each token's bytes the moment
+    it arrives, in isolation, could try to decode a truncated multi-byte
+    sequence. ``push`` instead buffers new bytes and only emits the longest
+    *complete* UTF-8 prefix of what's buffered, holding back any trailing
+    incomplete sequence for the next call (or a final flush).
+
+    Why this is safe to split across calls at all
+    ------------------------------------------------
+    UTF-8 is a self-synchronizing encoding: if a byte string ``A`` decodes
+    cleanly on its own (ends exactly on a character boundary), then
+    ``decode(A + B) == decode(A) + decode(B)`` for any continuation ``B``.
+    So flushing eagerly, as soon as the buffered bytes happen to form
+    complete characters, produces exactly the same final text as
+    accumulating every byte and decoding once at the end — just spread
+    across many cheap calls instead of one that redoes all earlier work.
+    """
+
+    def __init__(self, encoder: "BytePairEncoder") -> None:
+        self._decoder_table = encoder._decoder
+        self._byte_buf: list[int] = []
+
+    def push(self, token_id: int) -> str:
+        """Feed one new token id. Returns newly-safe-to-emit text (maybe "")."""
+        symbol = self._decoder_table.get(token_id)
+        if symbol is None:
+            return ""
+        if symbol in SPECIAL_TOKEN_TO_ID:
+            # A special token id is never part of a byte sequence itself, so
+            # flush whatever's pending (errors="replace" only matters if a
+            # genuinely incomplete sequence was still buffered at this exact
+            # point -- same fallback decode() itself uses) then pass the
+            # special token's literal string straight through.
+            return self._flush(errors="replace") + symbol
+        for char in symbol:
+            self._byte_buf.append(_CHAR_TO_BYTE[char])
+        return self._flush(errors="strict")
+
+    def finish(self) -> str:
+        """Flush any still-buffered (necessarily incomplete) trailing bytes.
+
+        Call once after the last ``push()`` — mirrors the ``errors="replace"``
+        fallback ``decode()`` applies to a genuinely truncated final sequence.
+        """
+        return self._flush(errors="replace")
+
+    def _flush(self, errors: str) -> str:
+        if not self._byte_buf:
+            return ""
+        data = bytes(self._byte_buf)
+        if errors == "replace":
+            self._byte_buf.clear()
+            return data.decode("utf-8", errors="replace")
+        try:
+            text = data.decode("utf-8")
+            self._byte_buf.clear()
+            return text
+        except UnicodeDecodeError as exc:
+            # Only the trailing bytes can be incomplete -- exc.start marks
+            # where the truncated sequence begins; everything before it is a
+            # complete, safe-to-emit prefix.
+            text = data[: exc.start].decode("utf-8")
+            self._byte_buf = list(data[exc.start :])
+            return text

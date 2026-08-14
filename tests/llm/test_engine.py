@@ -122,6 +122,43 @@ def test_engine_with_corpus_does_not_crash() -> None:
     assert isinstance(result, str)
 
 
+def test_chat_stream_yields_match_final_response() -> None:
+    """chat_stream's incremental yields must be monotonically growing
+    prefixes of the final response, and the last yield must equal both its
+    non-streaming sibling chat()'s output (same seed, same
+    ConversationState-based prompt building) and the response ultimately
+    recorded in ConversationState -- this is the property the incremental
+    decoder (docs/inference_optimization.md item #5) has to preserve
+    relative to the old full-redecode-every-token implementation."""
+    from grimoire_ai.state.conversation import ConversationState
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt, tok = _save_artifacts(tmp)
+        gen_config = GenerationConfig(max_new_tokens=15, temperature=0.9, top_k=20, top_p=0.95)
+
+        torch.manual_seed(0)
+        engine = InferenceEngine(
+            checkpoint_path=ckpt, tokenizer_path=tok, gen_config=gen_config, device="cpu",
+        )
+        stream_state = ConversationState()
+        yields = list(engine.chat_stream("hello world", stream_state))
+
+        torch.manual_seed(0)
+        engine2 = InferenceEngine(
+            checkpoint_path=ckpt, tokenizer_path=tok, gen_config=gen_config, device="cpu",
+        )
+        non_streamed = engine2.chat("hello world", ConversationState())
+
+    assert len(yields) >= 1
+    for earlier, later in zip(yields, yields[1:]):
+        assert later.startswith(earlier), (
+            f"Streaming yield {later!r} is not an extension of {earlier!r} -- "
+            "incremental decode must never revise already-emitted text."
+        )
+    assert yields[-1] == non_streamed
+    assert stream_state.history[-1].assistant == yields[-1]
+
+
 def test_engine_missing_checkpoint_raises() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         _, tok = _save_artifacts(tmp)
