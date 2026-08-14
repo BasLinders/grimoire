@@ -25,12 +25,12 @@ but not its sibling.
 | 1 | `output_head` projects the full prompt during prefill, not just the last token | `model/transformer.py` | ✓ shipped — [PR #189](https://github.com/BasLinders/grimoire/pull/189) |
 | 2 | Cached (decode-step) attention never uses fused SDPA | `model/attention.py` | ✓ shipped — [PR #190](https://github.com/BasLinders/grimoire/pull/190) |
 | 3 | `generate()` computes softmax twice in top-p sampling | `inference/sampler.py` | ✓ shipped — [PR #191](https://github.com/BasLinders/grimoire/pull/191) |
-| 4 | `repetition_penalty` loop does per-token scalar tensor writes | `inference/sampler.py` | not started |
-| 5 | `chat_stream()` re-decodes the full sequence on every yielded token | `inference/engine.py` | not started |
-| 6 | `StatBlockConstraint.mask()` compounds full-redecode + per-step vocab scan | `inference/constrained_decoding.py` | not started |
-| 7 | RETRO neighbor-precompute script embeds one window at a time | `scripts/build_retrieval_neighbors.py` | not started |
-| 8 | Lexical (Jaccard) corpus query is an O(N) linear scan | `corpus/corpus.py` | not started |
-| 9 | External-encoder (MiniLM/MPNet) index rebuilds from scratch on every UI load | `ui/chat_app.py` | not started |
+| 4 | `repetition_penalty` loop does per-token scalar tensor writes | `inference/sampler.py` | ✓ shipped — [PR #194](https://github.com/BasLinders/grimoire/pull/194) |
+| 5 | `chat_stream()` re-decodes the full sequence on every yielded token | `inference/engine.py` | ✓ shipped — [PR #195](https://github.com/BasLinders/grimoire/pull/195) |
+| 6 | `StatBlockConstraint.mask()` compounds full-redecode + per-step vocab scan | `inference/constrained_decoding.py` | ✓ shipped — [PR #196](https://github.com/BasLinders/grimoire/pull/196) (stacked on #195) |
+| 7 | RETRO neighbor-precompute script embeds one window at a time | `scripts/build_retrieval_neighbors.py` | ✓ shipped — [PR #192](https://github.com/BasLinders/grimoire/pull/192) |
+| 8 | Lexical (Jaccard) corpus query is an O(N) linear scan | `corpus/corpus.py` | ✓ shipped — [PR #197](https://github.com/BasLinders/grimoire/pull/197) |
+| 9 | External-encoder (MiniLM/MPNet) index rebuilds from scratch on every UI load | `ui/chat_app.py` | ✓ shipped — [PR #193](https://github.com/BasLinders/grimoire/pull/193) |
 
 ## 1. `output_head` runs on the full prompt during prefill, when only the last position is used
 
@@ -345,3 +345,7 @@ real corpus scale and #9 is a synchronous UI stall on a path users can
 actually select today. **#4, #5, #6, #8** last — all real, but either
 opt-in (#4, #6), small in absolute terms (#5), or scale with corpus size
 rather than being hit on every request (#8).
+
+All nine have since shipped, in roughly this order. #6 is stacked on #5
+(reuses the `IncrementalDecoder` #5 added rather than duplicating its
+byte-buffer logic in a second place) — merge #5 first.
