@@ -273,6 +273,7 @@ class Trainer:
         sample_weights: Optional["Sequence[float]"] = None,
         neighbor_ids: Optional[np.ndarray] = None,
         gradient_checkpointing: bool = False,
+        compile_mode: Optional[str] = None,
         mtp_loss_weight: float = 0.3,
         on_log: Optional[Callable[[int, float, float], None]] = None,
         on_save: Optional[Callable[[int, float], None]] = None,
@@ -415,6 +416,17 @@ class Trainer:
         # kernels (operator fusion, reduced memory traffic).  Falls back
         # silently on CPU or if compilation is unavailable.
         #
+        # compile_mode (docs/speed_optimization.md item #3): None (default)
+        # uses torch.compile's default mode -- fast to warm up, the right
+        # choice for short runs (fine-tuning, a few hundred steps) where
+        # extra warmup cost may not be recouped. "max-autotune" spends much
+        # longer per-shape autotuning kernels in exchange for faster steady-
+        # state steps -- worth it for pretraining's thousands of steps at
+        # one fixed (batch_size, seq_len) shape, where that cost amortizes.
+        # Left opt-in rather than switched by default: the actual crossover
+        # point depends on hardware, not just step count, so this needs an
+        # A/B on the GPU it will actually run on before becoming a default.
+        #
         # IMPORTANT: the compiled wrapper is kept as a SEPARATE handle used
         # only for the forward pass.  ``self.model`` stays the raw module so
         # that ``state_dict()`` / ``load_state_dict()`` keys are NOT prefixed
@@ -443,7 +455,8 @@ class Trainer:
                         )
                     except Exception:
                         pass
-            self._forward_model = torch.compile(self.model)
+            self._forward_model = torch.compile(self.model, mode=compile_mode)
+        self.compile_mode = compile_mode
 
         # GradScaler is a no-op whenever _grad_scaler_enabled is False (CPU,
         # MPS, or CUDA-with-bf16) but we instantiate it uniformly to avoid
@@ -638,10 +651,11 @@ class Trainer:
             f"on ({'bf16' if self._amp_dtype == torch.bfloat16 else 'fp16'})"
             if self._use_amp else "off"
         )
+        compile_status = f"on ({self.compile_mode or 'default'})" if compiled else "off"
         print(
             f"Training on {self.device.upper()} | "
             f"AMP={amp_status} | "
-            f"compile={'on' if compiled else 'off'} | "
+            f"compile={compile_status} | "
             f"params={self.model.num_parameters():,} | "
             f"effective batch={self.batch_size * self.accumulate_steps}"
         )
