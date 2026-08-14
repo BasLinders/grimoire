@@ -78,6 +78,15 @@ class TransformerConfig:
             structure (no ``q_proj``/``k_proj``/``v_proj``), so it is not
             yet supported by ``add_lora_adapters()`` or GGUF export — both
             raise a clear error rather than silently doing the wrong thing.
+        n_predict: Number of extra Multi-Token Prediction heads (see
+            ``docs/architecture_optimization.md`` item #2). ``0`` (default)
+            disables MTP entirely — ``GrimoireTransformer`` builds no extra
+            modules and ``forward()`` behaves exactly as it always has. When
+            positive, the model gains ``n_predict`` auxiliary heads used
+            only during pretraining (``Trainer``) to predict further-ahead
+            tokens as an additional training signal; inference and export
+            are unaffected since ``forward()`` only computes them when
+            explicitly asked via ``return_mtp_logits=True``.
     """
 
     vocab_size: int = 16384
@@ -92,14 +101,16 @@ class TransformerConfig:
     mla_kv_latent_dim: Optional[int] = None
     mla_rope_head_dim: Optional[int] = None
     attention_type: str = "gqa"
+    n_predict: int = 0
 
     def __post_init__(self) -> None:
         """Validate internal consistency of the configuration.
 
         Raises:
             ValueError: If ``d_model`` is not divisible by ``n_heads``, if
-                ``n_heads`` is not divisible by ``n_kv_heads``, or if
-                ``attention_type`` is not ``"gqa"`` or ``"mla"``.
+                ``n_heads`` is not divisible by ``n_kv_heads``, if
+                ``attention_type`` is not ``"gqa"`` or ``"mla"``, or if
+                ``n_predict`` is negative.
         """
         if self.d_model % self.n_heads != 0:
             raise ValueError(
@@ -116,6 +127,8 @@ class TransformerConfig:
                 f"attention_type ({self.attention_type!r}) must be "
                 f"'gqa' or 'mla'."
             )
+        if self.n_predict < 0:
+            raise ValueError(f"n_predict ({self.n_predict}) must be non-negative.")
 
     @property
     def head_dim(self) -> int:
