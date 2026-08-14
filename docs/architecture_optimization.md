@@ -11,7 +11,7 @@ tracked below since that's no longer true.
 |---|---|---|
 | 1 | Multi-Head Latent Attention | ✓ shipped — [PR #176](https://github.com/BasLinders/grimoire/pull/176) (module), [#177](https://github.com/BasLinders/grimoire/pull/177) (wiring), [#178](https://github.com/BasLinders/grimoire/pull/178) (UI) |
 | 2 | Multi-Token Prediction | ✓ shipped — [PR #180](https://github.com/BasLinders/grimoire/pull/180) |
-| 3 | RETRO-style chunked cross-attention | in progress — see below |
+| 3 | RETRO-style chunked cross-attention | ✓ shipped — [PR #181](https://github.com/BasLinders/grimoire/pull/181) (module + wiring + training pipeline) |
 | 4 | Contrastive retrieval fine-tuning | ✓ already existed — `grimoire_ai/llm/training/embed_tune.py` / `scripts/embed_tune.py`, predates this document (this list was written without checking for it first) |
 | 5 | Grammar-constrained decoding | ✓ shipped — [PR #179](https://github.com/BasLinders/grimoire/pull/179) |
 
