@@ -126,6 +126,8 @@ def load_agent(
     stat_block_constraint_enabled: bool = False,
     reranker: str = "None",
     rerank_candidates: int = 20,
+    crag_enabled: bool = False,
+    crag_threshold: float = 0.1,
 ) -> tuple[object, object, str, str, str]:
     """Load an agent by display name, applying the chosen retrieval backend.
 
@@ -169,6 +171,9 @@ def load_agent(
                 return None, None, str(exc), "", ""
             engine._engine.reranker = Reranker(score_fn)
             engine._engine.rerank_candidates = rerank_candidates
+        if crag_enabled:
+            from grimoire_ai.llm.inference.crag import CragFilter
+            engine._engine.crag_filter = CragFilter(passage_threshold=crag_threshold)
         default_cfg = registry.get(registry.default_key)
         n_agents = len(registry.keys())
         return (
@@ -205,6 +210,9 @@ def load_agent(
             return None, None, str(exc), cfg.checkpoint, cfg.vocab
         engine.reranker = Reranker(score_fn)
         engine.rerank_candidates = rerank_candidates
+    if crag_enabled:
+        from grimoire_ai.llm.inference.crag import CragFilter
+        engine.crag_filter = CragFilter(passage_threshold=crag_threshold)
 
     if not use_lexical and engine.corpus is not None:
         # Resolve via the registry so paths are correct regardless of cwd.
@@ -290,6 +298,8 @@ def load_engine(
     stat_block_constraint_enabled: bool = False,
     reranker: str = "None",
     rerank_candidates: int = 20,
+    crag_enabled: bool = False,
+    crag_threshold: float = 0.1,
 ) -> tuple[object, object, str]:
     """Load an ``InferenceEngine`` and a fresh ``ConversationState``.
 
@@ -747,6 +757,20 @@ def build_chat_app() -> gr.Blocks:
                          "reranker rescores and keeps the top results. Only used when a "
                          "reranker is selected above.",
                 )
+                chat_crag_enabled = gr.Checkbox(
+                    label="Enable per-passage CRAG filter",
+                    value=False,
+                    info="Drop individually low-scoring passages from the retrieved set "
+                         "before injection, independent of the 'Retrieval threshold' above "
+                         "(which only looks at the single best result). Reads the reranked "
+                         "score when a reranker is also selected.",
+                )
+                chat_crag_threshold = gr.Slider(
+                    minimum=-1.0, maximum=1.0, value=0.1, step=0.05,
+                    label="CRAG per-passage threshold",
+                    info="Minimum score an individual passage must reach to survive the "
+                         "CRAG filter. Only used when the checkbox above is enabled.",
+                )
 
             # ---- Agent selector -----------------------------------------
             _agent_names = _load_agent_names()
@@ -961,12 +985,12 @@ def build_chat_app() -> gr.Blocks:
 
         agent_load_btn.click(
             fn=load_agent,
-            inputs=[agent_dropdown, chat_encoder, chat_threshold, chat_quantize, chat_math_tool, chat_routing_threshold, chat_stat_block_constraint, chat_reranker, chat_rerank_candidates],
+            inputs=[agent_dropdown, chat_encoder, chat_threshold, chat_quantize, chat_math_tool, chat_routing_threshold, chat_stat_block_constraint, chat_reranker, chat_rerank_candidates, chat_crag_enabled, chat_crag_threshold],
             outputs=[engine_state, conv_state, agent_status, chat_ckpt, chat_vocab],
         ).then(fn=lambda: [], outputs=[chatbot])
         load_btn.click(
             fn=load_engine,
-            inputs=[chat_ckpt, chat_vocab, chat_corpus_dir, chat_encoder, chat_threshold, chat_quantize, chat_lora, chat_math_tool, chat_stat_block_constraint, chat_reranker, chat_rerank_candidates],
+            inputs=[chat_ckpt, chat_vocab, chat_corpus_dir, chat_encoder, chat_threshold, chat_quantize, chat_lora, chat_math_tool, chat_stat_block_constraint, chat_reranker, chat_rerank_candidates, chat_crag_enabled, chat_crag_threshold],
             outputs=[engine_state, conv_state, load_status, chat_quantize],
         ).then(fn=lambda: [], outputs=[chatbot])
 
