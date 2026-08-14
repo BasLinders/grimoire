@@ -14,6 +14,7 @@ touches that machinery, so it lives in ``train_app.py`` instead.
 """
 
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -150,6 +151,23 @@ def _semantic_index_dir(corpus_dirs: list[str]) -> Optional[Path]:
     return first_dir / ".semantic_index"
 
 
+def _semantic_index_dir_external(corpus_dirs: list[str], encoder_model_id: str) -> Optional[Path]:
+    """Return the persistent index directory for an *external* sentence encoder.
+
+    Distinct from ``_semantic_index_dir`` (the model's own decoder-embedding
+    index) and keyed by ``encoder_model_id`` — MiniLM and MPNet embeddings
+    aren't even the same dimensionality, so they can never share a cache
+    directory the way switching between them would otherwise silently imply.
+    """
+    if not corpus_dirs:
+        return None
+    first_dir = Path(corpus_dirs[0])
+    if not first_dir.is_dir():
+        return None
+    slug = re.sub(r"[^a-z0-9]+", "-", encoder_model_id.lower()).strip("-")
+    return first_dir / f".semantic_index_external_{slug}"
+
+
 def _index_is_fresh(
     index_dir: Path, corpus_dirs: list[str], checkpoint: str, lora_path: str = "",
 ) -> bool:
@@ -158,7 +176,10 @@ def _index_is_fresh(
     ``lora_path`` is folded into the hash so an index built from base-model
     embeddings is never silently reused once a LoRA adapter is active (or
     vice versa) — the embeddings differ depending on which weights produced
-    them.
+    them. Pass ``checkpoint=""`` (as external-encoder callers do) when the
+    index doesn't depend on a Grimoire checkpoint at all — an external
+    sentence-transformers encoder's embeddings are a function of the corpus
+    text alone, not of any checkpoint/LoRA weights.
     """
     from grimoire_ai.llm.inference.rag_index import RagIndex
     hashes = RagIndex.compute_source_hashes(
