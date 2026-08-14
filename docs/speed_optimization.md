@@ -27,6 +27,7 @@ the codebase — none of it is new capability.
 | 3 | `torch.compile(mode="max-autotune")` for pretraining | `training/trainer.py` | not started |
 | 4 | Rebalance `batch_size` vs `accumulate_steps` | trainer configs (`train.py`, `finetune.py`) | not started — needs empirical VRAM headroom check |
 | 5 | Skip no-op padding in `PaddingCollator` for fixed-length windows | `data/collator.py` | not started |
+| 6 | Scope MPS mixed precision / compile correctly instead of blanket-disabling | `device.py`, `trainer.py`, `embed_tune.py` | not started — needs Apple Silicon hardware to validate |
 
 ## 1. `EmbedTuner` has no AMP or `torch.compile` — the biggest gap
 
@@ -92,6 +93,60 @@ micro-batch (`batch_size × accumulate_steps` times per optimizer step) for
 the full length of a run. Lowest priority — worth a quick "all lengths
 equal → plain `torch.stack`" fast path once the bigger items are measured.
 
+## 6. MPS is a first-class device already — the throughput gating isn't scoped to match
+
+`select_device()`, `InferenceEngine`, `Trainer`, `EmbedTuner`, and the UI's
+device dropdown all already treat MPS as a real, selected device today
+(`torch.mps.recommended_max_memory()` even backs the UI's VRAM display in
+`ui/app.py:189`), and every op the model uses — SDPA, RMSNorm, SwiGLU,
+GQA/RoPE — is a standard PyTorch op with MPS coverage. Training and
+inference already run correctly on MPS. What's missing is throughput
+parity, and the current code doesn't attempt it in a scoped way — it hangs
+every optimization off one hardcoded `device == "cuda"` check, justified by
+one blanket comment repeated three times (`device.py:7-10`,
+[`trainer.py:342-345`](../grimoire_ai/llm/training/trainer.py#L342-L345),
+[`embed_tune.py:362-367`](../grimoire_ai/llm/training/embed_tune.py#L362-L367)):
+*"GradScaler is CUDA-only, MPS autocast is immature."*
+
+That sentence bundles three genuinely independent facts that don't all
+point the same way:
+
+- **`torch.amp.GradScaler` has no MPS backend.** True, and permanent — not
+  a maturity issue, an API gap.
+- **fp16 autocast needs `GradScaler`.** Also true, on any device — fp16's
+  narrow exponent range underflows without loss scaling.
+- **bf16 autocast needs no loss scaling at all**, on any device — same
+  exponent range as fp32, so it never underflows. This is the exact
+  reasoning behind item #2 above for CUDA, and it applies to MPS
+  *unchanged*: bf16 autocast without `GradScaler` sidesteps the one real
+  MPS blocker entirely. The "GradScaler is CUDA-only" fact is true but
+  irrelevant to a dtype that was never going to use `GradScaler` anyway.
+- **MPS autocast op coverage and `torch.compile`'s MPS backend being
+  "immature"** was a true snapshot of some earlier PyTorch version, not a
+  permanent architectural ceiling — it needs re-checking against whatever
+  PyTorch ships on the actual Mac this runs on, not assumed indefinitely
+  from a comment that predates several PyTorch releases.
+
+Scoped as three independent sub-items, in order of confidence:
+
+1. **bf16 autocast on MPS, no `GradScaler`.** Replace the CUDA-only
+   `_use_amp` boolean with a dtype-aware check: enable bf16 autocast on
+   `device_type="mps"`, keep the scaler permanently disabled (bf16 never
+   needs it, on any device). Highest confidence of the three — needs no
+   CUDA-only API at all, and bf16 autocast op coverage on MPS has been
+   stable for a while.
+2. **`torch.compile` on MPS.** Attempt it behind the same
+   `hasattr(torch, "compile")` + `suppress_errors=True` fallback pattern
+   already used for CUDA, instead of gating MPS out of compilation
+   entirely. Lower confidence — MPS compile support is real but has
+   historically had rougher edges (missing ops, silent eager fallback)
+   than CUDA's Inductor path. Needs to be tried and timed on real hardware,
+   not assumed to work or assumed to help.
+3. **cuDNN benchmark / pinned memory.** Genuinely CUDA-specific, no MPS
+   equivalent — correctly excluded today, nothing to change here.
+
+Source: [PyTorch MPS backend docs](https://docs.pytorch.org/docs/stable/notes/mps.html).
+
 ## Recommendation
 
 Tackle in status-table order: **#1 first** — contained to one file, and the
@@ -100,4 +155,8 @@ rather than tuning one that's already partially applied. **#2 and #3** are
 cheap flag flips, worth A/B testing back-to-back once #1 lands. **#4**
 needs empirical VRAM headroom testing before committing to it, so it comes
 after the flag flips. **#5** is real but marginal — clean up last, once the
-bigger wins are measured and it's clear what's left on the table.
+bigger wins are measured and it's clear what's left on the table. **#6**
+is a distinct case: implementing it is low-risk (same fallback-on-failure
+pattern already used for CUDA compile), but there is no Apple Silicon
+hardware available to run it against right now, so "implemented" and
+"verified" are different things here until it's actually run on a Mac.
