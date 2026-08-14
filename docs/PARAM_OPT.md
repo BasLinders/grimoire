@@ -220,7 +220,9 @@ Analyse the user's message text before generation and adjust generation defaults
 
 | File | Relevance |
 |------|-----------|
-| `grimoire_ai/ui/app.py` | All UI components (2,468 lines) |
+| `grimoire_ai/ui/train_app.py` | Training/eval UI components (2,294 lines) |
+| `grimoire_ai/ui/chat_app.py` | Chat UI components (970 lines) |
+| `grimoire_ai/ui/shared.py` | Helpers/theme/chrome shared by both UIs (550 lines) |
 | `grimoire_ai/llm/model/config.py` | `TransformerConfig`, preset definitions |
 | `grimoire_ai/llm/inference/sampler.py` | `GenerationConfig` dataclass |
 | `grimoire_ai/llm/inference/engine.py` | Device detection (`lines 133–134`) |

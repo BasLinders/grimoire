@@ -14,7 +14,7 @@ import pytest
 
 gr = pytest.importorskip("gradio")
 
-from grimoire_ai.ui import app  # noqa: E402
+from grimoire_ai.ui import train_app as app  # noqa: E402
 
 
 def test_toggle_mla_fields_hidden_for_gqa():

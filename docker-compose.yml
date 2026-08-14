@@ -1,0 +1,32 @@
+# Runs both Grimoire UIs from the same image built by Dockerfile: the
+# training/eval app (grimoire-ui) and the chat app (grimoire-chat-ui), each
+# on its own port so they can run side by side.
+#
+#   docker compose up --build
+#   # training/eval: http://localhost:7860
+#   # chat:          http://localhost:7861
+#
+# To run only one, start that service by name, e.g. `docker compose up chat`.
+
+services:
+  train:
+    build: .
+    image: grimoire-ai
+    command: ["grimoire-ui"]
+    ports:
+      - "7860:7860"
+    volumes:
+      - ./data:/app/data
+      - ./checkpoints:/app/checkpoints
+      - ./agents.json:/app/agents.json
+
+  chat:
+    build: .
+    image: grimoire-ai
+    command: ["grimoire-chat-ui"]
+    ports:
+      - "7861:7861"
+    volumes:
+      - ./data:/app/data
+      - ./checkpoints:/app/checkpoints
+      - ./agents.json:/app/agents.json

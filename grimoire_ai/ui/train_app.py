@@ -1,7 +1,8 @@
-"""Grimoire training UI.
+"""Grimoire training/eval UI.
 
-An eight-tab Gradio web app for managing the full Grimoire workflow without
-touching the CLI.
+A seven-tab Gradio web app for managing the full Grimoire training and
+evaluation workflow without touching the CLI. Chat lives in a separate app
+(``grimoire_ai.ui.chat_app``) — see that module's docstring for why.
 
 Tabs
 ----
@@ -32,15 +33,11 @@ Ingest
 
 Corpus
     Pre-build the semantic embedding index for a corpus directory so the
-    Chat tab loads in seconds instead of re-embedding on every session start.
-
-Chat
-    Load any checkpoint and query the model interactively via
-    ``InferenceEngine``.  Conversation history is maintained automatically.
+    chat app loads in seconds instead of re-embedding on every session start.
 
 Usage
 -----
-    python -m grimoire.ui.app
+    python -m grimoire_ai.ui
     # then open http://localhost:7860
 """
 
@@ -53,6 +50,20 @@ from pathlib import Path
 from typing import Generator, Optional
 
 import gradio as gr
+
+from grimoire_ai.ui.shared import (
+    _CSS,
+    _ENCODER_CHOICES,
+    _THEME,
+    _detect_device_profile,
+    _index_is_fresh,
+    _refresh_ckpts_all,
+    _refresh_corpus_dirs,
+    _scan_files,
+    _scan_subdirs,
+    _semantic_index_dir,
+    add_header,
+)
 
 # Per-tab stop events. Each tab can have more than one live run if an older
 # run's background thread is still alive when a new one starts (e.g. after a
@@ -87,38 +98,6 @@ def _signal_stop(key: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _list_checkpoints(checkpoint_dir: str) -> list[str]:
-    """Return sorted list of .pt files in ``checkpoint_dir``."""
-    p = Path(checkpoint_dir)
-    if not p.exists():
-        return []
-    return sorted(str(f) for f in p.glob("*.pt"))
-
-
-def _scan_files(base_dir: str, pattern: str, recursive: bool = False) -> list[str]:
-    """Return files matching pattern under base_dir, sorted newest-first."""
-    p = Path(base_dir)
-    if not p.exists():
-        return []
-    matches = list(p.rglob(pattern) if recursive else p.glob(pattern))
-    matches.sort(key=lambda f: f.stat().st_mtime if f.exists() else 0, reverse=True)
-    return [str(f) for f in matches]
-
-
-def _scan_subdirs(base_dir: str) -> list[str]:
-    """Return immediate subdirectories of base_dir (hidden dirs excluded), newest-first."""
-    p = Path(base_dir)
-    if not p.exists():
-        return []
-    dirs = [d for d in p.iterdir() if d.is_dir() and not d.name.startswith(".")]
-    dirs.sort(key=lambda d: d.stat().st_mtime if d.exists() else 0, reverse=True)
-    return [str(d) + "/" for d in dirs]
-
-
-# ---------------------------------------------------------------------------
 # Dropdown refresh helpers
 # ---------------------------------------------------------------------------
 # The choice lists above are scanned once at app startup so dropdowns are
@@ -128,20 +107,8 @@ def _scan_subdirs(base_dir: str) -> list[str]:
 # the filesystem on demand; each is wired to its tab's `.select()` event so
 # switching into a tab always shows what's actually on disk right now.
 
-def _refresh_ckpts_all():
-    return gr.update(choices=_scan_files("checkpoints/", "*.pt", recursive=True))
-
-
 def _refresh_ckpts_pretrain():
     return gr.update(choices=_scan_files("checkpoints/pretrain/", "*.pt"))
-
-
-def _refresh_lora_choices():
-    return gr.update(choices=_scan_files("checkpoints/", "*.lora", recursive=True))
-
-
-def _refresh_corpus_dirs():
-    return gr.update(choices=_scan_subdirs("data/corpus/"))
 
 
 def _refresh_jsonl_choices():
@@ -157,76 +124,6 @@ def _fmt_elapsed(seconds: float) -> str:
     if m:
         return f"{m}m {s:02d}s"
     return f"{s}s"
-
-
-def _detect_device_profile() -> dict:
-    """Probe the available compute device and derive safe training/inference defaults.
-
-    Returns a dict with keys:
-      device    – "cuda", "mps", or "cpu"
-      vram_gb   – total GPU/unified memory in GiB (0.0 on CPU)
-      pt_batch  – recommended pre-train batch size
-      pt_accum  – recommended pre-train gradient accumulation steps
-      ft_batch  – recommended fine-tune batch size
-      ft_accum  – recommended fine-tune gradient accumulation steps
-      grad_ckpt – whether to suggest gradient checkpointing
-      quantize  – whether to suggest int8 quantization (CPU inference only)
-    """
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            device = "cuda"
-            vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
-        elif torch.backends.mps.is_available():
-            device = "mps"
-            # Apple Silicon uses unified memory — there's no separate VRAM
-            # pool to query. ``recommended_max_memory`` (torch >= 2.3) is the
-            # closest available signal; fall back to total system RAM (the
-            # unified pool the GPU shares) via the POSIX sysconf API when the
-            # torch API isn't present, then to a conservative neutral default.
-            try:
-                vram_gb = torch.mps.recommended_max_memory() / (1024 ** 3)
-            except Exception:
-                try:
-                    import os
-                    vram_gb = (
-                        os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-                    ) / (1024 ** 3)
-                except Exception:
-                    vram_gb = 8.0
-        else:
-            return dict(device="cpu", vram_gb=0.0,
-                        pt_batch=1, pt_accum=32,
-                        ft_batch=1, ft_accum=16,
-                        grad_ckpt=False, quantize=True)
-    except Exception:
-        # torch unavailable or device probe failed — return neutral defaults.
-        return dict(device="cpu", vram_gb=0.0,
-                    pt_batch=4, pt_accum=8,
-                    ft_batch=4, ft_accum=4,
-                    grad_ckpt=False, quantize=False)
-
-    # Batch sizing: target effective batch = 32 for pre-train, 16 for fine-tune.
-    if vram_gb < 4:
-        pt_batch, ft_batch = 1, 1
-    elif vram_gb < 8:
-        pt_batch, ft_batch = 2, 2
-    elif vram_gb < 16:
-        pt_batch, ft_batch = 4, 4
-    else:
-        pt_batch, ft_batch = 8, 8
-
-    return dict(
-        device=device,
-        vram_gb=vram_gb,
-        pt_batch=pt_batch,
-        pt_accum=max(1, 32 // pt_batch),
-        ft_batch=ft_batch,
-        ft_accum=max(1, 16 // ft_batch),
-        grad_ckpt=vram_gb < 16,
-        quantize=False,
-    )
 
 
 def _stream_training(
@@ -764,14 +661,6 @@ def _wrap_with_buttons(gen: Generator) -> Generator[tuple, None, None]:
 
 _WATCHDOG_INTERVAL_S = 30.0
 
-#: Retrieval embedding backend choices, shared by the Chat and Evaluate tabs.
-_ENCODER_CHOICES = [
-    "Model (decoder embeddings)",
-    "MiniLM (all-MiniLM-L6-v2)",
-    "MPNet (all-mpnet-base-v2)",
-    "Lexical (Jaccard)",
-]
-
 
 def _stream_task(
     task_fn, stop_key: Optional[str] = None, stop_event: Optional[threading.Event] = None,
@@ -976,14 +865,6 @@ def run_build_index(
 def stop_build_index() -> None:
     """Signal all running index build tasks to stop."""
     _signal_stop("corpus")
-
-
-def _toggle_theme(current: str) -> tuple[str, str]:
-    """Flip dark/light theme state and return the new button label."""
-    new = "light" if current == "dark" else "dark"
-    # Label always shows the OTHER mode (what the next click will do).
-    label = "☀ Light mode" if new == "dark" else "🌙 Dark mode"
-    return label, new
 
 
 def _toggle_finetune_mode(mode: str):
@@ -1223,448 +1104,6 @@ def _suggest_ft_steps_from_data(data_path: str, ft_batch: int, ft_accum: int, ft
     step_updates = _derive_ft_step_params(steps)
 
     return [gr.update(value=steps), *step_updates]
-
-
-# ---------------------------------------------------------------------------
-# Chat tab logic
-# ---------------------------------------------------------------------------
-
-_AGENTS_JSON = "agents.json"
-
-
-def _semantic_index_dir(corpus_dirs: list[str]) -> Optional[Path]:
-    """Return the .semantic_index directory path for this corpus, or None."""
-    if not corpus_dirs:
-        return None
-    first_dir = Path(corpus_dirs[0])
-    if not first_dir.is_dir():
-        return None
-    return first_dir / ".semantic_index"
-
-
-def _index_is_fresh(
-    index_dir: Path, corpus_dirs: list[str], checkpoint: str, lora_path: str = "",
-) -> bool:
-    """Return True when the on-disk RagIndex is up to date (content-hash based).
-
-    ``lora_path`` is folded into the hash so an index built from base-model
-    embeddings is never silently reused once a LoRA adapter is active (or
-    vice versa) — the embeddings differ depending on which weights produced
-    them.
-    """
-    from grimoire_ai.llm.inference.rag_index import RagIndex
-    hashes = RagIndex.compute_source_hashes(
-        corpus_dirs, checkpoint, lora_path=lora_path or None, cache_dir=index_dir,
-    )
-    return not RagIndex.is_stale(index_dir, hashes)
-
-
-def _load_agent_names() -> list[str]:
-    """Return agent choices for the dropdown.
-
-    Prepends 'Auto-route' when the registry contains agents, so the router
-    option is always at the top.
-    """
-    try:
-        from grimoire_ai.agents.registry import AgentRegistry
-        names = AgentRegistry(_AGENTS_JSON).display_names()
-        return (["Auto-route"] + names) if names else []
-    except (FileNotFoundError, ValueError):
-        return []
-
-
-def _preview_agent_config(display_name: str) -> tuple:
-    """Pre-fill generation sliders and path fields when an agent is selected.
-
-    Returns updates for:
-      chat_routing_threshold, chat_temp, chat_top_k, chat_top_p,
-      chat_tokens, chat_corpus_dir, chat_lora, chat_ckpt, chat_adaptive_temp
-    """
-    _no_change = (
-        gr.update(), gr.update(), gr.update(), gr.update(),
-        gr.update(), gr.update(), gr.update(), gr.update(),
-    )
-
-    is_auto_route = display_name == "Auto-route"
-
-    # For Auto-route there is no single agent config to preview.
-    if is_auto_route or not display_name:
-        return (gr.update(visible=is_auto_route),) + _no_change
-
-    try:
-        from grimoire_ai.agents.registry import AgentRegistry
-        cfg = AgentRegistry(_AGENTS_JSON).get_by_display_name(display_name)
-    except Exception:
-        return (gr.update(visible=False),) + _no_change
-
-    gc = cfg.gen_config  # may be empty dict
-
-    def _from_gc(key):
-        return gr.update(value=gc[key]) if key in gc else gr.update()
-
-    return (
-        gr.update(visible=False),                                   # chat_routing_threshold
-        _from_gc("temperature"),                                    # chat_temp
-        _from_gc("top_k"),                                         # chat_top_k
-        _from_gc("top_p"),                                         # chat_top_p
-        _from_gc("max_new_tokens"),                                 # chat_tokens
-        gr.update(value=cfg.corpus_dirs[0]) if cfg.corpus_dirs     # chat_corpus_dir
-            else gr.update(),
-        gr.update(value=cfg.lora_path or ""),                      # chat_lora
-        gr.update(value=cfg.checkpoint),                           # chat_ckpt
-        _from_gc("adaptive_temperature"),                           # chat_adaptive_temp
-    )
-
-
-def load_agent(
-    display_name: str,
-    encoder: str = "Model (decoder embeddings)",
-    retrieval_threshold: Optional[float] = None,
-    quantize: bool = False,
-    math_tool_enabled: bool = False,
-    routing_threshold: float = 0.05,
-    stat_block_constraint_enabled: bool = False,
-) -> tuple[object, object, str, str, str]:
-    """Load an agent by display name, applying the chosen retrieval backend.
-
-    When *display_name* is ``"Auto-route"`` a ``MultiAgentEngine`` is built
-    that scores each query against every agent's corpus and routes to the
-    best match.
-
-    Returns (engine, conv_state, status, checkpoint_path, vocab_path).
-    The last two values are passed back so the manual path fields reflect what
-    was actually loaded.
-    """
-    from grimoire_ai.agents.registry import AgentRegistry
-    from grimoire_ai.llm.inference.semantic import EXTERNAL_ENCODERS, SemanticRetriever, make_external_embed_fn
-    from grimoire_ai.state.conversation import ConversationState
-
-    registry = AgentRegistry(_AGENTS_JSON)
-
-    # ---- Auto-route: build MultiAgentEngine --------------------------------
-    if display_name == "Auto-route":
-        try:
-            engine = registry.build_multi_agent_engine(threshold=routing_threshold, quantize=quantize)
-        except Exception as exc:
-            return None, None, f"Failed to build router: {exc}", "", ""
-        engine._engine.retrieval_threshold = retrieval_threshold
-        if math_tool_enabled:
-            from grimoire_ai.tools.math_tool import MathTool
-            engine._engine.math_tool = MathTool()
-        if stat_block_constraint_enabled:
-            from grimoire_ai.llm.inference.constrained_decoding import StatBlockConstraint
-            engine._engine.stat_block_constraint = StatBlockConstraint(engine._engine.tokenizer)
-        default_cfg = registry.get(registry.default_key)
-        n_agents = len(registry.keys())
-        return (
-            engine,
-            ConversationState(),
-            f"Auto-routing across {n_agents} agent(s). Default: '{default_cfg.display_name}'.",
-            default_cfg.checkpoint,
-            default_cfg.vocab,
-        )
-
-    cfg = registry.get_by_display_name(display_name)
-
-    use_lexical  = encoder == "Lexical (Jaccard)"
-    use_external = encoder in EXTERNAL_ENCODERS
-
-    # build_engine always loads the lexical corpus from corpus_dirs.
-    # For semantic / external we replace it afterwards.
-    engine = registry.build_engine(cfg.key, quantize=quantize)
-    engine.retrieval_threshold = retrieval_threshold
-    if math_tool_enabled:
-        from grimoire_ai.tools.math_tool import MathTool
-        engine.math_tool = MathTool()
-    if stat_block_constraint_enabled:
-        from grimoire_ai.llm.inference.constrained_decoding import StatBlockConstraint
-        engine.stat_block_constraint = StatBlockConstraint(engine.tokenizer)
-
-    if not use_lexical and engine.corpus is not None:
-        # Resolve via the registry so paths are correct regardless of cwd.
-        resolved_dirs = [str(registry._resolve(d)) for d in cfg.corpus_dirs or []]
-        documents: list[tuple[str, str]] = []
-        for resolved_dir in resolved_dirs:
-            for txt_file in sorted(Path(resolved_dir).glob("*.txt")):
-                documents.append((txt_file.read_text(encoding="utf-8"), txt_file.stem))
-
-        if documents:
-            if use_external:
-                try:
-                    embed_fn = make_external_embed_fn(EXTERNAL_ENCODERS[encoder])
-                except ImportError as exc:
-                    return None, None, str(exc), cfg.checkpoint, cfg.vocab
-                retriever = SemanticRetriever(embed_fn=embed_fn)
-                for text, source in documents:
-                    retriever.add_text(text, source=source)
-                retriever.index()
-                engine.corpus = retriever
-            else:
-                resolved_ckpt = str(registry._resolve(cfg.checkpoint))
-                resolved_lora = str(registry._resolve(cfg.lora_path)) if cfg.lora_path else ""
-                index_dir = _semantic_index_dir(resolved_dirs)
-                loaded_ok = False
-                if index_dir and _index_is_fresh(index_dir, resolved_dirs, resolved_ckpt, resolved_lora):
-                    try:
-                        engine.corpus = SemanticRetriever.from_index(index_dir, embed_fn=engine.embed)
-                        loaded_ok = engine.corpus.size > 0
-                    except Exception:
-                        pass
-                if not loaded_ok:
-                    from grimoire_ai.llm.inference.rag_index import RagIndex
-                    retriever = engine.build_semantic_corpus(documents)
-                    if index_dir:
-                        try:
-                            hashes = RagIndex.compute_source_hashes(
-                                resolved_dirs, resolved_ckpt, lora_path=resolved_lora or None,
-                                cache_dir=index_dir,
-                            )
-                            retriever.save_index(index_dir, source_hashes=hashes)
-                        except Exception:
-                            pass
-
-    state = ConversationState()
-    return (
-        engine,
-        state,
-        f"Agent '{cfg.display_name}' loaded ({encoder}).  {cfg.description}",
-        cfg.checkpoint,
-        cfg.vocab,
-    )
-
-
-def load_engine(
-    checkpoint_path: str,
-    vocab_path: str,
-    corpus_dir: str = "",
-    encoder: str = "Model (decoder embeddings)",
-    retrieval_threshold: Optional[float] = None,
-    quantize: bool = False,
-    lora_path: str = "",
-    math_tool_enabled: bool = False,
-    stat_block_constraint_enabled: bool = False,
-) -> tuple[object, object, str]:
-    """Load an ``InferenceEngine`` and a fresh ``ConversationState``.
-
-    When ``corpus_dir`` points at a directory of ``.txt`` files, the engine is
-    grounded in that corpus using the retrieval backend selected by ``encoder``:
-
-    - ``"Model (decoder embeddings)"``: the trained transformer's own
-      mean-pooled hidden states — the native hybrid path.
-    - ``"MiniLM (all-MiniLM-L6-v2)"`` / ``"MPNet (all-mpnet-base-v2)"``:
-      a dedicated sentence-transformers encoder.  Downloads ~90 MB on first
-      use; requires ``pip install -e ".[encoder]"``.
-    - ``"Lexical (Jaccard)"``: stemmed n-gram index with Jaccard scoring —
-      no neural embedding, CPU-only, instant startup.
-
-    When ``corpus_dir`` is blank the engine runs ungrounded.
-    """
-    from pathlib import Path
-
-    from grimoire_ai.corpus.corpus import GrimoireCorpus
-    from grimoire_ai.llm.inference.engine import InferenceEngine
-    from grimoire_ai.llm.inference.semantic import EXTERNAL_ENCODERS, SemanticRetriever, make_external_embed_fn
-    from grimoire_ai.state.conversation import ConversationState
-
-    checkpoint_path = (checkpoint_path or "").strip()
-    if not checkpoint_path:
-        return None, None, "No checkpoint path specified.", gr.update()
-
-    corpus_dir = (corpus_dir or "").strip()
-    use_lexical = encoder == "Lexical (Jaccard)"
-    use_external = encoder in EXTERNAL_ENCODERS
-
-    documents: list[tuple[str, str]] = []
-    lexical_corpus = None
-    status_suffix = ""
-
-    if corpus_dir:
-        path = Path(corpus_dir)
-        if not path.is_dir():
-            return None, None, f"Corpus directory not found: {corpus_dir}", gr.update()
-        for txt_file in sorted(path.glob("*.txt")):
-            text = txt_file.read_text(encoding="utf-8")
-            documents.append((text, txt_file.stem))
-            if use_lexical:
-                if lexical_corpus is None:
-                    lexical_corpus = GrimoireCorpus()
-                lexical_corpus.add_text(text, source=txt_file.stem)
-        if not documents:
-            return None, None, f"No .txt files found in {corpus_dir}", gr.update()
-
-    math_tool = None
-    if math_tool_enabled:
-        from grimoire_ai.tools.math_tool import MathTool
-        math_tool = MathTool()
-
-    lora_path = (lora_path or "").strip()
-    # LoRA adapters are incompatible with int8-quantized engines; silently
-    # disable quantization when a LoRA path is provided so load_lora() succeeds.
-    if lora_path:
-        quantize = False
-
-    engine = InferenceEngine(
-        checkpoint_path=checkpoint_path,
-        tokenizer_path=vocab_path,
-        corpus=lexical_corpus,
-        retrieval_threshold=retrieval_threshold if corpus_dir else None,
-        quantize=quantize,
-        math_tool=math_tool,
-    )
-    if stat_block_constraint_enabled:
-        from grimoire_ai.llm.inference.constrained_decoding import StatBlockConstraint
-        engine.stat_block_constraint = StatBlockConstraint(engine.tokenizer)
-
-    if lora_path:
-        try:
-            engine.load_lora(lora_path)
-        except Exception as exc:
-            return None, None, f"Failed to load LoRA adapter: {exc}", gr.update()
-
-    if corpus_dir and not use_lexical:
-        if use_external:
-            try:
-                embed_fn = make_external_embed_fn(EXTERNAL_ENCODERS[encoder])
-            except ImportError as e:
-                return None, None, str(e), gr.update()
-            retriever = SemanticRetriever(embed_fn=embed_fn)
-            for text, source in documents:
-                retriever.add_text(text, source=source)
-            retriever.index()
-            engine.corpus = retriever
-            engine.retrieval_threshold = retrieval_threshold
-            status_suffix = (
-                f" | {encoder}: {retriever.size} passage(s) "
-                f"from {len(documents)} file(s)"
-            )
-        else:
-            # Default: model's own decoder embeddings — use persistent index when fresh.
-            index_dir = _semantic_index_dir([corpus_dir])
-            loaded_ok = False
-            if index_dir and _index_is_fresh(index_dir, [corpus_dir], checkpoint_path, lora_path):
-                try:
-                    retriever = SemanticRetriever.from_index(index_dir, embed_fn=engine.embed)
-                    engine.corpus = retriever
-                    engine.retrieval_threshold = retrieval_threshold
-                    loaded_ok = retriever.size > 0
-                except Exception:
-                    pass
-            if not loaded_ok:
-                from grimoire_ai.llm.inference.rag_index import RagIndex
-                retriever = engine.build_semantic_corpus(documents)
-                if index_dir:
-                    try:
-                        hashes = RagIndex.compute_source_hashes(
-                            [corpus_dir], checkpoint_path, lora_path=lora_path or None,
-                            cache_dir=index_dir,
-                        )
-                        retriever.save_index(index_dir, source_hashes=hashes)
-                    except Exception:
-                        pass
-            else:
-                retriever = engine.corpus
-            status_suffix = (
-                f" | model embeddings: {retriever.size} passage(s) "
-                f"from {len(documents)} file(s)"
-            )
-    elif corpus_dir:
-        status_suffix = f" | lexical (Jaccard): {len(documents)} file(s)"
-
-    if lora_path:
-        status_suffix += f" | LoRA adapter: {lora_path}"
-
-    state = ConversationState()
-    return engine, state, f"Model loaded from {checkpoint_path}{status_suffix}", quantize
-
-
-_FACTUAL_PREFIXES = ("what", "how many", "list", "when", "define")
-_CREATIVE_PREFIXES = ("write", "create", "design", "imagine")
-
-
-def _starts_with_word(text: str, phrase: str) -> bool:
-    """Return True when *text* starts with *phrase* as a whole word/phrase.
-
-    Prevents prefix false-positives: "list" must not match "listen", "listless";
-    "define" must not match "definitely"; "what" must not match "whatever".
-    """
-    if not text.startswith(phrase):
-        return False
-    rest = text[len(phrase):]
-    return not rest or not rest[0].isalpha()
-
-
-def _query_gen_hints(query: str, temperature: float, max_new_tokens: int, adaptive_temperature: bool):
-    """Adjust temperature and max_new_tokens based on simple query heuristics.
-
-    Temperature hints (skipped when adaptive_temperature is True):
-      - Factual opener  → cap temperature at 0.5   (min — don't raise it if already lower)
-      - Creative opener → floor temperature at 0.9  (max — don't lower it if already higher)
-
-    Token-budget hints (word-count approximation for speed):
-      - Short query < 10 words  → floor max_new_tokens at 256 (ensure room to answer)
-      - Long query  > 50 words  → cap max_new_tokens at 128   (concise focused answer)
-    """
-    query = (query or "")
-    q = query.strip().lower()
-    word_count = len(q.split())
-
-    if not adaptive_temperature:
-        if any(_starts_with_word(q, p) for p in _FACTUAL_PREFIXES):
-            temperature = min(temperature, 0.5)
-        elif any(_starts_with_word(q, p) for p in _CREATIVE_PREFIXES):
-            temperature = max(temperature, 0.9)
-
-    if word_count < 10:
-        max_new_tokens = max(max_new_tokens, 256)
-    elif word_count > 50:
-        max_new_tokens = min(max_new_tokens, 128)
-
-    return temperature, max_new_tokens
-
-
-def chat(
-    query: str,
-    engine_state,
-    conv_state,
-    temperature: float,
-    top_k: int,
-    top_p: float,
-    max_new_tokens: int,
-    adaptive_temperature: bool = False,
-    loop_guard_enabled: bool = False,
-) -> Generator[tuple[str, object, str], None, None]:
-    """Stream a response token-by-token and update the conversation state."""
-    if engine_state is None:
-        yield "No model loaded. Use the Load button first.", conv_state, ""
-        return
-    from grimoire_ai.llm.inference.sampler import GenerationConfig
-    from grimoire_ai.state.conversation import ConversationState
-    temperature, max_new_tokens = _query_gen_hints(
-        query, temperature, max_new_tokens, adaptive_temperature
-    )
-    gen_config = GenerationConfig(
-        max_new_tokens=max_new_tokens,
-        temperature=temperature,
-        top_k=top_k,
-        top_p=top_p,
-        adaptive_temperature=adaptive_temperature,
-        # RepetitionLoopGuard defaults (max_repeats=3, max_period=4) — see
-        # constrained_decoding.py. 0 disables; the checkbox only offers an
-        # on/off toggle since these two knobs are tightly coupled and the
-        # class's own defaults are already sensible for general chat.
-        loop_guard_max_repeats=3 if loop_guard_enabled else 0,
-    )
-    if conv_state is None:
-        conv_state = ConversationState()
-    last_partial = ""
-    for partial in engine_state.chat_stream(query, conv_state, gen_config=gen_config):
-        last_partial = partial
-        yield partial, conv_state, gr.update()  # preserve previous routing label during streaming
-    routing_info = ""
-    if hasattr(engine_state, "last_route") and engine_state.last_route[0]:
-        key, score = engine_state.last_route
-        routing_info = f"↳ {key}  ·  {score:.3f}"
-    yield last_partial, conv_state, routing_info
 
 
 # ---------------------------------------------------------------------------
@@ -1953,393 +1392,15 @@ def run_scale_calc(
     return "\n".join(lines)
 
 
-def clear_conversation(conv_state) -> tuple[object, str]:
-    """Reset the conversation history."""
-    from grimoire_ai.state.conversation import ConversationState
-    if conv_state is not None:
-        conv_state.clear()
-    else:
-        conv_state = ConversationState()
-    return conv_state, ""
-
-
-# ---------------------------------------------------------------------------
-# Dataset builder helpers
-# ---------------------------------------------------------------------------
-
-def _dataset_preview(pairs: list[dict]) -> str:
-    """Render the last three saved pairs as readable text."""
-    if not pairs:
-        return ""
-    lines = []
-    for p in pairs[-3:]:
-        lines.append(f"prompt:   {p['prompt']}")
-        lines.append(f"response: {p['response']}")
-        lines.append("")
-    return "\n".join(lines).rstrip()
-
-
-def stage_exchange(query: str, response: str) -> tuple[str, str]:
-    """Copy the current chat exchange into the editable staging fields."""
-    return query.strip(), response.strip()
-
-
-def add_to_dataset(
-    prompt: str,
-    response: str,
-    pairs: list[dict],
-) -> tuple[list[dict], str, str, str, str]:
-    """Append the staged pair to the dataset and clear the staging fields."""
-    prompt = prompt.strip()
-    response = response.strip()
-    if not prompt or not response:
-        status = "Both prompt and response must be non-empty."
-        return pairs, _dataset_label(pairs), _dataset_preview(pairs), prompt, response
-    pairs = pairs + [{"prompt": prompt, "response": response}]
-    return pairs, _dataset_label(pairs), _dataset_preview(pairs), "", ""
-
-
-def remove_last_pair(pairs: list[dict]) -> tuple[list[dict], str, str]:
-    """Remove the most recently added pair."""
-    pairs = pairs[:-1] if pairs else pairs
-    return pairs, _dataset_label(pairs), _dataset_preview(pairs)
-
-
-def load_dataset(path: str) -> tuple[list[dict], str, str, str]:
-    """Load an existing JSONL file into session state."""
-    path = path.strip() or "data/finetune/conversations.jsonl"
-    p = Path(path)
-    if not p.exists():
-        return [], _dataset_label([]), "", f"File not found: {path}"
-    pairs = []
-    skipped = 0
-    with p.open(encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-                if "prompt" in obj and "response" in obj:
-                    pairs.append({"prompt": obj["prompt"], "response": obj["response"]})
-                else:
-                    skipped += 1
-            except json.JSONDecodeError:
-                skipped += 1
-    msg = f"Loaded {len(pairs)} pair(s) from {p}"
-    if skipped:
-        msg += f" ({skipped} invalid line(s) skipped)"
-    return pairs, _dataset_label(pairs), _dataset_preview(pairs), msg
-
-
-def export_dataset(pairs: list[dict], path: str, overwrite: bool) -> str:
-    """Append (or overwrite) pairs to a JSONL file."""
-    if not pairs:
-        return "Nothing to export — add some pairs first."
-    path = path.strip() or "data/finetune/conversations.jsonl"
-    out = Path(path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    mode = "w" if overwrite else "a"
-    with out.open(mode, encoding="utf-8") as f:
-        for pair in pairs:
-            f.write(json.dumps(pair, ensure_ascii=False) + "\n")
-    action = "Overwrote" if overwrite else "Appended"
-    return f"{action} {len(pairs)} pair(s) to {out}"
-
-
-def clear_dataset() -> tuple[list, str, str]:
-    """Wipe all saved pairs."""
-    return [], _dataset_label([]), ""
-
-
-def _dataset_label(pairs: list[dict]) -> str:
-    n = len(pairs)
-    return f"{n} pair{'s' if n != 1 else ''} saved"
-
-
 # ---------------------------------------------------------------------------
 # Layout
 # ---------------------------------------------------------------------------
 
-_THEME = gr.themes.Base(
-    primary_hue=gr.themes.colors.amber,
-    secondary_hue=gr.themes.colors.violet,
-    neutral_hue=gr.themes.colors.slate,
-    font=[gr.themes.GoogleFont("Cinzel"), gr.themes.GoogleFont("Raleway"), "sans-serif"],
-    font_mono=[gr.themes.GoogleFont("Fira Code"), "monospace"],
-).set(
-    # Backgrounds
-    body_background_fill="#0d0d14",
-    body_background_fill_dark="#0d0d14",
-    block_background_fill="#16161f",
-    block_background_fill_dark="#16161f",
-    input_background_fill="#1e1e2e",
-    input_background_fill_dark="#1e1e2e",
-    # Borders
-    block_border_color="#2e2e45",
-    block_border_color_dark="#2e2e45",
-    input_border_color="#2e2e45",
-    input_border_color_dark="#2e2e45",
-    block_border_width="1px",
-    # Text
-    body_text_color="#c8c8d8",
-    body_text_color_dark="#c8c8d8",
-    block_title_text_color="#e8c97a",
-    block_title_text_color_dark="#e8c97a",
-    block_label_text_color="#9999bb",
-    block_label_text_color_dark="#9999bb",
-    input_placeholder_color="#8888aa",      # 4.8:1 on input bg #1e1e2e (WCAG AA ✓)
-    input_placeholder_color_dark="#8888aa", # prevents Gradio dark block from overriding
-    code_background_fill="#424268",         # purple chip, distinct from block bg; text 5.7:1 ✓
-    code_background_fill_dark="#424268",
-    # Buttons
-    button_primary_background_fill="#b8860b",
-    button_primary_background_fill_dark="#b8860b",
-    button_primary_background_fill_hover="#d4a017",
-    button_primary_background_fill_hover_dark="#d4a017",
-    button_primary_text_color="#0d0d14",
-    button_primary_text_color_dark="#0d0d14",
-    button_secondary_background_fill="#1e1e2e",
-    button_secondary_background_fill_dark="#1e1e2e",
-    button_secondary_background_fill_hover="#2e2e45",
-    button_secondary_background_fill_hover_dark="#2e2e45",
-    button_secondary_text_color="#c8c8d8",
-    button_secondary_text_color_dark="#c8c8d8",
-    button_secondary_border_color="#2e2e45",
-    button_secondary_border_color_dark="#2e2e45",
-    # Shadows and radius
-    block_shadow="0 0 18px 2px rgba(184,134,11,0.08)",
-    block_radius="8px",
-    input_radius="6px",
-    button_large_radius="6px",
-    button_small_radius="4px",
-)
-
-_CSS = """
-/* ── Dark mode defaults ───────────────────────────────────────────────── */
-
-/* Header row */
-.grimoire-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 12px 0 4px 0;
-    border-bottom: 1px solid #2e2e45;
-    margin-bottom: 12px;
-}
-.grimoire-header h1 {
-    font-family: 'Cinzel', serif;
-    font-size: 2rem;
-    font-weight: 700;
-    background: linear-gradient(90deg, #e8c97a 0%, #fffbe6 60%, #b8860b 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-    margin: 0;
-    letter-spacing: 0.08em;
-}
-/* Theme toggle button */
-#theme-btn {
-    background: transparent !important;
-    border: 1px solid #2e2e45 !important;
-    color: #9999bb !important;
-    font-size: 0.78rem !important;
-}
-#theme-btn:hover {
-    border-color: #b8860b !important;
-    color: #e8c97a !important;
-}
-/* Tabs */
-.tab-nav button {
-    font-family: 'Cinzel', serif !important;
-    font-size: 0.85rem !important;
-    letter-spacing: 0.05em !important;
-    color: #aaaacc !important;
-    border-bottom: 2px solid transparent !important;
-    transition: color 0.2s, border-color 0.2s;
-}
-.tab-nav button:hover {
-    color: #c8a84b !important;
-}
-.tab-nav button.selected {
-    color: #e8c97a !important;
-    border-bottom: 2px solid #b8860b !important;
-}
-.tab-nav button:hover {
-    color: #c8a84b !important;
-}
-/* Scrollable log boxes — green only in dark mode; light mode overridden by _LIGHT_CSS */
-:root:not([data-theme="light"]) textarea {
-    color: #a8e8a8 !important;
-}
-textarea {
-    font-family: 'Fira Code', monospace !important;
-    font-size: 0.82rem !important;
-    line-height: 1.5 !important;
-}
-/* Placeholder text — dark mode */
-input::placeholder,
-textarea::placeholder {
-    color: #8888aa !important;  /* 4.8:1 on #1e1e2e (WCAG AA ✓) */
-    opacity: 1 !important;      /* Firefox reduces opacity by default */
-}
-/* Placeholder text — light mode. Uses attribute selector (higher specificity
-   than the rule above) so it wins without depending on JS injection order. */
-[data-theme="light"] input::placeholder,
-[data-theme="light"] textarea::placeholder {
-    color: #5c5c70 !important;  /* 5.4:1 on #eeeae0 (WCAG AA ✓) */
-    opacity: 1 !important;
-}
-/* Primary CTA button text — explicit override so Gradio dark block can't revert to white */
-button.primary {
-    color: #0d0d14 !important;  /* 5.9:1 on amber #b8860b (WCAG AA ✓) */
-}
-/* Code highlight background — var() is updated by the JS toggle */
-code, .code {
-    background-color: var(--code-background-fill, #424268) !important;
-    padding: 0.1em 0.35em !important;
-    border-radius: 3px !important;
-}
-/* Sliders */
-input[type=range]::-webkit-slider-thumb {
-    background: #b8860b;
-}
-/* Stop buttons — #b08080 on #0d0d14 = 5.8:1 contrast (WCAG AA ✓) */
-.stop-btn {
-    background: transparent !important;
-    border: 1px solid #4a2e2e !important;
-    color: #b08080 !important;
-}
-.stop-btn:hover:not(:disabled) {
-    border-color: #cc4444 !important;
-    color: #ee6666 !important;
-}
-.stop-btn:disabled {
-    opacity: 0.35 !important;
-    cursor: not-allowed !important;
-}
-/* Shutdown button — #b08080 on #0d0d14 = 5.8:1 (WCAG AA ✓) */
-#shutdown-btn {
-    background: transparent !important;
-    border: 1px solid #3a2a2a !important;
-    color: #b08080 !important;
-    font-size: 0.78rem !important;
-}
-#shutdown-btn:hover {
-    border-color: #cc4444 !important;
-    color: #ee6666 !important;
-}
-/* Button press feedback — scale + brightness dip gives a clear 'clicked' feel.
-   Disabled buttons are excluded so they don't react at all. */
-button:not(:disabled) {
-    transition: transform 0.08s ease, filter 0.08s ease !important;
-}
-button:not(:disabled):active {
-    transform: scale(0.95) !important;
-    filter: brightness(0.80) !important;
-}
-/* Dropdown options list — dark mode fix.
-   Gradio renders .options as a floating layer outside the block; it does not
-   inherit the theme's input_background_fill, so it defaults to near-white
-   and makes text invisible against the dark body.  Override explicitly. */
-:root:not([data-theme="light"]) .options {
-    background: #1e1e2e !important;
-    border: 1px solid #2e2e45 !important;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.6) !important;
-}
-:root:not([data-theme="light"]) .options .item {
-    color: #c8c8d8 !important;
-    background: transparent !important;
-}
-:root:not([data-theme="light"]) .options .item:hover,
-:root:not([data-theme="light"]) .options .item.selected {
-    background: #2e2e45 !important;
-    color: #e8c97a !important;
-}
-:root:not([data-theme="light"]) .options .item.active {
-    background: #3a3a55 !important;
-    color: #fffbe6 !important;
-}
-"""
-
-
-# Light-mode CSS injected at runtime via JS — avoids Gradio specificity battles.
-# All rules use !important so they beat Gradio's compiled theme stylesheet.
-_LIGHT_CSS = (
-    ".grimoire-header{border-bottom-color:#c8bfa8!important}"
-    ".grimoire-header h1{background:linear-gradient(90deg,#6a4e00 0%,#b8860b 60%,#4a3000 100%)!important;"
-    "-webkit-background-clip:text!important;-webkit-text-fill-color:transparent!important;"
-    "background-clip:text!important}"
-    "#theme-btn{border-color:#c8bfa8!important;color:#4a4a6a!important}"
-    "#theme-btn:hover{border-color:#b8860b!important;color:#6a4e00!important}"
-    ".tab-nav button{color:#4a4a6a!important}"
-    ".tab-nav button.selected{color:#6a4e00!important;border-bottom:2px solid #b8860b!important}"
-    ".tab-nav button:hover{color:#7a5800!important}"  # 5.9:1 on #f5f3ee (WCAG AA ✓)
-    "textarea{color:#1a1a2e!important}"      # dark navy, no green in light mode; 15.4:1 ✓
-    # Primary CTA button text — #0d0d14 on #b8860b = 5.9:1 ✓
-    "button.primary{color:#0d0d14!important}"
-    # Code highlight — #1a1a2e on #dcd8cc = 12.0:1 ✓; var() also updated via JS vars
-    "code,.code{background-color:#dcd8cc!important}"
-    # #884444 on #fffef9 = 7.6:1 (WCAG AA ✓)
-    ".stop-btn{border:1px solid #d4a0a0!important;color:#884444!important}"
-    ".stop-btn:hover:not(:disabled){border-color:#cc4444!important;color:#cc2222!important}"
-    "#shutdown-btn{border-color:#d4a0a0!important;color:#884444!important}"
-    "#shutdown-btn:hover{border-color:#cc4444!important;color:#cc2222!important}"
-)
-
-# CSS variables swapped by the JS toggle via style.setProperty(..., 'important').
-# Using inline !important beats any !important in Gradio's theme <style> block.
-_DARK_VARS = {
-    "--body-background-fill": "#0d0d14",
-    "--block-background-fill": "#16161f",
-    "--input-background-fill": "#1e1e2e",
-    "--block-border-color": "#2e2e45",
-    "--input-border-color": "#2e2e45",
-    "--body-text-color": "#c8c8d8",
-    "--block-title-text-color": "#e8c97a",
-    "--block-label-text-color": "#9999bb",
-    "--input-placeholder-color": "#8888aa",
-    "--code-background-fill": "#424268",
-    "--button-primary-background-fill": "#b8860b",
-    "--button-primary-background-fill-hover": "#d4a017",
-    "--button-primary-text-color": "#0d0d14",
-    "--button-secondary-background-fill": "#1e1e2e",
-    "--button-secondary-background-fill-hover": "#2e2e45",
-    "--button-secondary-text-color": "#c8c8d8",
-    "--button-secondary-border-color": "#2e2e45",
-}
-_LIGHT_VARS = {
-    "--body-background-fill": "#f5f3ee",
-    "--block-background-fill": "#fffef9",
-    "--input-background-fill": "#eeeae0",
-    "--block-border-color": "#c8bfa8",
-    "--input-border-color": "#c8bfa8",
-    "--body-text-color": "#1a1a2e",
-    "--block-title-text-color": "#6a4e00",
-    "--block-label-text-color": "#4a4a6a",
-    "--input-placeholder-color": "#5c5c70",  # 5.4:1 on #eeeae0 (WCAG AA ✓)
-    "--code-background-fill": "#dcd8cc",     # 12.0:1 with #1a1a2e text (WCAG AA ✓)
-    "--button-primary-background-fill": "#b8860b",
-    "--button-primary-background-fill-hover": "#d4a017",
-    "--button-primary-text-color": "#0d0d14",  # dark text on amber = 5.9:1 (WCAG AA ✓)
-    "--button-secondary-background-fill": "#e8e4d8",
-    "--button-secondary-background-fill-hover": "#d8d4c8",
-    "--button-secondary-text-color": "#1a1a2e",
-    "--button-secondary-border-color": "#c8bfa8",
-}
-
-def _vars_to_js(d: dict) -> str:
-    """Serialise a {prop: value} dict as a JS object literal string."""
-    return "{" + ",".join(f'"{k}":"{v}"' for k, v in d.items()) + "}"
-
-
-def build_app() -> gr.Blocks:
-    """Assemble and return the Gradio Blocks app."""
+def build_train_app() -> gr.Blocks:
+    """Assemble and return the training/eval Gradio Blocks app."""
     # Pre-compute filesystem choices once at startup so dropdowns are populated immediately.
     _ckpts_all      = _scan_files("checkpoints/", "*.pt", recursive=True)
     _ckpts_pretrain = _scan_files("checkpoints/pretrain/", "*.pt")
-    _ckpts_finetune = _scan_files("checkpoints/finetune/", "*.pt")
-    _lora_choices   = _scan_files("checkpoints/", "*.lora", recursive=True)
     _corpus_dirs    = _scan_subdirs("data/corpus/")
     _jsonl_choices  = _scan_files("data/finetune/", "*.jsonl")
 
@@ -2347,84 +1408,7 @@ def build_app() -> gr.Blocks:
     _dp = _detect_device_profile()
 
     with gr.Blocks(title="Grimoire") as app:
-        theme_state = gr.State("dark")
-        with gr.Row(elem_classes="grimoire-header"):
-            gr.Markdown("# ✦ Grimoire")
-            theme_btn = gr.Button(
-                "☀ Light mode", scale=0, min_width=120, elem_id="theme-btn"
-            )
-            shutdown_btn = gr.Button(
-                "⏻ Shut down", scale=0, min_width=110, elem_id="shutdown-btn"
-            )
-        # Shutdown: Python fn schedules os._exit on a background thread so
-        # Gradio can return a clean response before the process dies.
-        # JS first tries window.close() directly — this works in some browsers
-        # when called from a click handler. If the browser blocks it, a 300 ms
-        # fallback navigates to a goodbye page that contains its own "Close this
-        # tab" button (user-initiated click makes window.close() reliable there).
-        _SHUTDOWN_PAGE = (
-            "data:text/html,"
-            "%3Chtml%20style%3D%22background%3A%230d0d14%3Bcolor%3A%23e8c97a%3B"
-            "font-family%3A%27Cinzel%27%2Cserif%3Bdisplay%3Aflex%3Balign-items%3A"
-            "center%3Bjustify-content%3Acenter%3Bheight%3A100vh%3Bmargin%3A0%22%3E"
-            "%3Cdiv%20style%3D%22text-align%3Acenter%22%3E"
-            "%3Ch1%3E%E2%9C%A6%20Grimoire%3C%2Fh1%3E"
-            "%3Cp%20style%3D%22color%3A%23c8c8d8%3Bmargin-bottom%3A1.5rem%22%3E"
-            "The%20server%20has%20shut%20down.%3C%2Fp%3E"
-            "%3Cbutton%20onclick%3D%22window.close()%22%20style%3D%22"
-            "background%3Atransparent%3Bborder%3A1px%20solid%20%23b8860b%3B"
-            "color%3A%23e8c97a%3Bfont-family%3Ainherit%3Bfont-size%3A0.9rem%3B"
-            "padding%3A0.5rem%201.2rem%3Bborder-radius%3A4px%3Bcursor%3Apointer%22%3E"
-            "Close%20this%20tab%3C%2Fbutton%3E"
-            "%3C%2Fdiv%3E%3C%2Fhtml%3E"
-        )
-
-        def _request_shutdown():
-            def _kill():
-                time.sleep(1.0)
-                os._exit(0)
-            threading.Thread(target=_kill, daemon=True).start()
-
-        shutdown_btn.click(
-            fn=_request_shutdown,
-            inputs=[],
-            outputs=[],
-            js=(
-                f"() => {{"
-                f"  window.close();"
-                f"  setTimeout(() => window.location.replace('{_SHUTDOWN_PAGE}'), 300);"
-                f"}}"
-            ),
-        )
-        _JS_TOGGLE = f"""() => {{
-            const root = document.documentElement;
-            const isDark = root.getAttribute('data-theme') !== 'light';
-            root.setAttribute('data-theme', isDark ? 'light' : 'dark');
-
-            // Override Gradio theme CSS variables with inline !important,
-            // which beats any !important in Gradio's compiled <style> block.
-            const vars = isDark ? {_vars_to_js(_LIGHT_VARS)} : {_vars_to_js(_DARK_VARS)};
-            for (const [p, v] of Object.entries(vars))
-                root.style.setProperty(p, v, 'important');
-
-            // Inject (or clear) the light-mode element-specific overrides.
-            let el = document.getElementById('grimoire-theme-overrides');
-            if (!el) {{
-                el = document.createElement('style');
-                el.id = 'grimoire-theme-overrides';
-                document.head.appendChild(el);
-            }}
-            el.textContent = isDark ? `{_LIGHT_CSS}` : '';
-
-            // Return pre-toggle state so Python updates the button label.
-            return isDark ? 'dark' : 'light';
-        }}"""
-        theme_btn.click(
-            fn=_toggle_theme,
-            inputs=[theme_state],
-            outputs=[theme_btn, theme_state],
-            js=_JS_TOGGLE,
-        )
+        add_header()
 
         # ----------------------------------------------------------------
         with gr.Tab("Preprocess"):
@@ -3260,295 +2244,6 @@ def build_app() -> gr.Blocks:
             corpus_tab.select(fn=_refresh_corpus_dirs, outputs=[ci_corpus_dir])
             corpus_tab.select(fn=_refresh_ckpts_all, outputs=[ci_checkpoint])
 
-        # ----------------------------------------------------------------
-        with gr.Tab("Chat") as chat_tab:
-            gr.Markdown(
-                "Select a named agent **or** load any checkpoint manually. "
-                "Conversation history is maintained automatically."
-            )
-            engine_state = gr.State(value=None)
-            conv_state   = gr.State(value=None)
-
-            # ---- Shared retrieval config (used by both agent and manual load)
-            with gr.Accordion("Retrieval configuration", open=True):
-                with gr.Row():
-                    chat_encoder = gr.Dropdown(
-                        choices=_ENCODER_CHOICES,
-                        value="Model (decoder embeddings)",
-                        label="Embedding backend",
-                        info="How corpus passages are matched to your query. "
-                             "Model: the trained transformer's own representations — no extra install. "
-                             "MiniLM / MPNet: dedicated sentence encoders, better quality early in training — requires pip install -e \".[encoder]\". "
-                             "Lexical: fast word-overlap matching, no neural embedding.",
-                        scale=2,
-                    )
-                    chat_threshold = gr.Slider(
-                        minimum=-1.0, maximum=1.0, value=0.0, step=0.05,
-                        label="Retrieval threshold",
-                        info="Minimum similarity score for a passage to be injected as context. "
-                             "Queries below this score are answered without grounding (pure-chat). "
-                             "Cosine scores live in [-1, 1]; 0.0 is a good starting point.",
-                        scale=3,
-                    )
-
-            # ---- Agent selector -----------------------------------------
-            _agent_names = _load_agent_names()
-            with gr.Group(visible=bool(_agent_names)) as agent_group:
-                gr.Markdown("### Select agent")
-                with gr.Row():
-                    agent_dropdown = gr.Dropdown(
-                        choices=_agent_names,
-                        value=_agent_names[0] if _agent_names else None,
-                        label="Agent",
-                        scale=3,
-                    )
-                    agent_load_btn = gr.Button("Load agent", scale=1)
-                chat_routing_threshold = gr.Slider(
-                    minimum=0.0, maximum=1.0, value=0.05, step=0.01,
-                    label="Routing threshold",
-                    info="Minimum corpus similarity score for the router to commit to a "
-                         "specialist agent. Queries scoring below this fall back to the "
-                         "default agent. Only used in Auto-route mode.",
-                    visible=_agent_names[:1] == ["Auto-route"],
-                )
-                agent_status = gr.Textbox(label="Agent status", interactive=False)
-
-            # ---- Manual load --------------------------------------------
-            with gr.Accordion("Load checkpoint manually", open=not bool(_agent_names)):
-                with gr.Row():
-                    chat_ckpt = gr.Dropdown(
-                        choices=_ckpts_all,
-                        value="",
-                        label="Checkpoint path (.pt)",
-                        allow_custom_value=True,
-                    )
-                    chat_vocab = gr.Textbox(
-                        label="Vocabulary path (.json)",
-                        value="data/tokenizer/bpe.json",
-                        info="Must be the same vocabulary used during training — mismatching produces garbled output.",
-                    )
-                    load_btn = gr.Button("Load model")
-                with gr.Row():
-                    chat_corpus_dir = gr.Dropdown(
-                        choices=_corpus_dirs,
-                        value=None,
-                        label="Corpus directory (optional)",
-                        allow_custom_value=True,
-                        info="Directory of .txt files used to ground replies in your corpus. Leave blank for ungrounded chat.",
-                    )
-                    chat_quantize = gr.Checkbox(
-                        label="int8 quantization",
-                        value=_dp["quantize"],
-                        info="Quantize Linear layers to int8 after loading. Cuts memory ~4× and speeds up CPU inference. Ignored on CUDA/MPS.",
-                        scale=0,
-                        min_width=200,
-                    )
-                chat_lora = gr.Dropdown(
-                    choices=_lora_choices,
-                    value=None,
-                    label="LoRA adapter (.lora) — optional",
-                    allow_custom_value=True,
-                    info="Path to a .lora file produced by LoRA fine-tuning. Leave blank to use the base checkpoint.",
-                )
-                chat_math_tool = gr.Checkbox(
-                    label="Enable math tool",
-                    value=False,
-                    info=(
-                        "Detect arithmetic in queries (e.g. '25% of 1200', '3^4') and "
-                        "inject the computed result as context before generation.  "
-                        "Also resolves <TOOL:python>…</TOOL> tags from fine-tuned models."
-                    ),
-                    scale=0,
-                    min_width=200,
-                )
-                chat_stat_block_constraint = gr.Checkbox(
-                    label="Enable stat-block constraint",
-                    value=False,
-                    info=(
-                        "Restrict Challenge Rating / XP / AC / HP values to well-formed "
-                        "continuations at decode time — structurally blocks a hallucinated "
-                        "value (e.g. an invalid CR) rather than hoping the model got it "
-                        "right. Decode-time only; does not affect prose generation "
-                        "elsewhere in the reply."
-                    ),
-                    scale=0,
-                    min_width=200,
-                )
-                load_status = gr.Textbox(label="Status", interactive=False)
-
-            # ---- Generation controls ------------------------------------
-            chat_adaptive_temp = gr.Checkbox(
-                value=False,
-                label="Adaptive temperature",
-                info="Recompute temperature at every token from the model's own confidence "
-                     "(entropy of the next-token distribution). Confident steps get more "
-                     "diversity, uncertain steps get more focus. When on, the manual "
-                     "Temperature slider is ignored and hidden.",
-            )
-            with gr.Row():
-                chat_temp = gr.Slider(
-                    0.1, 2.0, value=0.8, step=0.05, label="Temperature",
-                    info="Randomness of replies. Low (0.3) = focused & predictable. High (1.2) = creative but may ramble.",
-                )
-                chat_top_k = gr.Slider(
-                    1, 200, value=50, step=1, label="Top-k",
-                    info="Only the K most likely next words are considered at each step. Lower = safer; higher = more variety.",
-                )
-                chat_top_p = gr.Slider(
-                    0.1, 1.0, value=0.9, step=0.05, label="Top-p",
-                    info="Cuts off unlikely words until the remaining options together reach this probability. Works alongside Top-k.",
-                )
-                chat_tokens = gr.Slider(
-                    16, 512, value=128, step=8, label="Max new tokens",
-                    info="Maximum length of the generated reply in word-pieces.",
-                )
-
-            # When adaptive temperature is enabled the manual slider is
-            # meaningless (temperature is recomputed per token), so hide it.
-            chat_adaptive_temp.change(
-                fn=lambda on: gr.update(visible=not on),
-                inputs=[chat_adaptive_temp],
-                outputs=[chat_temp],
-            )
-            chat_loop_guard = gr.Checkbox(
-                value=False,
-                label="Prevent repetition loops",
-                info="Hard-bans a token that would extend an already-established "
-                     "repeating loop ('does does does...' or short-phrase loops), "
-                     "instead of just discounting it like repetition_penalty does. "
-                     "Structural backstop, decode-time only — see "
-                     "docs/architecture_optimization.md item #5.",
-            )
-
-            chat_query    = gr.Textbox(label="Your query", lines=3)
-            chat_response = gr.Textbox(label="Response", lines=8, interactive=False)
-            chat_routing  = gr.Textbox(
-                label="Routed to",
-                interactive=False,
-                visible=True,
-                scale=0,
-                min_width=220,
-                info="Agent and score for the last turn (Auto-route mode only).",
-            )
-            with gr.Row():
-                chat_btn      = gr.Button("Send", variant="primary")
-                stage_btn     = gr.Button("✦ Save this exchange", scale=0, min_width=160)
-                clear_btn     = gr.Button("Clear conversation", scale=0)
-
-            # ---- Dataset builder ----------------------------------------
-            with gr.Accordion("Dataset builder — collect fine-tune pairs", open=False):
-                gr.Markdown(
-                    "After a good exchange, click **✦ Save this exchange** above. "
-                    "Edit the prompt or response below if needed, then click **Add pair**. "
-                    "Export to JSONL when you have enough pairs."
-                )
-                with gr.Row():
-                    ds_prompt   = gr.Textbox(label="Prompt", lines=3, interactive=True)
-                    ds_response = gr.Textbox(label="Response", lines=3, interactive=True)
-                with gr.Row():
-                    ds_add_btn    = gr.Button("Add pair", variant="primary")
-                    ds_undo_btn   = gr.Button("Undo last", scale=0, min_width=100)
-                    ds_clear_btn  = gr.Button("Clear all", scale=0, min_width=100)
-                ds_count   = gr.Textbox(
-                    label="Dataset", value="0 pairs saved", interactive=False, scale=0
-                )
-                ds_preview = gr.Textbox(
-                    label="Preview (last 3 pairs)", lines=8, interactive=False
-                )
-                gr.Markdown("---")
-                with gr.Row():
-                    ds_path = gr.Textbox(
-                        label="Dataset file path",
-                        value="data/finetune/conversations.jsonl",
-                        info="Shared by Load and Export. File is created automatically if it doesn't exist.",
-                        scale=3,
-                    )
-                    ds_load_btn   = gr.Button("Load existing", scale=0, min_width=130)
-                    ds_export_btn = gr.Button("Export JSONL", variant="primary", scale=0, min_width=130)
-                with gr.Row():
-                    ds_overwrite = gr.Checkbox(
-                        label="Overwrite file on export",
-                        value=False,
-                        info="Unchecked (default): new pairs are appended to the existing file. Check this only when you want to replace the file completely.",
-                    )
-                ds_status = gr.Textbox(label="Status", interactive=False)
-
-            # ---- Dataset state ------------------------------------------
-            dataset_state = gr.State(value=[])
-
-            # ---- Event wiring -------------------------------------------
-            _preview_outputs = [
-                chat_routing_threshold,
-                chat_temp, chat_top_k, chat_top_p, chat_tokens,
-                chat_corpus_dir, chat_lora, chat_ckpt,
-                chat_adaptive_temp,
-            ]
-            agent_dropdown.change(
-                fn=_preview_agent_config,
-                inputs=[agent_dropdown],
-                outputs=_preview_outputs,
-            )
-            app.load(
-                fn=_preview_agent_config,
-                inputs=[agent_dropdown],
-                outputs=_preview_outputs,
-            )
-            agent_load_btn.click(
-                fn=load_agent,
-                inputs=[agent_dropdown, chat_encoder, chat_threshold, chat_quantize, chat_math_tool, chat_routing_threshold, chat_stat_block_constraint],
-                outputs=[engine_state, conv_state, agent_status, chat_ckpt, chat_vocab],
-            )
-            load_btn.click(
-                fn=load_engine,
-                inputs=[chat_ckpt, chat_vocab, chat_corpus_dir, chat_encoder, chat_threshold, chat_quantize, chat_lora, chat_math_tool, chat_stat_block_constraint],
-                outputs=[engine_state, conv_state, load_status, chat_quantize],
-            )
-            chat_tab.select(fn=_refresh_ckpts_all, outputs=[chat_ckpt])
-            chat_tab.select(fn=_refresh_corpus_dirs, outputs=[chat_corpus_dir])
-            chat_tab.select(fn=_refresh_lora_choices, outputs=[chat_lora])
-            chat_btn.click(
-                fn=chat,
-                inputs=[chat_query, engine_state, conv_state,
-                        chat_temp, chat_top_k, chat_top_p, chat_tokens,
-                        chat_adaptive_temp, chat_loop_guard],
-                outputs=[chat_response, conv_state, chat_routing],
-            )
-            clear_btn.click(
-                fn=clear_conversation,
-                inputs=[conv_state],
-                outputs=[conv_state, chat_response],
-            )
-            stage_btn.click(
-                fn=stage_exchange,
-                inputs=[chat_query, chat_response],
-                outputs=[ds_prompt, ds_response],
-            )
-            ds_add_btn.click(
-                fn=add_to_dataset,
-                inputs=[ds_prompt, ds_response, dataset_state],
-                outputs=[dataset_state, ds_count, ds_preview, ds_prompt, ds_response],
-            )
-            ds_undo_btn.click(
-                fn=remove_last_pair,
-                inputs=[dataset_state],
-                outputs=[dataset_state, ds_count, ds_preview],
-            )
-            ds_clear_btn.click(
-                fn=clear_dataset,
-                inputs=[],
-                outputs=[dataset_state, ds_count, ds_preview],
-            )
-            ds_load_btn.click(
-                fn=load_dataset,
-                inputs=[ds_path],
-                outputs=[dataset_state, ds_count, ds_preview, ds_status],
-            )
-            ds_export_btn.click(
-                fn=export_dataset,
-                inputs=[dataset_state, ds_path, ds_overwrite],
-                outputs=[ds_status],
-            )
-
     return app
 
 
@@ -3556,13 +2251,13 @@ def build_app() -> gr.Blocks:
 # Entry point
 # ---------------------------------------------------------------------------
 
-def launch(
+def launch_train(
     share: bool = False,
     port: int = 7860,
     inbrowser: bool = True,
     server_name: str = "127.0.0.1",
 ) -> None:
-    """Build and launch the Gradio app.
+    """Build and launch the training/eval Gradio app.
 
     Args:
         share: If ``True``, create a public Gradio tunnel (requires internet).
@@ -3573,11 +2268,27 @@ def launch(
             ``"0.0.0.0"`` to accept connections from outside the local
             machine (e.g. when running inside a Docker container).
     """
-    build_app().queue().launch(
+    build_train_app().queue().launch(
         server_name=server_name, server_port=port, share=share,
         inbrowser=inbrowser, theme=_THEME, css=_CSS,
     )
 
 
+def main() -> None:
+    """Console-script entry point (``grimoire-ui``).
+
+    Host/port/inbrowser are read from environment variables so the same
+    launch logic works unchanged for local development and for
+    containerized deployments — locally these env vars are simply unset and
+    the defaults below apply.
+    """
+    inbrowser_env = os.environ.get("GRIMOIRE_UI_INBROWSER", "1").strip().lower()
+    launch_train(
+        server_name=os.environ.get("GRIMOIRE_UI_HOST", "127.0.0.1"),
+        port=int(os.environ.get("GRIMOIRE_UI_PORT", "7860")),
+        inbrowser=inbrowser_env not in ("0", "false", "no"),
+    )
+
+
 if __name__ == "__main__":
-    launch()
+    main()

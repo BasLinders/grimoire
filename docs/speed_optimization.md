@@ -104,7 +104,7 @@ equal → plain `torch.stack`" fast path once the bigger items are measured.
 `select_device()`, `InferenceEngine`, `Trainer`, `EmbedTuner`, and the UI's
 device dropdown all already treat MPS as a real, selected device today
 (`torch.mps.recommended_max_memory()` even backs the UI's VRAM display in
-`ui/app.py:189`), and every op the model uses — SDPA, RMSNorm, SwiGLU,
+`ui/shared.py:95`), and every op the model uses — SDPA, RMSNorm, SwiGLU,
 GQA/RoPE — is a standard PyTorch op with MPS coverage. Training and
 inference already run correctly on MPS. What's missing is throughput
 parity, and the current code doesn't attempt it in a scoped way — it hangs
