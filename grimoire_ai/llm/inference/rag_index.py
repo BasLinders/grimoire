@@ -268,6 +268,44 @@ class RagIndex:
         top_idx = np.argsort(-flat)[:k]
         return [(float(flat[i]), int(i)) for i in top_idx]
 
+    def query_batch(
+        self,
+        query_vecs: np.ndarray,
+        top_k: int,
+    ) -> "list[list[tuple[float, int]]]":
+        """Batched form of :meth:`query` — one FAISS/matmul call for many queries.
+
+        Equivalent to calling :meth:`query` once per row of *query_vecs*, but
+        does the search as a single vectorised operation instead of one per
+        query — the search itself is cheap either way, but this avoids
+        Python-loop overhead when the caller already has many query vectors
+        on hand (e.g. a batch of embeddings from one ``embed_fn`` call).
+
+        Args:
+            query_vecs: Normalised query embeddings, shape ``(n_queries, d_model)``.
+            top_k: Maximum number of results to return per query.
+
+        Returns:
+            A list of length ``n_queries``, each element the same
+            ``[(score, idx), ...]`` format :meth:`query` returns.
+        """
+        k = min(top_k, self.size)
+        if k == 0:
+            return [[] for _ in range(query_vecs.shape[0])]
+        qv = query_vecs.astype("float32", copy=False)
+        if self._faiss_index is not None:
+            scores, indices = self._faiss_index.search(qv, k)
+            return [
+                [(float(s), int(i)) for s, i in zip(row_scores, row_indices) if i >= 0]
+                for row_scores, row_indices in zip(scores, indices)
+            ]
+        flat = qv @ self._vectors.T  # (n_queries, N)
+        top_idx = np.argsort(-flat, axis=1)[:, :k]
+        return [
+            [(float(flat[row, i]), int(i)) for i in top_idx[row]]
+            for row in range(flat.shape[0])
+        ]
+
     # ------------------------------------------------------------------ #
     # Persistence                                                          #
     # ------------------------------------------------------------------ #

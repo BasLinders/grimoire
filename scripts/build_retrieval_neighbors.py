@@ -156,9 +156,11 @@ def build(
             input_ids, _ = dataset[idx]
             window_texts.append(engine.tokenizer.decode(input_ids.tolist()))
 
+        batch_results = retriever.query_batch(window_texts, top_k=query_k)
+
         for local_i, idx in enumerate(batch_indices):
             window_text = window_texts[local_i]
-            results = retriever.query(window_text, top_k=query_k)
+            results = batch_results[local_i]
             # Self-retrieval exclusion — see module docstring.
             kept = [r for r in results if r.excerpt not in window_text][:n_neighbors]
             for n_i in range(n_neighbors):

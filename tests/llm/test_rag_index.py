@@ -286,6 +286,30 @@ class TestQuery:
         scores = [s for s, _ in results]
         assert scores == sorted(scores, reverse=True)
 
+    def test_batch_matches_per_row_query(self):
+        """query_batch's brute-force path must match calling query() per row
+        (scores compared approximately -- batched vs. per-row matmul can take
+        a different BLAS code path with tiny floating-point differences)."""
+        idx = _make_index(n=6, d=8)
+        rows = idx._vectors[[0, 2, 4]]
+        batched = idx.query_batch(rows, top_k=3)
+        assert len(batched) == 3
+        for row, single_query_vec in zip(batched, rows):
+            expected = idx.query(single_query_vec, top_k=3)
+            assert [i for _, i in row] == [i for _, i in expected]
+            for (score, _), (expected_score, _) in zip(row, expected):
+                assert score == pytest.approx(expected_score)
+
+    def test_batch_empty_index_returns_empty_per_row(self):
+        idx = RagIndex(
+            vectors=np.zeros((0, 8), dtype="float32"),
+            excerpts=[],
+            sources=[],
+            chunk_chars=400,
+            source_hashes={},
+        )
+        assert idx.query_batch(np.zeros((3, 8), dtype="float32"), top_k=5) == [[], [], []]
+
 
 # ---------------------------------------------------------------------------
 # FAISS (conditional)
@@ -315,6 +339,15 @@ class TestFaiss:
         bf = idx.query(query, top_k=5)
         fq = idx_faiss.query(query, top_k=5)
         assert [i for _, i in bf] == [i for _, i in fq]
+
+    def test_faiss_query_batch_matches_per_row_faiss_query(self):
+        idx_faiss = _make_index(n=10, d=16)
+        idx_faiss.build_faiss()
+        rows = idx_faiss._vectors[[1, 3, 7]]
+        batched = idx_faiss.query_batch(rows, top_k=5)
+        for row, single_query_vec in zip(batched, rows):
+            expected = idx_faiss.query(single_query_vec, top_k=5)
+            assert [i for _, i in row] == [i for _, i in expected]
 
     def test_faiss_index_saved_and_loaded(self, tmp_path):
         idx = _make_index()
@@ -394,3 +427,19 @@ class TestRetrieverIndex:
         r2 = SemanticRetriever.from_index(tmp_path / "idx", embed_fn=_keyword_embed)
         assert r2._rag_index is not None
         assert r2._rag_index._faiss_index is not None
+
+    def test_query_batch_uses_faiss_when_available(self, tmp_path):
+        if not _faiss_available:
+            pytest.skip("faiss-cpu not installed")
+        r = SemanticRetriever(embed_fn=_keyword_embed)
+        r.add_text("A grappled creature has its speed reduced to zero.")
+        r.add_text("The fireball ignites everything nearby.")
+        r.add_text("A rogue uses stealth to hide.")
+        r.index()
+        r.save_index(tmp_path / "idx", build_faiss=True)
+
+        r2 = SemanticRetriever.from_index(tmp_path / "idx", embed_fn=_keyword_embed)
+        queries = ["grapple speed", "fire burning"]
+        batched = r2.query_batch(queries, top_k=1)
+        for query_text, row in zip(queries, batched):
+            assert row == r2.query(query_text, top_k=1)
