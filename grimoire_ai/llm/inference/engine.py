@@ -508,6 +508,13 @@ class InferenceEngine:
         )
 
         generated_ids: list[int] = []
+        # Incremental decoder: O(1) amortized per token instead of
+        # re-decoding the whole generated_ids list from scratch on every
+        # yield (still handles multi-byte BPE tokens correctly -- see
+        # IncrementalDecoder's docstring for why splitting decode work
+        # across calls like this is safe).
+        decoder = self.tokenizer.incremental_decoder()
+        committed = ""
         for token_id in generate_stream(
             model=self.model,
             prompt_ids=prompt_ids,
@@ -517,8 +524,21 @@ class InferenceEngine:
             tokenizer=self.tokenizer,
         ):
             generated_ids.append(token_id)
-            # Decode the full sequence so far to handle multi-byte BPE tokens.
-            yield self.tokenizer.decode(generated_ids).strip()
+            committed += decoder.push(token_id)
+            yield committed.strip()
+
+        # push() deliberately withholds a trailing incomplete multi-byte
+        # UTF-8 sequence until more tokens arrive to complete it (see
+        # IncrementalDecoder) -- there's no next token after the last one,
+        # so flush explicitly. Almost always a no-op (the common case has
+        # nothing left buffered); only yields again on the rare generation
+        # that happens to end mid-character, to preserve the invariant that
+        # the last value this generator yields is always the complete
+        # response, same as before this method used incremental decoding.
+        tail = decoder.finish()
+        if tail:
+            committed += tail
+            yield committed.strip()
 
         response = self.tokenizer.decode(generated_ids).strip()
         if self.math_tool is not None:

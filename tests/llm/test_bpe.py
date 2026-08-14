@@ -106,6 +106,78 @@ def test_round_trip_empty_string(trained_encoder: BytePairEncoder) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Incremental (streaming) decoding
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "A grappled creature loses its speed.",
+    "DC 15 saving throw",
+    "2d6+3 piercing damage",
+    "hello world",
+    "Multiattack, spellcasting, concentration",
+    "Héllo wörld",           # non-ASCII, exercises multi-byte UTF-8 chars
+    "∇f(x) = 0",             # 3-byte UTF-8 math symbols
+    "D&D 5e Player's Handbook",
+    "🎲 rolling dice 🎲",     # 4-byte UTF-8 (surrogate-pair-free astral char)
+])
+def test_incremental_decode_matches_full_decode(trained_encoder: BytePairEncoder, text: str) -> None:
+    """Feeding ids one at a time through IncrementalDecoder must produce the
+    exact same text as decode(ids) called once on the whole list -- the
+    property chat_stream's per-token yields depend on. Multi-byte UTF-8
+    characters can straddle a BPE token boundary, so this is the case that
+    would actually catch a broken incremental implementation."""
+    ids = trained_encoder.encode(text)
+    reference = trained_encoder.decode(ids)
+
+    decoder = trained_encoder.incremental_decoder()
+    pieces = [decoder.push(token_id) for token_id in ids]
+    pieces.append(decoder.finish())
+    incremental = "".join(pieces)
+
+    assert incremental == reference == text
+
+
+def test_incremental_decode_partial_yields_are_prefixes(trained_encoder: BytePairEncoder) -> None:
+    """Every intermediate accumulated yield must be a prefix of the final
+    text -- streaming output must never later 'unsay' something already
+    shown to the user."""
+    text = "The overfitting problem occurs when Héllo wörld ∇f(x) = 0"
+    ids = trained_encoder.encode(text)
+    reference = trained_encoder.decode(ids)
+
+    decoder = trained_encoder.incremental_decoder()
+    committed = ""
+    for token_id in ids:
+        committed += decoder.push(token_id)
+        assert reference.startswith(committed)
+    committed += decoder.finish()
+    assert committed == reference
+
+
+def test_incremental_decode_with_special_tokens(trained_encoder: BytePairEncoder) -> None:
+    """A special token id mixed into the stream must flush pending bytes and
+    pass the special token's literal string straight through, matching
+    decode()'s behaviour exactly."""
+    ids = (
+        trained_encoder.encode("hello")
+        + [SEP_ID]
+        + trained_encoder.encode("wörld")
+    )
+    reference = trained_encoder.decode(ids)
+
+    decoder = trained_encoder.incremental_decoder()
+    incremental = "".join(decoder.push(token_id) for token_id in ids) + decoder.finish()
+
+    assert incremental == reference
+
+
+def test_incremental_decoder_requires_trained_encoder() -> None:
+    enc = BytePairEncoder()
+    with pytest.raises(RuntimeError, match="no vocabulary"):
+        enc.incremental_decoder()
+
+
+# ---------------------------------------------------------------------------
 # Special token handling
 # ---------------------------------------------------------------------------
 
