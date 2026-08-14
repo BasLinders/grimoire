@@ -47,6 +47,7 @@ from grimoire_ai.llm.tokenizer.special_tokens import AST_ID, BOS_ID, EOS_ID, PAD
 from grimoire_ai.llm.training.checkpoint import load_checkpoint
 
 if TYPE_CHECKING:
+    from grimoire_ai.llm.inference.constrained_decoding import StatBlockConstraint
     from grimoire_ai.tools.math_tool import MathTool
 
 
@@ -101,6 +102,7 @@ class InferenceEngine:
         retrieval_threshold: Optional[float] = None,
         quantize: bool = False,
         math_tool: Optional["MathTool"] = None,
+        stat_block_constraint: Optional["StatBlockConstraint"] = None,
     ) -> None:
         """Load model and tokenizer from disk and prepare the engine.
 
@@ -133,6 +135,15 @@ class InferenceEngine:
                 and speeds up CPU inference.  Silently skipped on CUDA/MPS
                 (where dynamic quantization is not supported by standard
                 PyTorch).
+            math_tool: Optional ``MathTool`` — when set, arithmetic in the
+                query is injected as verified context and ``<TOOL:python>``
+                tags in the response are resolved post-generation.
+            stat_block_constraint: Optional ``StatBlockConstraint`` (see
+                ``constrained_decoding.py``) — when set, restricts
+                generation of recognised stat-block fields (Challenge
+                Rating, XP, AC, HP) to well-formed values at decode time.
+                Construct with ``StatBlockConstraint(self.tokenizer)`` after
+                the engine loads, since it needs the trained tokenizer.
         """
         self.device = select_device(device)
         device = self.device
@@ -166,6 +177,7 @@ class InferenceEngine:
         )
         self.gen_config = gen_config if gen_config is not None else GenerationConfig()
         self.math_tool = math_tool
+        self.stat_block_constraint = stat_block_constraint
 
     @property
     def checkpoint_path(self) -> str:
@@ -307,6 +319,8 @@ class InferenceEngine:
             prompt_ids=prompt_ids,
             config=cfg,
             device=self.device,
+            stat_block_constraint=self.stat_block_constraint,
+            tokenizer=self.tokenizer,
         )
 
         response = self.tokenizer.decode(new_token_ids).strip()
@@ -455,6 +469,8 @@ class InferenceEngine:
             prompt_ids=prompt_ids,
             config=cfg,
             device=self.device,
+            stat_block_constraint=self.stat_block_constraint,
+            tokenizer=self.tokenizer,
         )
 
         response = self.tokenizer.decode(new_token_ids).strip()
@@ -497,6 +513,8 @@ class InferenceEngine:
             prompt_ids=prompt_ids,
             config=cfg,
             device=self.device,
+            stat_block_constraint=self.stat_block_constraint,
+            tokenizer=self.tokenizer,
         ):
             generated_ids.append(token_id)
             # Decode the full sequence so far to handle multi-byte BPE tokens.
