@@ -173,7 +173,7 @@ def test_corpus_context_reaches_prompt() -> None:
 
         captured: dict[str, list[int]] = {}
 
-        def _fake_generate(model, prompt_ids, config=None, device="cpu"):
+        def _fake_generate(model, prompt_ids, config=None, device="cpu", **_kwargs):
             captured["prompt_ids"] = prompt_ids
             return []
 
@@ -200,7 +200,7 @@ def test_no_corpus_means_no_context_block() -> None:
 
         captured: dict[str, list[int]] = {}
 
-        def _fake_generate(model, prompt_ids, config=None, device="cpu"):
+        def _fake_generate(model, prompt_ids, config=None, device="cpu", **_kwargs):
             captured["prompt_ids"] = prompt_ids
             return []
 

@@ -33,12 +33,18 @@ deferred to Phase 5 as it requires non-trivial changes to
 
 import math
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Optional
 
 import torch
 import torch.nn.functional as F
 
+from grimoire_ai.llm.inference.constrained_decoding import RepetitionLoopGuard
 from grimoire_ai.llm.model.transformer import GrimoireTransformer
 from grimoire_ai.llm.tokenizer.special_tokens import EOS_ID
+
+if TYPE_CHECKING:
+    from grimoire_ai.llm.inference.constrained_decoding import StatBlockConstraint
+    from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
 
 
 @dataclass
@@ -75,6 +81,16 @@ class GenerationConfig:
             (applied when the model is maximally uncertain).
         adaptive_temp_ceiling: Highest temperature the adaptive schedule may
             emit (applied when the model is maximally confident).
+        loop_guard_max_repeats: When > 0, enables a ``RepetitionLoopGuard``
+            (see ``constrained_decoding.py``) that hard-bans the token which
+            would extend an already-established repeating loop past this
+            many consecutive copies — a structural backstop for
+            ``repetition_penalty``, which only discounts repeats rather
+            than forbidding them. ``0`` (default) disables it, matching
+            this codebase's existing "0 = off" convention.
+        loop_guard_max_period: Longest repeating block length (in tokens)
+            the loop guard checks. Only consulted when
+            ``loop_guard_max_repeats > 0``.
     """
 
     max_new_tokens: int = 128
@@ -85,6 +101,8 @@ class GenerationConfig:
     adaptive_temperature: bool = False
     adaptive_temp_floor: float = 0.5
     adaptive_temp_ceiling: float = 1.3
+    loop_guard_max_repeats: int = 0
+    loop_guard_max_period: int = 4
 
 
 def adaptive_temperature(
@@ -124,22 +142,60 @@ def adaptive_temperature(
     return floor + (ceiling - floor) * (1.0 - h_norm)
 
 
+def _resolve_loop_guard(config: GenerationConfig) -> Optional[RepetitionLoopGuard]:
+    """Build a ``RepetitionLoopGuard`` from config, or ``None`` if disabled."""
+    if config.loop_guard_max_repeats <= 0:
+        return None
+    return RepetitionLoopGuard(config.loop_guard_max_repeats, config.loop_guard_max_period)
+
+
+def _require_tokenizer_for_stat_block_constraint(
+    stat_block_constraint: Optional["StatBlockConstraint"],
+    tokenizer: Optional["BytePairEncoder"],
+) -> None:
+    if stat_block_constraint is not None and tokenizer is None:
+        raise ValueError(
+            "tokenizer is required when stat_block_constraint is set — "
+            "StatBlockConstraint.mask() needs it to decode the generated "
+            "text so far."
+        )
+
+
 def generate_stream(
     model: GrimoireTransformer,
     prompt_ids: list[int],
     config: GenerationConfig | None = None,
     device: str = "cpu",
+    stat_block_constraint: Optional["StatBlockConstraint"] = None,
+    tokenizer: Optional["BytePairEncoder"] = None,
 ):
     """Like ``generate`` but yields one token id at a time as it is sampled.
 
     Useful for streaming UIs that want to display tokens as they arrive rather
     than waiting for the full response.
+
+    Args:
+        model: A trained ``GrimoireTransformer`` in eval mode.
+        prompt_ids: Token ids for the prompt.
+        config: Sampling configuration.
+        device: PyTorch device string.
+        stat_block_constraint: Optional ``StatBlockConstraint`` (see
+            ``constrained_decoding.py``) restricting stat-block field
+            values to well-formed continuations. Requires ``tokenizer``.
+        tokenizer: Required when ``stat_block_constraint`` is set — used to
+            decode the generated-so-far text at each step.
+
+    Raises:
+        ValueError: If ``prompt_ids`` is empty, or if
+            ``stat_block_constraint`` is given without ``tokenizer``.
     """
     if not prompt_ids:
         raise ValueError("prompt_ids must not be empty.")
+    _require_tokenizer_for_stat_block_constraint(stat_block_constraint, tokenizer)
 
     if config is None:
         config = GenerationConfig()
+    loop_guard = _resolve_loop_guard(config)
 
     model.eval()
     max_seq = model.config.max_seq_len
@@ -163,6 +219,16 @@ def generate_stream(
                         next_logits[token_id] /= config.repetition_penalty
                     else:
                         next_logits[token_id] *= config.repetition_penalty
+
+            # Structural constraints — hard-mask before the probability-shaping
+            # steps below. Masking to -inf commutes with temperature scaling
+            # and with top-k/top-p (both only ever remove further candidates),
+            # so applying these first or last produces the same distribution;
+            # grouped here with the other pre-sampling adjustments for clarity.
+            if loop_guard is not None:
+                next_logits = loop_guard.mask(next_logits, generated)
+            if stat_block_constraint is not None:
+                next_logits = stat_block_constraint.mask(next_logits, generated, tokenizer)
 
             # Temperature scaling — adaptive (entropy-derived) or fixed.
             if config.adaptive_temperature:
@@ -220,6 +286,8 @@ def generate(
     prompt_ids: list[int],
     config: GenerationConfig | None = None,
     device: str = "cpu",
+    stat_block_constraint: Optional["StatBlockConstraint"] = None,
+    tokenizer: Optional["BytePairEncoder"] = None,
 ) -> list[int]:
     """Generate tokens autoregressively from a prompt.
 
@@ -232,19 +300,27 @@ def generate(
         config: Sampling configuration.  Defaults to ``GenerationConfig()``
             if ``None``.
         device: PyTorch device string (``"cpu"``, ``"cuda"``, etc.).
+        stat_block_constraint: Optional ``StatBlockConstraint`` (see
+            ``constrained_decoding.py``) restricting stat-block field
+            values to well-formed continuations. Requires ``tokenizer``.
+        tokenizer: Required when ``stat_block_constraint`` is set — used to
+            decode the generated-so-far text at each step.
 
     Returns:
         A list of *newly generated* token ids (not including the prompt).
         The caller can decode this list with ``BytePairEncoder.decode``.
 
     Raises:
-        ValueError: If ``prompt_ids`` is empty.
+        ValueError: If ``prompt_ids`` is empty, or if
+            ``stat_block_constraint`` is given without ``tokenizer``.
     """
     if not prompt_ids:
         raise ValueError("prompt_ids must not be empty.")
+    _require_tokenizer_for_stat_block_constraint(stat_block_constraint, tokenizer)
 
     if config is None:
         config = GenerationConfig()
+    loop_guard = _resolve_loop_guard(config)
 
     model.eval()
     max_seq = model.config.max_seq_len
@@ -277,6 +353,14 @@ def generate(
                         next_logits[token_id] /= config.repetition_penalty
                     else:
                         next_logits[token_id] *= config.repetition_penalty
+
+            # Structural constraints — hard-mask before the probability-shaping
+            # steps below (see the matching comment in generate_stream for why
+            # the ordering relative to temperature/top-k/top-p doesn't matter).
+            if loop_guard is not None:
+                next_logits = loop_guard.mask(next_logits, generated)
+            if stat_block_constraint is not None:
+                next_logits = stat_block_constraint.mask(next_logits, generated, tokenizer)
 
             # Temperature scaling — adaptive (entropy-derived) or fixed.
             if config.adaptive_temperature:
