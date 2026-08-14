@@ -74,7 +74,7 @@ class GrimoireTransformer(nn.Module):
 
         self.embedding = TokenEmbedding(config)
         self.blocks = nn.ModuleList(
-            [TransformerBlock(config) for _ in range(config.n_layers)]
+            [TransformerBlock(config, layer_idx=i) for i in range(config.n_layers)]
         )
         # Import RMSNorm from block to avoid re-defining it.
         from grimoire_ai.llm.model.block import RMSNorm
@@ -119,6 +119,8 @@ class GrimoireTransformer(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         past_kvs: Optional[list[tuple[torch.Tensor, torch.Tensor]]] = None,
         use_cache: bool = False,
+        neighbor_ids: Optional[torch.Tensor] = None,
+        neighbor_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor | tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
         """Compute next-token logits for a batch of token sequences.
 
@@ -134,6 +136,19 @@ class GrimoireTransformer(nn.Module):
                 the sampler can pass the cache to the next step.  Defaults
                 to ``False`` — the training path never sets this, so its
                 return type and behaviour are unchanged.
+            neighbor_ids: Optional retrieved-neighbor token ids for Chunked
+                Cross-Attention (see ``docs/architecture_optimization.md``
+                item #3 and ``chunked_cross_attention.py``), shape
+                ``(batch, n_neighbors, neighbor_len)``. Only consulted by
+                blocks in ``config.retro_layers``; ignored entirely when
+                ``config.retro_layers`` is ``None`` (the default) or when
+                this is left ``None`` — every existing caller leaves it
+                ``None``, so behaviour is unaffected unless a caller opts
+                in explicitly.
+            neighbor_mask: Optional padding mask for ``neighbor_ids``, shape
+                ``(batch, n_neighbors, neighbor_len)``, ``1`` for real
+                tokens. ``None`` when every neighbor chunk is exactly
+                ``neighbor_len`` tokens.
 
         Returns:
             When ``use_cache=False`` (default / training): a float tensor of
@@ -146,17 +161,32 @@ class GrimoireTransformer(nn.Module):
         x = self.embedding(input_ids)
         present_kvs: list[tuple[torch.Tensor, torch.Tensor]] = []
 
+        # Embed retrieved neighbors ONCE here (not per-block) with the same
+        # token embedding table the trunk uses -- see
+        # chunked_cross_attention.py's module docstring for why this reuses
+        # an existing representation instead of a separate neighbor encoder.
+        neighbor_emb: Optional[torch.Tensor] = None
+        if neighbor_ids is not None:
+            batch, n_neighbors, neighbor_len = neighbor_ids.shape
+            neighbor_emb = self.embedding(neighbor_ids.reshape(batch, -1)).reshape(
+                batch, n_neighbors, neighbor_len, self.config.d_model
+            )
+
         for i, block in enumerate(self.blocks):
             if self._gradient_checkpointing and self.training:
                 # Recompute block activations during backward instead of
                 # storing them.  KV-cache is disabled (past_kv=None,
                 # use_cache=False) — caching is an inference-only feature.
                 # use_reentrant=False: modern path, compatible with autocast
-                # and torch.compile; None tensors (attention_mask) are safe.
-                def _block_fn(blk, x_in, mask_in):
-                    return blk(x_in, attention_mask=mask_in, past_kv=None, use_cache=False)[0]
+                # and torch.compile; None tensors (attention_mask,
+                # neighbor_emb, neighbor_mask) are safe.
+                def _block_fn(blk, x_in, mask_in, nbr_emb_in, nbr_mask_in):
+                    return blk(
+                        x_in, attention_mask=mask_in, past_kv=None, use_cache=False,
+                        neighbor_emb=nbr_emb_in, neighbor_mask=nbr_mask_in,
+                    )[0]
                 x = torch.utils.checkpoint.checkpoint(
-                    _block_fn, block, x, attention_mask,
+                    _block_fn, block, x, attention_mask, neighbor_emb, neighbor_mask,
                     use_reentrant=False,
                 )
             else:
@@ -166,6 +196,8 @@ class GrimoireTransformer(nn.Module):
                     attention_mask=attention_mask,
                     past_kv=layer_past,
                     use_cache=use_cache,
+                    neighbor_emb=neighbor_emb,
+                    neighbor_mask=neighbor_mask,
                 )
                 if use_cache and present_kv is not None:
                     present_kvs.append(present_kv)

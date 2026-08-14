@@ -2,8 +2,18 @@
 
 Candidate architectural changes for Grimoire's hybrid neural LM + retrieval
 system, gathered from recent research and prioritized by effort-to-payoff.
-None of these are started; this is a reference list for future work, in the
-same spirit as [PLAN.md](PLAN.md)'s Phase 2.5 section.
+Originally written as "none of these are started" — status per item is now
+tracked below since that's no longer true.
+
+## Status
+
+| # | Item | Status |
+|---|---|---|
+| 1 | Multi-Head Latent Attention | ✓ shipped — [PR #176](https://github.com/BasLinders/grimoire/pull/176) (module), [#177](https://github.com/BasLinders/grimoire/pull/177) (wiring), [#178](https://github.com/BasLinders/grimoire/pull/178) (UI) |
+| 2 | Multi-Token Prediction | ✓ shipped — [PR #180](https://github.com/BasLinders/grimoire/pull/180) |
+| 3 | RETRO-style chunked cross-attention | in progress — see below |
+| 4 | Contrastive retrieval fine-tuning | ✓ already existed — `grimoire_ai/llm/training/embed_tune.py` / `scripts/embed_tune.py`, predates this document (this list was written without checking for it first) |
+| 5 | Grammar-constrained decoding | ✓ shipped — [PR #179](https://github.com/BasLinders/grimoire/pull/179) |
 
 ## 1. Multi-Head Latent Attention (MLA)
 
@@ -48,14 +58,21 @@ than just speed.
 
 Source: [Retro-li: Small-Scale Retrieval Augmented Generation](https://arxiv.org/html/2410.00004v2)
 
-## 4. Contrastive fine-tuning of retrieval embeddings
+## 4. Contrastive fine-tuning of retrieval embeddings — already implemented
 
 `SemanticRetriever` reuses `GrimoireTransformer.embed()` — embeddings
 trained for the generation objective, doing double duty for retrieval.
 Adding a small contrastive auxiliary loss (positive/negative passage pairs)
 tunes those embeddings specifically for retrieval quality without touching
-the main architecture. Recent work shows this closes a meaningful gap even
-on small models/datasets. Cheap relative to items 1–3.
+the main architecture.
+
+This exists already: `grimoire_ai/llm/training/embed_tune.py` implements
+in-batch InfoNCE (SimCSE self-pairs, `DocumentGroupedBatchSampler` for hard
+same-document negatives, and a supervised `train_step_pairs` path over real
+(question, answer) pairs), trains a LoRA adapter rather than the full model
+(so it never risks the generation-quality regression a full-model contrastive
+fine-tune could cause), and ships with `scripts/embed_tune.py` and 49 passing
+tests. This document was written without checking for it first.
 
 Source: [Improving Text Embeddings for Smaller Language Models Using Contrastive Fine-tuning](https://arxiv.org/abs/2408.00690)
 
