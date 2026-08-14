@@ -1,0 +1,2294 @@
+"""Grimoire training/eval UI.
+
+A seven-tab Gradio web app for managing the full Grimoire training and
+evaluation workflow without touching the CLI. Chat lives in a separate app
+(``grimoire_ai.ui.chat_app``) — see that module's docstring for why.
+
+Tabs
+----
+Preprocess
+    Train a BPE tokenizer on raw .txt files and write a binary corpus for
+    pre-training.  Run this once before the Pre-train tab.
+
+Pre-train
+    Launch a pre-training run on a tokenised corpus binary.  Hyperparameters
+    mirror the defaults in ``grimoire.llm.training.train``.  Loss is streamed
+    live via the ``Trainer.on_log`` callback — no stdout polling.
+
+Fine-tune
+    Continue from a pre-trained checkpoint on a JSONL conversation dataset.
+    Hyperparameters mirror ``grimoire.llm.training.finetune``.
+
+Scale
+    Chinchilla scaling-law calculator for choosing model size vs. corpus size.
+
+Evaluate
+    Run the evaluation harness (perplexity/BPC, retrieval hit-rate, Q&A quiz)
+    against a checkpoint and write timestamped results to ``data/eval/``.
+
+Ingest
+    Scrape and convert content into corpus ``.txt`` files.  Supports web
+    URLs, PDF, DOCX, Markdown, plain text, and images (OCR).  Three cleaning
+    presets control how aggressively boilerplate is stripped.
+
+Corpus
+    Pre-build the semantic embedding index for a corpus directory so the
+    chat app loads in seconds instead of re-embedding on every session start.
+
+Usage
+-----
+    python -m grimoire_ai.ui
+    # then open http://localhost:7860
+"""
+
+import json
+import os
+import queue
+import threading
+import time
+from pathlib import Path
+from typing import Generator, Optional
+
+import gradio as gr
+
+from grimoire_ai.ui.shared import (
+    _CSS,
+    _ENCODER_CHOICES,
+    _THEME,
+    _detect_device_profile,
+    _index_is_fresh,
+    _refresh_ckpts_all,
+    _refresh_corpus_dirs,
+    _scan_files,
+    _scan_subdirs,
+    _semantic_index_dir,
+    add_header,
+)
+
+# Per-tab stop events. Each tab can have more than one live run if an older
+# run's background thread is still alive when a new one starts (e.g. after a
+# page reload rather than a full process restart) — so each key maps to a
+# list of currently-active Events rather than a single overwritable slot.
+# Runs register themselves on start and unregister on completion via
+# _stream_task/_stream_training; stop_*() signals every event still
+# registered under a key, so an orphaned older run remains reachable.
+_stop_events: dict[str, list[threading.Event]] = {
+    "preprocess": [],
+    "pretrain": [],
+    "finetune": [],
+    "corpus": [],
+    "eval": [],
+}
+
+
+def _register_stop_event(key: str, ev: threading.Event) -> None:
+    _stop_events[key].append(ev)
+
+
+def _unregister_stop_event(key: str, ev: threading.Event) -> None:
+    events = _stop_events.get(key)
+    if events and ev in events:
+        events.remove(ev)
+
+
+def _signal_stop(key: str) -> None:
+    """Set every stop event still registered under ``key``."""
+    for ev in _stop_events.get(key, []):
+        ev.set()
+
+
+# ---------------------------------------------------------------------------
+# Dropdown refresh helpers
+# ---------------------------------------------------------------------------
+# The choice lists above are scanned once at app startup so dropdowns are
+# populated immediately on load. That snapshot goes stale the moment a
+# training run (or any other process) writes a new file — restarting the
+# whole app just to pick up a fresh checkpoint is needless. These re-scan
+# the filesystem on demand; each is wired to its tab's `.select()` event so
+# switching into a tab always shows what's actually on disk right now.
+
+def _refresh_ckpts_pretrain():
+    return gr.update(choices=_scan_files("checkpoints/pretrain/", "*.pt"))
+
+
+def _refresh_jsonl_choices():
+    return gr.update(choices=_scan_files("data/finetune/", "*.jsonl"))
+
+
+def _fmt_elapsed(seconds: float) -> str:
+    """Format a duration in seconds as a human-readable string."""
+    h, rem = divmod(int(seconds), 3600)
+    m, s   = divmod(rem, 60)
+    if h:
+        return f"{h}h {m:02d}m {s:02d}s"
+    if m:
+        return f"{m}m {s:02d}s"
+    return f"{s}s"
+
+
+def _stream_training(
+    train_fn, stop_key: Optional[str] = None, stop_event: Optional[threading.Event] = None,
+) -> Generator[str, None, None]:
+    """Run a training function in a background thread and stream loss lines.
+
+    ``train_fn`` receives ``on_log``, ``on_save``, ``on_done``, and ``on_eval``
+    callbacks.  Wraps ``_stream_task`` with a training-specific message
+    formatter.  ``on_eval`` only fires when the run was given a validation set;
+    runs without one simply never call it.
+    """
+    def _wrapped(on_progress):
+        def on_log(step: int, loss: float, lr: float, elapsed: float) -> None:
+            on_progress(f"step {step:>6} | loss {loss:.4f} | lr {lr:.2e} | {_fmt_elapsed(elapsed)}")
+
+        def on_save(step: int, elapsed: float) -> None:
+            on_progress(f"  ✔ checkpoint saved  step {step}  [{_fmt_elapsed(elapsed)}]")
+
+        def on_done(step: int, elapsed: float) -> None:
+            on_progress(f"\nTraining complete — {step} steps in {_fmt_elapsed(elapsed)}")
+
+        def on_eval(step: int, val_loss: float, elapsed: float) -> None:
+            on_progress(f"  ◆ eval  step {step:>6} | val loss {val_loss:.4f}  [{_fmt_elapsed(elapsed)}]")
+
+        train_fn(on_log, on_save, on_done, on_eval)
+
+    yield from _stream_task(_wrapped, stop_key=stop_key, stop_event=stop_event)
+
+
+# ---------------------------------------------------------------------------
+# Preprocess tab logic
+# ---------------------------------------------------------------------------
+
+def _parse_weight_patterns(text: str) -> Optional[list[tuple[str, float]]]:
+    """Parse a "one GLOB:WEIGHT rule per line" textbox into weight_rules.
+
+    Blank lines and lines starting with ``#`` are ignored. Returns ``None``
+    (not an empty list) when there are no usable rules, so callers can pass
+    the result straight through to ``preprocess(weight_rules=...)`` and get
+    today's unweighted behaviour when the field is left blank.
+    """
+    if not text or not text.strip():
+        return None
+    rules: list[tuple[str, float]] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        pattern, _, weight_str = line.rpartition(":")
+        if not pattern:
+            raise ValueError(f"Weight pattern line must be GLOB:WEIGHT, got {line!r}")
+        try:
+            rules.append((pattern, float(weight_str)))
+        except ValueError:
+            raise ValueError(f"Weight in {line!r} must be a number") from None
+    return rules or None
+
+
+def run_preprocess(
+    input_dir: str,
+    output_path: str,
+    vocab_path: str,
+    vocab_size: int,
+    bpe_sample_size: Optional[float],  # gr.Number delivers float; None when field is cleared
+    weight_patterns: str = "",
+) -> Generator[str, None, None]:
+    """Train BPE tokenizer and write corpus binary; stream progress live."""
+    from grimoire_ai.llm.data.preprocessing import preprocess
+
+    stop_event = threading.Event()
+
+    n_sample: Optional[int] = int(bpe_sample_size) if bpe_sample_size else None
+
+    def _task(on_progress):
+        weight_rules = _parse_weight_patterns(weight_patterns)
+        preprocess(
+            input_path=input_dir.strip(),
+            output_path=output_path.strip(),
+            vocab_path=vocab_path.strip(),
+            vocab_size=int(vocab_size),
+            bpe_sample_size=n_sample,
+            weight_rules=weight_rules,
+            on_progress=on_progress,
+        )
+
+    yield from _wrap_with_buttons(_stream_task(_task, stop_key="preprocess", stop_event=stop_event))
+
+
+def stop_preprocess() -> None:
+    """Signal all running preprocess tasks to stop."""
+    _signal_stop("preprocess")
+
+
+# ---------------------------------------------------------------------------
+# Pre-train tab logic
+# ---------------------------------------------------------------------------
+
+def apply_model_preset(preset_name: str):
+    """Return field updates for the architectural param fields."""
+    from grimoire_ai.llm.model.config import MODEL_PRESETS
+    cfg = MODEL_PRESETS.get(preset_name)
+    if cfg is None:
+        return [gr.update()] * 5
+    return [
+        gr.update(value=cfg.d_model),
+        gr.update(value=cfg.n_layers),
+        gr.update(value=cfg.n_heads),
+        gr.update(value=cfg.n_kv_heads),
+        gr.update(value=cfg.d_ff),
+    ]
+
+
+def read_checkpoint_config(checkpoint_path: str) -> str:
+    """Return a human-readable summary of the model config stored in a checkpoint.
+
+    Used by the Fine-tune tab to show the architecture of the checkpoint being
+    fine-tuned, so the user knows what model size they are working with.
+    """
+    path = checkpoint_path.strip() if checkpoint_path else ""
+    if not path:
+        return ""
+    from pathlib import Path as _Path
+    if not _Path(path).exists():
+        return "Checkpoint not found."
+    try:
+        import torch as _torch
+        ckpt = _torch.load(path, map_location="cpu", weights_only=True)
+        cfg = ckpt.get("config", {})
+        d_model   = cfg.get("d_model", "?")
+        n_layers  = cfg.get("n_layers", "?")
+        n_heads   = cfg.get("n_heads", "?")
+        n_kv      = cfg.get("n_kv_heads", "?")
+        d_ff      = cfg.get("d_ff", "?")
+        vocab     = cfg.get("vocab_size", "?")
+        max_seq   = cfg.get("max_seq_len", "?")
+        step      = ckpt.get("step", "?")
+        # Absent in checkpoints saved before attention_type existed — those
+        # all predate MLA, so "gqa" is the correct default, not a guess.
+        attn_type = cfg.get("attention_type", "gqa")
+        # Match to a known preset for a friendly label.
+        from grimoire_ai.llm.model.config import MODEL_PRESETS
+        label = next(
+            (name for name, p in MODEL_PRESETS.items()
+             if p.d_model == d_model and p.n_layers == n_layers),
+            "custom",
+        )
+        return (
+            f"Architecture: {label}  |  "
+            f"d_model={d_model}  n_layers={n_layers}  n_heads={n_heads}  "
+            f"n_kv_heads={n_kv}  d_ff={d_ff}  attention={attn_type}  "
+            f"vocab={vocab}  max_seq={max_seq}  |  "
+            f"saved at step {step}"
+        )
+    except Exception as exc:
+        return f"Could not read checkpoint: {exc}"
+
+
+def run_pretrain(
+    corpus_path: str,
+    checkpoint_dir: str,
+    resume_from: str,
+    total_steps: int,
+    warmup_steps: int,
+    peak_lr: float,
+    batch_size: int,
+    accumulate_steps: int,
+    log_every: int,
+    save_every: int,
+    val_split: float,
+    eval_every: int,
+    eval_batches: int,
+    d_model: int,
+    n_layers: int,
+    n_heads: int,
+    n_kv_heads: int,
+    d_ff: int,
+    gradient_checkpointing: bool = False,
+    compile_mode: str = "default",
+    sample_weights_path: str = "",
+    val_stratified: bool = False,
+    attention_type: str = "gqa",
+    mla_kv_latent_dim: float = 0,
+    mla_rope_head_dim: float = 0,
+) -> Generator[str, None, None]:
+    """Launch a pre-training run and stream log output.
+
+    When ``val_split`` is greater than 0, that fraction of the corpus is held
+    out as a validation set -- scattered across many small blocks rather than
+    one contiguous tail (see ``train.py``'s ``_split_blocks``), so the held-
+    out set is a representative sample rather than whatever happens to sort
+    last -- and a validation loss is logged every ``eval_every`` steps
+    (averaged over at most ``eval_batches`` batches).  ``val_split = 0``
+    disables evaluation and the run behaves exactly as before.
+
+    ``val_stratified``, when ``True`` (and ``val_split > 0``), holds out
+    ``val_split`` fraction *within each --weight-pattern tier separately*
+    (see ``train.py``'s ``_split_by_tier``) instead of scattering blocks
+    corpus-wide -- guarantees every weight tier is represented in
+    validation proportional to its own size, so a thin tier can't end up
+    with zero validation windows purely by chance. Requires the corpus to
+    have been tagged with ``--weight-pattern``; errors if the tag sidecars
+    are missing.
+
+    ``sample_weights_path``, when set, points at a ``.npy`` file (built by
+    the "Build sample weights" button, or ``scripts/score_difficulty.py``)
+    with one weight per training window — used to build a
+    ``WeightedRandomSampler`` instead of uniform shuffling. Left blank,
+    training behaves exactly as before.
+
+    ``attention_type`` selects between ``GroupedQueryAttention`` ("gqa",
+    default) and the experimental ``MultiHeadLatentAttention`` ("mla") —
+    see ``docs/architecture_optimization.md`` item #1. ``mla_kv_latent_dim``
+    and ``mla_rope_head_dim`` only apply when ``attention_type="mla"``;
+    ``0`` means "let the module pick its own default" (``2 * head_dim`` and
+    ``head_dim // 2`` respectively), matching this UI's existing "0 = auto"
+    convention (e.g. ``eval_batches``).
+    """
+    import numpy as np
+    from grimoire_ai.llm.device import select_device
+    from grimoire_ai.llm.model.config import TransformerConfig
+    from grimoire_ai.llm.model.transformer import GrimoireTransformer
+    from grimoire_ai.llm.training.train import _build_datasets
+    from grimoire_ai.llm.training.trainer import Trainer
+
+    stop_event = threading.Event()
+    resume = resume_from.strip() or None
+
+    def _train(on_log, on_save, on_done, on_eval):
+        device = select_device()
+        model_config = TransformerConfig(
+            d_model=int(d_model),
+            n_layers=int(n_layers),
+            n_heads=int(n_heads),
+            n_kv_heads=int(n_kv_heads),
+            d_ff=int(d_ff),
+            attention_type=attention_type,
+            mla_kv_latent_dim=_mla_dim_or_none(mla_kv_latent_dim),
+            mla_rope_head_dim=_mla_dim_or_none(mla_rope_head_dim),
+        )
+        model = GrimoireTransformer(model_config)
+        train_dataset, val_dataset = _build_datasets(
+            corpus_path=corpus_path,
+            val_corpus_path=None,
+            val_split=float(val_split),
+            seq_len=model_config.max_seq_len,
+            val_stratified=val_stratified,
+        )
+        sample_weights = None
+        swp = sample_weights_path.strip()
+        if swp:
+            sample_weights = np.load(swp)
+        Trainer(
+            model=model,
+            train_dataset=train_dataset,
+            val_dataset=val_dataset,
+            total_steps=total_steps,
+            warmup_steps=warmup_steps,
+            peak_lr=peak_lr,
+            batch_size=batch_size,
+            accumulate_steps=accumulate_steps,
+            log_every=log_every,
+            save_every=save_every,
+            eval_every=int(eval_every),
+            eval_batches=int(eval_batches),
+            checkpoint_dir=checkpoint_dir,
+            device=device,
+            gradient_checkpointing=gradient_checkpointing,
+            compile_mode=compile_mode,
+            sample_weights=sample_weights,
+            on_log=on_log,
+            on_save=on_save,
+            on_done=on_done,
+            on_eval=on_eval,
+            stop_event=stop_event,
+        ).train(resume_from=resume)
+
+    yield from _wrap_with_buttons(_stream_training(_train, stop_key="pretrain", stop_event=stop_event))
+
+
+def run_build_sample_weights(
+    corpus_path: str,
+    val_split: float,
+    d_model: int,
+    n_layers: int,
+    n_heads: int,
+    n_kv_heads: int,
+    d_ff: int,
+    output_path: str,
+    val_stratified: bool = False,
+) -> str:
+    """Build a per-window sample_weights.npy aligned to the exact train region.
+
+    Reuses ``_build_datasets`` — the same function ``run_pretrain`` calls —
+    so the resulting weights array is guaranteed to match the training
+    dataset's window count and order even when a validation split is set
+    (which excludes a scatter of validation blocks from the train region;
+    see ``train.py``'s ``_split_blocks``, or ``_split_by_tier`` when
+    ``val_stratified`` is set — must match whatever ``run_pretrain`` will
+    actually use).
+    """
+    from grimoire_ai.llm.model.config import TransformerConfig
+    from grimoire_ai.llm.training.train import _build_datasets
+    from grimoire_ai.llm.data.sample_weights import (
+        compute_window_weights,
+        load_doc_weight_sidecars,
+    )
+    import numpy as np
+
+    corpus_path = corpus_path.strip()
+    output_path = output_path.strip()
+    if not corpus_path:
+        return "Error: set a corpus path first."
+    if not output_path:
+        return "Error: set a sample weights output path first."
+
+    try:
+        doc_end_offsets, doc_weights = load_doc_weight_sidecars(corpus_path)
+    except FileNotFoundError as exc:
+        return f"Error: {exc}"
+
+    model_config = TransformerConfig(
+        d_model=int(d_model), n_layers=int(n_layers), n_heads=int(n_heads),
+        n_kv_heads=int(n_kv_heads), d_ff=int(d_ff),
+    )
+    try:
+        train_dataset, _ = _build_datasets(
+            corpus_path=corpus_path,
+            val_corpus_path=None,
+            val_split=float(val_split),
+            seq_len=model_config.max_seq_len,
+            val_stratified=bool(val_stratified),
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return f"Error: {exc}"
+
+    try:
+        window_weights = compute_window_weights(train_dataset.offsets, doc_end_offsets, doc_weights)
+    except ValueError as exc:
+        return f"Error: {exc}"
+
+    out_p = Path(output_path)
+    out_p.parent.mkdir(parents=True, exist_ok=True)
+    np.save(str(out_p), window_weights)
+
+    unique, counts = np.unique(window_weights, return_counts=True)
+    breakdown = "\n".join(
+        f"  weight {w:.2f} -> {c:,} windows ({100 * c / len(window_weights):.1f}%)"
+        for w, c in sorted(zip(unique.tolist(), counts.tolist()))
+    )
+    return (
+        f"Wrote {len(window_weights):,} window weights to {out_p}\n"
+        f"(train region: {len(train_dataset):,} windows, "
+        f"val_split={val_split})\n{breakdown}"
+    )
+
+
+def stop_pretrain() -> None:
+    """Signal all running pre-training loops to stop after their current step."""
+    _signal_stop("pretrain")
+
+
+# ---------------------------------------------------------------------------
+# Fine-tune tab logic
+# ---------------------------------------------------------------------------
+
+def run_finetune(
+    pretrain_ckpt: str,
+    resume_from: str,
+    data_path: str,
+    vocab_path: str,
+    checkpoint_dir: str,
+    total_steps: int,
+    warmup_steps: int,
+    peak_lr: float,
+    batch_size: int,
+    accumulate_steps: int,
+    log_every: int,
+    save_every: int,
+    val_split: float,
+    eval_every: int,
+    eval_batches: int,
+    early_stop_enabled: bool = True,
+    early_stop_patience: int = 2,
+    max_seq_len: int = 512,
+    lora_rank: int = 0,
+    lora_alpha: float = 16.0,
+    lora_targets: str = "q_proj,v_proj",
+    agent_name: str = "",
+) -> Generator[str, None, None]:
+    """Launch a fine-tuning run and stream log output.
+
+    When ``val_split`` is greater than 0, that fraction of the examples is
+    randomly held out (seeded, no leakage) and a validation loss is logged
+    every ``eval_every`` steps.  ``val_split = 0`` disables evaluation.
+
+    When ``early_stop_enabled`` is set, training stops once validation loss
+    fails to improve beyond bootstrap sampling noise for ``early_stop_patience``
+    consecutive evals, instead of always running the full ``total_steps`` —
+    this removes the need to hand-pick a step count from epoch math. It
+    requires a validation set; if ``val_split`` is 0 a 10% split is used
+    automatically so early stopping has data to act on.
+    """
+    from grimoire_ai.llm.data.conversation import ConversationDataset
+    from grimoire_ai.llm.device import select_device
+    from grimoire_ai.llm.model.config import TransformerConfig
+    from grimoire_ai.llm.model.transformer import GrimoireTransformer
+    from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
+    from grimoire_ai.llm.training.checkpoint import load_checkpoint
+    from grimoire_ai.llm.training.finetune import split_dataset
+    from grimoire_ai.llm.training.trainer import Trainer
+
+    stop_event = threading.Event()
+    resume = resume_from.strip() or None
+    pretrain_ckpt = (pretrain_ckpt or "").strip()
+    data_path = (data_path or "").strip()
+
+    _btn_idle = (gr.update(interactive=True), gr.update(interactive=False))
+    if not pretrain_ckpt:
+        yield "Error: No pre-trained checkpoint selected.", *_btn_idle
+        return
+    if not data_path:
+        yield "Error: No fine-tune data file selected.", *_btn_idle
+        return
+
+    def _train(on_log, on_save, on_done, on_eval):
+        import os
+        from pathlib import Path as _Path
+        from grimoire_ai.llm.model.lora import save_lora as _save_lora
+
+        device = select_device()
+        ckpt = load_checkpoint(pretrain_ckpt)
+        config = TransformerConfig.from_dict(ckpt["config"])
+        model = GrimoireTransformer(config)
+        model.load_state_dict(ckpt["model"])
+        tokenizer = BytePairEncoder.load(vocab_path)
+        dataset = ConversationDataset(
+            path=data_path,
+            tokenizer=tokenizer,
+            max_seq_len=min(max_seq_len, config.max_seq_len),
+        )
+        es_enabled = bool(early_stop_enabled)
+        es_patience = max(1, int(early_stop_patience or 1))
+        effective_val_split = float(val_split)
+        if es_enabled and effective_val_split <= 0:
+            effective_val_split = 0.1
+        train_dataset, val_dataset = split_dataset(dataset, effective_val_split)
+
+        # LoRA: freeze base weights, wrap target layers.
+        lora_rank_int = int(lora_rank)
+        lora_targets_list = [t.strip() for t in lora_targets.split(",") if t.strip()]
+        if lora_rank_int > 0:
+            model.add_lora_adapters(
+                rank=lora_rank_int, alpha=float(lora_alpha), targets=lora_targets_list
+            )
+
+        def _on_save_combined(step: int, elapsed: float) -> None:
+            if lora_rank_int > 0:
+                lora_path = _Path(checkpoint_dir) / f"step_{step:07d}.lora"
+                _save_lora(model, lora_rank_int, float(lora_alpha), lora_targets_list, str(lora_path))
+            if on_save is not None:
+                on_save(step, elapsed)
+
+        # Capture the actual final step and elapsed time reported by Trainer.on_done
+        # so the final-save log entry shows accurate values instead of synthetic ones.
+        _done_info: list = []
+
+        def _on_done_capturing(step: int, elapsed: float) -> None:
+            _done_info.append((step, elapsed))
+            on_done(step, elapsed)
+
+        Trainer(
+            model=model,
+            train_dataset=train_dataset,
+            val_dataset=val_dataset,
+            total_steps=total_steps,
+            warmup_steps=warmup_steps,
+            peak_lr=peak_lr,
+            batch_size=batch_size,
+            accumulate_steps=accumulate_steps,
+            log_every=log_every,
+            save_every=save_every,
+            eval_every=int(eval_every),
+            eval_batches=int(eval_batches),
+            early_stop_enabled=es_enabled,
+            early_stop_patience=es_patience,
+            checkpoint_dir=checkpoint_dir,
+            device=device,
+            on_log=on_log,
+            on_save=_on_save_combined,
+            on_done=_on_done_capturing,
+            on_eval=on_eval,
+            stop_event=stop_event,
+            model_state_dict_fn=model.merged_state_dict if lora_rank_int > 0 else None,
+        ).train(resume_from=resume)
+
+        if lora_rank_int > 0 and not stop_event.is_set():
+            # Strip any directory separators from the agent name to prevent
+            # path traversal (e.g. "../../../tmp/evil" → "evil").
+            _raw = (agent_name or "").strip() or "lora_final"
+            _safe_name = _Path(_raw).name or "lora_final"
+            _final = _Path(checkpoint_dir) / f"{_safe_name}.lora"
+            try:
+                _save_lora(model, lora_rank_int, float(lora_alpha), lora_targets_list, str(_final))
+            except Exception as exc:
+                raise RuntimeError(f"Failed to save final LoRA adapter to {_final}: {exc}") from exc
+            _step, _elapsed = _done_info[0] if _done_info else (int(total_steps), 0.0)
+            on_save(_step, _elapsed)
+
+    yield from _wrap_with_buttons(_stream_training(_train, stop_key="finetune", stop_event=stop_event))
+
+
+def stop_finetune() -> None:
+    """Signal all running fine-tuning loops to stop after their current step."""
+    _signal_stop("finetune")
+
+
+# ---------------------------------------------------------------------------
+# Ingest tab logic
+# ---------------------------------------------------------------------------
+
+def _wrap_with_buttons(gen: Generator) -> Generator[tuple, None, None]:
+    """Wrap a log-text generator to also yield start/stop button state.
+
+    Yields ``(log_text, start_update, stop_update)`` triples so callers can
+    wire the generator outputs to ``[log_box, start_btn, stop_btn]``.
+    Disables the start button and enables the stop button while running,
+    then reverses both when the generator is exhausted.
+    """
+    log_text = ""
+    for log_text in gen:
+        yield log_text, gr.update(interactive=False), gr.update(interactive=True)
+    yield log_text, gr.update(interactive=True), gr.update(interactive=False)
+
+
+_WATCHDOG_INTERVAL_S = 30.0
+
+
+def _stream_task(
+    task_fn, stop_key: Optional[str] = None, stop_event: Optional[threading.Event] = None,
+) -> Generator[str, None, None]:
+    """Run ``task_fn(on_progress)`` in a background thread and stream messages.
+
+    ``task_fn`` receives a single ``on_progress(msg: str)`` callback.
+    Yields the full accumulated log so the Gradio Textbox always shows
+    the complete history.
+
+    When ``stop_key``/``stop_event`` are given, the event is registered under
+    that key for the duration of the run (see ``_stop_events``) and
+    unregistered once the task finishes, so ``stop_*()`` can always reach it
+    even if a previous run under the same key is still alive.
+
+    A watchdog injects a log line if no progress message arrives for
+    ``_WATCHDOG_INTERVAL_S`` seconds, so a genuine hang is visibly distinct
+    from a slow-but-working run instead of both looking like a static log.
+    """
+    log_q: queue.Queue = queue.Queue()
+
+    def on_progress(msg: str) -> None:
+        log_q.put(msg)
+
+    if stop_key and stop_event is not None:
+        _register_stop_event(stop_key, stop_event)
+
+    def _run() -> None:
+        try:
+            task_fn(on_progress)
+        except Exception as exc:  # noqa: BLE001
+            log_q.put(f"\nError: {exc}\n")
+        finally:
+            log_q.put(None)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+    log_text = ""
+    last_progress = time.time()
+    next_watchdog = _WATCHDOG_INTERVAL_S
+    try:
+        while True:
+            try:
+                msg = log_q.get(timeout=0.5)
+            except queue.Empty:
+                silence = time.time() - last_progress
+                if silence >= next_watchdog:
+                    log_text += (
+                        f"\n  … no progress for {int(silence)}s — "
+                        f"still running (Stop remains available) …\n"
+                    )
+                    next_watchdog += _WATCHDOG_INTERVAL_S
+                yield log_text
+                continue
+
+            last_progress = time.time()
+            next_watchdog = _WATCHDOG_INTERVAL_S
+
+            if msg is None:
+                log_text += "\nDone.\n"
+                yield log_text
+                break
+
+            log_text += msg + "\n"
+            yield log_text
+    finally:
+        if stop_key and stop_event is not None:
+            _unregister_stop_event(stop_key, stop_event)
+
+
+def run_ingest(
+    mode: str,
+    url_or_dir: str,
+    file_objs,
+    output_dir: str,
+    cleaning: str,
+    recursive: bool,
+    timeout: int,
+) -> Generator[str, None, None]:
+    """Run corpus ingestion and stream progress messages."""
+    from grimoire_ai.corpus.ingest import CleaningLevel, ingest
+
+    cleaning_level = CleaningLevel(cleaning)
+
+    def _task(on_progress):
+        if mode == "File":
+            if not file_objs:
+                raise ValueError("No file uploaded.")
+            files = file_objs if isinstance(file_objs, list) else [file_objs]
+            for f in files:
+                on_progress(f"Ingesting {Path(f.name).name} ...")
+                ingest(
+                    source=f.name,
+                    output_dir=output_dir.strip() or None,
+                    recursive=False,
+                    timeout=int(timeout),
+                    cleaning=cleaning_level,
+                    on_progress=on_progress,
+                )
+            return
+        else:
+            source = url_or_dir.strip()
+            if not source:
+                raise ValueError("Source path or URL is required.")
+
+        ingest(
+            source=source,
+            output_dir=output_dir.strip() or None,
+            recursive=recursive,
+            timeout=int(timeout),
+            cleaning=cleaning_level,
+            on_progress=on_progress,
+        )
+
+    yield from _wrap_with_buttons(_stream_task(_task))
+
+
+# ---------------------------------------------------------------------------
+# Corpus index tab logic
+# ---------------------------------------------------------------------------
+
+def corpus_index_status(corpus_dir: str, checkpoint_path: str) -> str:
+    """Return a human-readable summary of the current index state."""
+    from grimoire_ai.llm.inference.rag_index import RagIndex
+    corpus_dir = corpus_dir.strip()
+    checkpoint_path = checkpoint_path.strip()
+    if not corpus_dir:
+        return "Enter a corpus directory to check status."
+    index_dir = Path(corpus_dir) / ".semantic_index"
+    if not index_dir.is_dir():
+        return "No index found — click Build to create one."
+    try:
+        meta = json.loads((index_dir / "meta.json").read_text(encoding="utf-8"))
+        n = meta.get("n_passages", "?")
+        faiss_present = (index_dir / "faiss.index").is_file()
+        backend = "FAISS + brute-force fallback" if faiss_present else "brute-force cosine"
+        index_info = f"{n} passage(s) indexed  |  backend: {backend}"
+    except Exception:
+        return "Index present but unreadable — click Build to recreate it."
+    if not checkpoint_path:
+        return f"Index found  |  {index_info}  |  Enter a checkpoint path to check freshness."
+    hashes = RagIndex.compute_source_hashes([corpus_dir], checkpoint_path, cache_dir=index_dir)
+    stale = RagIndex.is_stale(index_dir, hashes)
+    return f"{'STALE — rebuild needed' if stale else 'Fresh'}  |  {index_info}"
+
+
+def run_build_index(
+    corpus_dir: str,
+    checkpoint_path: str,
+    vocab_path: str,
+) -> Generator[str, None, None]:
+    """Pre-compute and persist the semantic index for a corpus directory."""
+    from grimoire_ai.llm.inference.engine import InferenceEngine
+    from grimoire_ai.llm.inference.rag_index import RagIndex
+
+    corpus_dir = corpus_dir.strip()
+    checkpoint_path = checkpoint_path.strip()
+    vocab_path = vocab_path.strip()
+
+    stop_event = threading.Event()
+
+    def _task(on_progress):
+        p = Path(corpus_dir)
+        if not p.is_dir():
+            raise ValueError(f"Corpus directory not found: {corpus_dir}")
+        if not checkpoint_path:
+            raise ValueError("Checkpoint path is required.")
+        if not vocab_path:
+            raise ValueError("Vocabulary path is required.")
+
+        on_progress("Loading model …")
+        engine = InferenceEngine(
+            checkpoint_path=checkpoint_path,
+            tokenizer_path=vocab_path,
+        )
+        on_progress(f"Model loaded  ({engine.model.num_parameters():,} params)")
+
+        documents: list[tuple[str, str]] = []
+        for txt in sorted(p.glob("*.txt")):
+            documents.append((txt.read_text(encoding="utf-8"), txt.stem))
+        if not documents:
+            raise ValueError(f"No .txt files found in {corpus_dir}")
+        on_progress(f"Found {len(documents)} source file(s).  Embedding passages …")
+
+        retriever = engine.build_semantic_corpus(documents, on_progress=on_progress)
+        on_progress(f"Indexed {retriever.size} passage(s).  Saving index …")
+
+        index_dir = p / ".semantic_index"
+        hashes = RagIndex.compute_source_hashes([corpus_dir], checkpoint_path, cache_dir=index_dir)
+        retriever.save_index(index_dir, source_hashes=hashes)
+
+        faiss_built = (index_dir / "faiss.index").is_file()
+        backend = "FAISS + brute-force fallback" if faiss_built else "brute-force cosine"
+        on_progress(
+            f"Index saved to {index_dir}\n"
+            f"  Passages: {retriever.size}  |  Backend: {backend}"
+        )
+
+    yield from _wrap_with_buttons(_stream_task(_task, stop_key="corpus", stop_event=stop_event))
+
+
+def stop_build_index() -> None:
+    """Signal all running index build tasks to stop."""
+    _signal_stop("corpus")
+
+
+def _toggle_finetune_mode(mode: str):
+    """Update defaults when the fine-tune mode dropdown changes."""
+    is_agent = mode == "Agent (LoRA adapter)"
+    rank = 8 if is_agent else 0
+    return (
+        gr.update(visible=is_agent, value=""),                                           # ft_agent_name
+        gr.update(value=rank),                                                            # ft_lora_rank
+        gr.update(value="checkpoints/lora/" if is_agent else "checkpoints/finetune/"),  # ft_ckpt_dir
+        gr.update(value=""),                                                              # ft_resume
+        gr.update(value=float(rank) if rank > 0 else 16.0),                             # ft_lora_alpha
+        # LoRA only updates ~0.5% of parameters, so the same 5e-5 peak LR used
+        # for full fine-tuning barely moves the adapter weights in a handful
+        # of steps. Use a higher LR for the adapter's much smaller update.
+        gr.update(value=2e-4 if is_agent else 5e-5),                                     # ft_lr
+    )
+
+
+
+def _toggle_mla_fields(attention_type: str):
+    """Show the MLA-specific latent/rope dimension fields only when selected."""
+    return gr.update(visible=attention_type == "mla")
+
+
+def _mla_dim_or_none(value: float) -> Optional[int]:
+    """Convert an MLA dimension field's 0-means-auto sentinel to None.
+
+    Mirrors this app's existing "0 = use the built-in default" convention
+    (e.g. ``eval_batches``) for ``TransformerConfig``'s optional
+    ``mla_kv_latent_dim`` / ``mla_rope_head_dim`` fields, which themselves
+    treat ``None`` as "compute a sensible default from head_dim".
+    """
+    return int(value) or None
+
+
+def _toggle_ingest_inputs(mode: str):
+    """Show/hide source inputs depending on the selected mode."""
+    return (
+        gr.update(visible=mode in ("URL", "Directory")),  # url_or_dir textbox
+        gr.update(visible=mode == "File"),                 # file upload
+        gr.update(visible=mode == "Directory"),            # recursive checkbox
+        gr.update(visible=mode == "URL"),                  # timeout input
+    )
+
+
+def _derive_pt_step_params(steps: int):
+    """Auto-fill warmup, log, save, and eval_every from total pre-train steps."""
+    steps = max(1, int(steps or 1))
+    warmup    = max(1, round(steps * 0.05))
+    log_every = max(1, round(steps * 0.005))
+    save      = max(1, round(steps * 0.10))
+    return (
+        gr.update(value=warmup),
+        gr.update(value=log_every),
+        gr.update(value=save),
+        gr.update(value=save),
+    )
+
+
+def _derive_ft_step_params(steps: int):
+    """Auto-fill warmup, log, save, and eval_every from total fine-tune steps."""
+    steps = max(1, int(steps or 1))
+    warmup    = max(1, round(steps * 0.02))
+    log_every = max(1, round(steps * 0.05))
+    save      = max(1, round(steps * 0.20))
+    return (
+        gr.update(value=warmup),
+        gr.update(value=log_every),
+        gr.update(value=save),
+        gr.update(value=save),
+    )
+
+
+def _derive_lora_alpha(rank: int):
+    """Keep LoRA alpha equal to rank (gives scale=1); fall back to 16 when rank=0."""
+    return gr.update(value=float(rank) if rank > 0 else 16.0)
+
+
+# Approximate parameter counts for each named preset (used for Chinchilla math).
+_PRESET_PARAMS: dict[str, int] = {
+    "small-25M":  25_000_000,
+    "medium-85M": 85_000_000,
+    "large-250M": 250_000_000,
+}
+
+
+def _suggest_preset_from_corpus(corpus_path: str, pt_batch: int, pt_accum: int):
+    """Suggest a model size preset and Chinchilla-optimal step count from a corpus binary.
+
+    Reads the token count from the binary's file size (int32 = 4 bytes each),
+    then applies the thresholds from PARAM_OPT.md Phase 5:
+      < 100 M tokens  → small-25M
+      100 M–500 M     → medium-85M
+      > 500 M         → large-250M
+
+    Also derives pt_steps = round(20 × n_params / (batch × accum × 1024)).
+
+    Returns updates for: pt_preset, pt_d_model, pt_n_layers, pt_n_heads,
+    pt_n_kv_heads, pt_d_ff, pt_steps, pt_warmup, pt_log, pt_save, pt_eval_every.
+    """
+    from pathlib import Path as _Path
+    from grimoire_ai.llm.model.config import MODEL_PRESETS
+
+    _no_update = [gr.update()] * 11
+
+    corpus_path = (corpus_path or "").strip()
+    if not corpus_path:
+        return _no_update
+
+    p = _Path(corpus_path)
+    if not p.is_file():
+        return _no_update
+
+    try:
+        n_tokens = p.stat().st_size // 4  # int32 tokens
+    except OSError:
+        return _no_update
+
+    if n_tokens < 100_000_000:
+        preset = "small-25M"
+    elif n_tokens < 500_000_000:
+        preset = "medium-85M"
+    else:
+        preset = "large-250M"
+
+    cfg = MODEL_PRESETS[preset]
+    n_params = _PRESET_PARAMS[preset]
+
+    batch = max(int(pt_batch or 1), 1)
+    accum = max(int(pt_accum or 1), 1)
+    tokens_per_step = batch * accum * 1024  # max_seq_len default
+    optimal_steps = round(20 * n_params / tokens_per_step)
+
+    # Compute step-derived fields directly rather than relying on pt_steps.change
+    # cascading from a programmatic update, which Gradio does not guarantee.
+    step_updates = _derive_pt_step_params(optimal_steps)
+
+    return [
+        gr.update(value=preset),
+        gr.update(value=cfg.d_model),
+        gr.update(value=cfg.n_layers),
+        gr.update(value=cfg.n_heads),
+        gr.update(value=cfg.n_kv_heads),
+        gr.update(value=cfg.d_ff),
+        gr.update(value=optimal_steps),
+        *step_updates,
+    ]
+
+
+# Target epochs over the fine-tune dataset, tiered by example count. Chinchilla's
+# 20-tokens-per-parameter ratio governs pre-training a model from scratch and
+# doesn't transfer to fine-tuning an already-trained checkpoint — there, the
+# binding constraint is overfitting a small example set (as few as a dozen
+# examples), not undertraining, so step count is derived from epochs over the
+# dataset instead. Smaller datasets get fewer epochs to limit memorisation.
+# Tuned down from an earlier, more generous set of tiers after a 133-example
+# run still overfit at 8 epochs: val loss plateaued around step 40 of 66
+# while train loss kept falling, the classic overfitting signature.
+_FT_EPOCH_TIERS: tuple[tuple[int, int], ...] = (
+    (20, 2),
+    (100, 3),
+    (500, 4),
+)
+_FT_EPOCHS_DEFAULT = 6
+
+# LoRA only updates the adapter's ~0.5% of parameters with the base frozen,
+# so it carries much less overfitting risk than full fine-tuning — that's
+# the whole point of the design (see docs/PLAN.md). A 111-example LoRA run
+# at the full-fine-tune tiers (4 epochs, 28 steps) showed flat, noisy loss
+# with no learning trend, i.e. underfitting, not overfitting. LoRA gets
+# roughly double the epochs of the full fine-tune tiers.
+#
+# CAVEAT (eval suite, 111-example saga.jsonl run): this tier's own
+# suggestion (8 epochs -> 56 steps) was later found to regress perplexity,
+# retrieval hit-rate, and quiz pass-rate well below the base checkpoint,
+# while a 12-step run on the same data (the tier the calc would pick for
+# ~31 examples) evaluated roughly on par with base. So for this dataset
+# size the assumption that doubled epochs stays safely underfitting-biased
+# did not hold — the actual overfitting onset lies somewhere between 12
+# and 56 steps. Treat these tiers as a starting point, not a guarantee;
+# eval before trusting a checkpoint produced from this suggestion.
+_FT_LORA_EPOCH_TIERS: tuple[tuple[int, int], ...] = (
+    (20, 4),
+    (100, 6),
+    (500, 8),
+)
+_FT_LORA_EPOCHS_DEFAULT = 12
+
+
+def _suggest_ft_steps_from_data(data_path: str, ft_batch: int, ft_accum: int, ft_mode: str):
+    """Suggest a total fine-tune step count from the dataset's example count.
+
+    Counts non-empty lines in the JSONL dataset and targets a number of
+    epochs that shrinks for smaller datasets, to avoid the overfitting seen
+    when running hundreds of steps over a handful of examples. LoRA adapter
+    runs use a separate, more generous set of tiers since freezing the base
+    weights makes overfitting far less likely than with full fine-tuning.
+
+    Returns updates for: ft_steps, ft_warmup, ft_log, ft_save, ft_eval_every.
+    """
+    from pathlib import Path as _Path
+
+    _no_update = [gr.update()] * 5
+
+    data_path = (data_path or "").strip()
+    if not data_path:
+        return _no_update
+
+    p = _Path(data_path)
+    if not p.is_file():
+        return _no_update
+
+    try:
+        n_examples = sum(1 for line in p.read_text(encoding="utf-8").splitlines() if line.strip())
+    except OSError:
+        return _no_update
+
+    if n_examples == 0:
+        return _no_update
+
+    is_agent = ft_mode == "Agent (LoRA adapter)"
+    tiers = _FT_LORA_EPOCH_TIERS if is_agent else _FT_EPOCH_TIERS
+    epochs = _FT_LORA_EPOCHS_DEFAULT if is_agent else _FT_EPOCHS_DEFAULT
+    for threshold, tier_epochs in tiers:
+        if n_examples <= threshold:
+            epochs = tier_epochs
+            break
+
+    batch = max(int(ft_batch or 1), 1)
+    accum = max(int(ft_accum or 1), 1)
+    effective_batch = batch * accum
+    steps = max(10, round(epochs * n_examples / effective_batch))
+
+    # Compute step-derived fields directly rather than relying on ft_steps.change
+    # cascading from a programmatic update, which Gradio does not guarantee.
+    step_updates = _derive_ft_step_params(steps)
+
+    return [gr.update(value=steps), *step_updates]
+
+
+# ---------------------------------------------------------------------------
+# Evaluate tab logic
+# ---------------------------------------------------------------------------
+
+def run_eval_ui(
+    checkpoint_path: str,
+    vocab_path: str,
+    corpus_dir: str,
+    corpus_bin: str,
+    quiz_path: str,
+    encoder: str,
+    quantize: bool,
+    max_ppl_batches: int,
+    device: str = "Auto",
+    lora_path: str = "",
+    quiz_repetition_penalty: float = 1.0,
+    math_tool_enabled: bool = False,
+    retrieval_threshold: Optional[float] = None,
+) -> Generator[tuple, None, None]:
+    """Run the evaluation harness and stream progress."""
+    from grimoire_ai.llm.inference.engine import InferenceEngine
+    from grimoire_ai.llm.eval.harness import run_eval
+    from grimoire_ai.llm.inference.semantic import (
+        EXTERNAL_ENCODERS, SemanticRetriever, make_external_embed_fn,
+    )
+
+    checkpoint_path = checkpoint_path.strip()
+    vocab_path = vocab_path.strip()
+    corpus_dir = corpus_dir.strip()
+    corpus_bin = corpus_bin.strip()
+    quiz_path = quiz_path.strip()
+    lora_path = (lora_path or "").strip()
+    device_arg = None if device == "Auto" else device.lower()
+    # LoRA adapters are incompatible with int8-quantized engines; silently
+    # disable quantization when a LoRA path is provided so load_lora() succeeds.
+    if lora_path:
+        quantize = False
+
+    if not checkpoint_path or not vocab_path:
+        def _task(on_progress):
+            raise ValueError("Checkpoint and vocabulary paths are required.")
+        yield from _wrap_with_buttons(_stream_task(_task))
+        return
+
+    stop_event = threading.Event()
+
+    def _task(on_progress):
+        on_progress("Loading model …")
+        math_tool = None
+        if math_tool_enabled:
+            from grimoire_ai.tools.math_tool import MathTool
+            math_tool = MathTool()
+        engine = InferenceEngine(
+            checkpoint_path=checkpoint_path,
+            tokenizer_path=vocab_path,
+            quantize=quantize,
+            device=device_arg,
+            math_tool=math_tool,
+            retrieval_threshold=retrieval_threshold,
+        )
+        on_progress(f"Model loaded on {engine.device}  ({engine.model.num_parameters():,} params)")
+
+        if lora_path:
+            try:
+                engine.load_lora(lora_path)
+            except Exception as exc:
+                raise ValueError(f"Failed to load LoRA adapter: {exc}") from exc
+            on_progress(f"LoRA adapter loaded: {lora_path}")
+
+        use_lexical  = encoder == "Lexical (Jaccard)"
+        use_external = encoder in EXTERNAL_ENCODERS
+
+        if corpus_dir and Path(corpus_dir).is_dir():
+            txt_files = sorted(Path(corpus_dir).glob("*.txt"))
+            if txt_files:
+                if use_external:
+                    # External sentence encoders are independent of the
+                    # checkpoint/LoRA, so there's no cache-staleness key to
+                    # reuse here (unlike the model-embeddings path below) —
+                    # always re-embed. They're also typically faster than a
+                    # forward pass through the Grimoire model for this corpus
+                    # size, so that's an acceptable cost for an eval run.
+                    on_progress(f"Loading {encoder} …")
+                    try:
+                        embed_fn = make_external_embed_fn(EXTERNAL_ENCODERS[encoder])
+                    except ImportError as exc:
+                        raise ValueError(str(exc)) from exc
+                    documents = [
+                        (txt.read_text(encoding="utf-8"), txt.stem) for txt in txt_files
+                    ]
+                    on_progress(f"Embedding {len(documents)} file(s) with {encoder} …")
+                    retriever = SemanticRetriever(embed_fn=embed_fn)
+                    for text, source in documents:
+                        retriever.add_text(text, source=source)
+                    retriever.index(stop_event=stop_event, on_progress=on_progress)
+                    engine.corpus = retriever
+                elif not use_lexical:
+                    documents: list[tuple[str, str]] = [
+                        (txt.read_text(encoding="utf-8"), txt.stem) for txt in txt_files
+                    ]
+                    # Embedding every passage in a large corpus from scratch is
+                    # the slowest step in this pipeline (one forward pass per
+                    # batch). Reuse the same on-disk RagIndex + staleness check
+                    # as the Chat tab so re-running eval against an unchanged
+                    # corpus doesn't pay that cost every time.
+                    index_dir = _semantic_index_dir([corpus_dir])
+                    loaded_ok = False
+                    if index_dir and _index_is_fresh(index_dir, [corpus_dir], checkpoint_path, lora_path):
+                        on_progress("Loading cached semantic index …")
+                        try:
+                            engine.corpus = SemanticRetriever.from_index(index_dir, embed_fn=engine.embed)
+                            loaded_ok = engine.corpus.size > 0
+                        except Exception:
+                            loaded_ok = False
+                    if not loaded_ok:
+                        speed_hint = "this can take a while on CPU" if engine.device == "cpu" else "fast on GPU"
+                        on_progress(
+                            f"No cached index — embedding {len(documents)} file(s) "
+                            f"({speed_hint}) …"
+                        )
+                        retriever = engine.build_semantic_corpus(
+                            documents, stop_event=stop_event, on_progress=on_progress,
+                        )
+                        if index_dir:
+                            try:
+                                from grimoire_ai.llm.inference.rag_index import RagIndex
+                                hashes = RagIndex.compute_source_hashes(
+                                    [corpus_dir], checkpoint_path, lora_path=lora_path or None,
+                                    cache_dir=index_dir,
+                                )
+                                retriever.save_index(index_dir, source_hashes=hashes)
+                                on_progress("Semantic index cached for future runs.")
+                            except Exception:
+                                pass
+                else:
+                    # Read and index one file at a time rather than loading every
+                    # document's full text into memory up front — on large corpora
+                    # (thousands of files) holding the whole batch alongside the
+                    # growing index can exhaust RAM and force the OS to swap,
+                    # which looks identical to a hang from the UI.
+                    on_progress(f"Building lexical corpus over {len(txt_files)} file(s) …")
+                    from grimoire_ai.corpus.corpus import GrimoireCorpus
+                    corpus = GrimoireCorpus()
+                    for i, txt in enumerate(txt_files):
+                        corpus.add_text(txt.read_text(encoding="utf-8"), source=txt.stem)
+                        if i == 0 or (i + 1) % 20 == 0 or i == len(txt_files) - 1:
+                            on_progress(f"  {i + 1}/{len(txt_files)} file(s) indexed …")
+                    engine.corpus = corpus
+                    on_progress(f"Lexical corpus loaded: {len(txt_files)} file(s).")
+
+        run_eval(
+            engine=engine,
+            corpus_bin=corpus_bin or None,
+            quiz_path=quiz_path or None,
+            output_dir="data/eval",
+            max_perplexity_batches=int(max_ppl_batches),
+            quiz_repetition_penalty=float(quiz_repetition_penalty),
+            on_progress=on_progress,
+            stop_event=stop_event,
+        )
+
+    yield from _wrap_with_buttons(_stream_task(_task, stop_key="eval", stop_event=stop_event))
+
+
+def stop_eval() -> None:
+    """Signal all running evaluation tasks to stop."""
+    _signal_stop("eval")
+
+
+# ---------------------------------------------------------------------------
+# Scale calculator logic
+# ---------------------------------------------------------------------------
+
+def run_scale_calc(
+    corpus_path: str,
+    checkpoint_path: str,
+    batch_size: int,
+    accumulate_steps: int,
+    seq_len: int,
+    total_steps: int,
+) -> str:
+    """Compute Chinchilla scaling estimates and corpus statistics."""
+    import math
+    lines = []
+
+    # --- Corpus token count ------------------------------------------------
+    corpus_path = corpus_path.strip()
+    corpus_tokens = None
+    if corpus_path:
+        try:
+            import numpy as np
+            # Corpus binaries are written as int32 by the preprocessing step
+            # (see preprocessing.py / TokenizedDataset). Reading as any other
+            # dtype miscounts tokens — uint16 would double the count.
+            data = np.memmap(corpus_path, dtype=np.int32, mode="r")
+            corpus_tokens = len(data)
+            lines.append(f"Corpus tokens:       {corpus_tokens:>15,}")
+        except Exception as exc:
+            lines.append(f"Corpus read error:   {exc}")
+    else:
+        lines.append("Corpus tokens:       (no path provided)")
+
+    # --- Model parameter count ---------------------------------------------
+    n_params = None
+    checkpoint_path = checkpoint_path.strip()
+    if checkpoint_path:
+        try:
+            from grimoire_ai.llm.training.checkpoint import load_checkpoint
+            from grimoire_ai.llm.model.config import TransformerConfig
+            from grimoire_ai.llm.model.transformer import GrimoireTransformer
+            ckpt = load_checkpoint(checkpoint_path)
+            config = TransformerConfig.from_dict(ckpt["config"])
+            model = GrimoireTransformer(config)
+            n_params = model.num_parameters()
+            lines.append(f"Model parameters:    {n_params:>15,}  (from checkpoint)")
+        except Exception as exc:
+            lines.append(f"Checkpoint error:    {exc}")
+    if n_params is None:
+        n_params = 25_000_000
+        lines.append(f"Model parameters:    {n_params:>15,}  (default — load a checkpoint for exact count)")
+
+    lines.append("")
+
+    # --- Tokens per step ---------------------------------------------------
+    tokens_per_step = int(batch_size) * int(accumulate_steps) * int(seq_len)
+    lines.append(f"Tokens per step:     {tokens_per_step:>15,}  (batch {batch_size} × accum {accumulate_steps} × seq {seq_len})")
+
+    # --- Chinchilla optimal ------------------------------------------------
+    chinchilla_tokens = 20 * n_params
+    chinchilla_steps  = chinchilla_tokens // tokens_per_step
+    lines.append(f"Chinchilla-optimal tokens: {chinchilla_tokens:>10,}  (20 × parameters)")
+    lines.append(f"Chinchilla-optimal steps:  {chinchilla_steps:>10,}  (at current batch config)")
+
+    lines.append("")
+
+    # --- Current run analysis ----------------------------------------------
+    total_steps = int(total_steps)
+    tokens_this_run = total_steps * tokens_per_step
+    pct_chinchilla  = tokens_this_run / chinchilla_tokens * 100
+    lines.append(f"Your total steps:    {total_steps:>15,}")
+    lines.append(f"Tokens this run:     {tokens_this_run:>15,}  ({pct_chinchilla:.1f}% of Chinchilla optimal)")
+
+    if corpus_tokens and corpus_tokens > 0:
+        passes = tokens_this_run / corpus_tokens
+        lines.append(f"Corpus passes:       {passes:>15.1f}x")
+        lines.append("")
+        if passes < 1.0:
+            lines.append("⚠  Less than one full pass through the corpus.")
+            lines.append("   The model won't have seen all your data. Increase total steps.")
+        elif passes < 3.0:
+            lines.append("✔  Good — 1–3 passes is healthy for a well-sized corpus.")
+        elif passes < 10.0:
+            lines.append("⚠  3–10 passes — risk of memorisation if corpus is small.")
+            lines.append("   Consider expanding the corpus or reducing total steps.")
+        else:
+            lines.append("✘  More than 10 passes — the model is likely overfitting.")
+            lines.append("   Expand the corpus significantly before training this long.")
+
+    lines.append("")
+
+    # --- Recommendation ----------------------------------------------------
+    lines.append("─" * 52)
+    if pct_chinchilla < 50:
+        rec_steps = chinchilla_steps
+        lines.append(f"Recommendation: significantly undertrained.")
+        lines.append(f"  Target {rec_steps:,} steps for Chinchilla-optimal training.")
+    elif pct_chinchilla < 80:
+        lines.append(f"Recommendation: undertrained (~{pct_chinchilla:.0f}% of optimal).")
+        lines.append(f"  Extending to {chinchilla_steps:,} steps would improve quality.")
+    elif pct_chinchilla < 120:
+        lines.append(f"Recommendation: well-trained ({pct_chinchilla:.0f}% of Chinchilla optimal). ✔")
+    else:
+        lines.append(f"Recommendation: over-budget ({pct_chinchilla:.0f}% of Chinchilla optimal).")
+        lines.append(f"  Fine for quality, but diminishing returns beyond ~120%.")
+
+    if corpus_tokens:
+        # Suggest steps that give ~3 passes without exceeding Chinchilla budget
+        steps_3_passes = math.ceil(corpus_tokens * 3 / tokens_per_step)
+        lines.append("")
+        lines.append(f"For 3 corpus passes:  {steps_3_passes:,} steps")
+        lines.append(f"For Chinchilla opt.:  {chinchilla_steps:,} steps")
+        lines.append(f"Use the larger of the two as your total_steps target.")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Layout
+# ---------------------------------------------------------------------------
+
+def build_train_app() -> gr.Blocks:
+    """Assemble and return the training/eval Gradio Blocks app."""
+    # Pre-compute filesystem choices once at startup so dropdowns are populated immediately.
+    _ckpts_all      = _scan_files("checkpoints/", "*.pt", recursive=True)
+    _ckpts_pretrain = _scan_files("checkpoints/pretrain/", "*.pt")
+    _corpus_dirs    = _scan_subdirs("data/corpus/")
+    _jsonl_choices  = _scan_files("data/finetune/", "*.jsonl")
+
+    # Probe compute device once; used to set sensible defaults for memory-sensitive fields.
+    _dp = _detect_device_profile()
+
+    with gr.Blocks(title="Grimoire") as app:
+        add_header()
+
+        # ----------------------------------------------------------------
+        with gr.Tab("Preprocess"):
+            gr.Markdown(
+                "Train the BPE tokenizer on raw `.txt` files and write a binary "
+                "corpus ready for pre-training.  Run this once before Pre-train."
+            )
+            with gr.Row():
+                pp_input = gr.Textbox(
+                    label="Input directory (.txt files)",
+                    value="data/corpus/saga/",
+                )
+                pp_output = gr.Textbox(
+                    label="Output corpus binary (.bin)",
+                    value="data/processed/corpus.bin",
+                )
+            with gr.Row():
+                pp_vocab = gr.Textbox(
+                    label="Vocabulary path (.json)",
+                    value="data/tokenizer/bpe.json",
+                    info="Trained and saved here on first run; reloaded on subsequent runs.",
+                )
+                pp_vocab_size = gr.Number(
+                    label="Vocabulary size",
+                    value=16384,
+                    precision=0,
+                    info="How many unique word-pieces the tokenizer learns. 16 384 is a good default; only used when training a new tokenizer.",
+                )
+            with gr.Row():
+                pp_bpe_sample = gr.Number(
+                    label="BPE sample size",
+                    value=500,
+                    precision=0,
+                    info="Max files sampled for BPE vocabulary training. 500 covers typical domain corpora well. Set to 0 to use all files.",
+                )
+            with gr.Accordion("Source weighting (optional)", open=False):
+                gr.Markdown(
+                    "Mark files that matter more for training — e.g. D&D-specific "
+                    "content vs. bulk literature added purely for token volume. "
+                    "This does **not** change the corpus itself; it writes two "
+                    "sidecar files next to the output binary "
+                    "(`<output>.doc_end_offsets.npy`, `<output>.doc_weights.npy`) "
+                    "that the Pre-train tab's **Build sample weights** button "
+                    "turns into a `WeightedRandomSampler` weights file. Leave "
+                    "blank for today's unweighted behaviour."
+                )
+                pp_weight_patterns = gr.Textbox(
+                    label="Weight rules (one GLOB:WEIGHT per line)",
+                    lines=4,
+                    placeholder="rpg_*:3\ndnd_*:3\n5etools_*:2\nsrd_*:2\nopen5e_*:2\ngutenberg_*:1",
+                    info="Matched against each file's name (fnmatch), first matching rule wins. Unmatched files default to weight 1.0.",
+                )
+            with gr.Row():
+                pp_run_btn  = gr.Button("Start preprocessing", variant="primary")
+                pp_stop_btn = gr.Button(
+                    "Stop", interactive=False, elem_classes="stop-btn", scale=0, min_width=80
+                )
+            pp_log_box = gr.Textbox(
+                label="Progress",
+                lines=16,
+                interactive=False,
+                autoscroll=True,
+            )
+            pp_event = pp_run_btn.click(
+                fn=run_preprocess,
+                inputs=[pp_input, pp_output, pp_vocab, pp_vocab_size, pp_bpe_sample, pp_weight_patterns],
+                outputs=[pp_log_box, pp_run_btn, pp_stop_btn],
+            )
+            pp_stop_btn.click(fn=stop_preprocess, inputs=[], outputs=[], cancels=[pp_event])
+
+        # ----------------------------------------------------------------
+        with gr.Tab("Pre-train") as pretrain_tab:
+            gr.Markdown("Launch a pre-training run on a tokenised corpus binary.")
+            with gr.Row():
+                pt_corpus = gr.Textbox(
+                    label="Corpus path (.bin)",
+                    value="data/processed/corpus.bin",
+                )
+                pt_ckpt_dir = gr.Textbox(
+                    label="Checkpoint directory",
+                    value="checkpoints/pretrain/",
+                )
+            pt_resume = gr.Dropdown(
+                choices=_ckpts_pretrain,
+                value="",
+                label="Resume from checkpoint (.pt)",
+                allow_custom_value=True,
+                info="Continue a stopped run. Total steps is the final target — resuming from step 5 000 with 10 000 total runs only 5 000 more. Leave blank to start from scratch.",
+            )
+            with gr.Row():
+                pt_steps  = gr.Number(
+                    label="Total steps", value=10_000, precision=0,
+                    info="Total training iterations. More = better quality, but slower.",
+                )
+                pt_warmup = gr.Number(
+                    label="Warmup steps", value=500, precision=0,
+                    info="Ramps the learning rate up gradually at the start to avoid unstable early updates. ~5% of Total steps is a safe default.",
+                )
+                pt_lr = gr.Number(
+                    label="Peak LR", value=3e-4,
+                    info="Peak learning rate (how large each weight update is). 3e-4 is well-tested for this model; lower = more stable but slower.",
+                )
+            with gr.Row():
+                pt_batch = gr.Number(
+                    label="Batch size", value=_dp["pt_batch"], precision=0,
+                    info="Sequences processed per step. Reduce to 1–2 if you run out of memory.",
+                )
+                pt_accum = gr.Number(
+                    label="Gradient accum.", value=_dp["pt_accum"], precision=0,
+                    info="Simulates a larger batch without extra memory. Effective batch = Batch size × this value.",
+                )
+                pt_log = gr.Number(
+                    label="Log every N steps", value=50, precision=0,
+                )
+                pt_save = gr.Number(
+                    label="Save every N steps", value=1000, precision=0,
+                    info="How often a snapshot is written to disk. More checkpoints = more recovery points but more disk space.",
+                )
+
+            # ---- Validation -------------------------------------------------
+            with gr.Row():
+                pt_val_split = gr.Number(
+                    label="Validation split", value=0.0,
+                    info="Fraction of the corpus held out for validation (e.g. 0.01 = 1%), scattered across many blocks rather than one contiguous chunk. 0 disables eval. Train and val share no text.",
+                )
+                pt_eval_every = gr.Number(
+                    label="Eval every N steps", value=1000, precision=0,
+                    info="How often to compute validation loss. Watch train vs val: both falling = healthy; val flattening/rising while train falls = overfitting.",
+                )
+                pt_eval_batches = gr.Number(
+                    label="Eval batches", value=50, precision=0,
+                    info="Max validation batches averaged per eval pass. 0 uses the whole held-out set; a small cap keeps eval fast.",
+                )
+            pt_val_stratified = gr.Checkbox(
+                label="Stratify validation by weight tags", value=False,
+                info="Hold out Validation split's fraction within each --weight-pattern tier separately, "
+                     "instead of scattering blocks corpus-wide. Guarantees every tier (e.g. official-book "
+                     "content) gets validation windows proportional to its own size, rather than a thin "
+                     "tier possibly getting zero by chance. Requires the corpus to have been tagged with "
+                     "--weight-pattern in the Preprocess tab; errors otherwise.",
+            )
+
+            # ---- Memory options -----------------------------------------
+            with gr.Row():
+                pt_grad_ckpt = gr.Checkbox(
+                    label="Gradient checkpointing",
+                    value=_dp["grad_ckpt"],
+                    info="Recompute block activations during backward instead of storing them. "
+                         "Halves peak VRAM at a cost of ~20 % slower training. "
+                         "Recommended for medium-85M / large-250M on GPUs with < 16 GB VRAM.",
+                )
+
+            # ---- Compile options ------------------------------------------
+            with gr.Row():
+                pt_compile_mode = gr.Dropdown(
+                    choices=["default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"],
+                    value="default",
+                    label="torch.compile mode",
+                    info="CUDA only, no effect on CPU/MPS. 'max-autotune' spends much "
+                         "longer autotuning kernels per shape in exchange for faster "
+                         "steady-state steps -- worth it for pretraining's thousands of "
+                         "steps at one fixed shape, but the actual crossover point "
+                         "depends on your GPU. Not switched by default: A/B it against "
+                         "'default' on your own hardware first (see "
+                         "docs/speed_optimization.md item #3).",
+                )
+
+            # ---- Model architecture -------------------------------------
+            with gr.Accordion("Model architecture", open=False):
+                gr.Markdown(
+                    "Choose a preset or adjust individual dimensions. "
+                    "**Changing these requires training from scratch** — "
+                    "you cannot resume a run with a different architecture."
+                )
+                pt_preset = gr.Dropdown(
+                    choices=["small-25M", "medium-85M", "large-250M"],
+                    value="small-25M",
+                    label="Size preset",
+                    info="small-25M: fast, good for small corpora. medium-85M: recommended once corpus exceeds 100M tokens. large-250M: requires 8 GB+ VRAM.",
+                )
+                with gr.Row():
+                    pt_d_model   = gr.Number(label="d_model",   value=512,  precision=0, info="Embedding dimension. Larger = more expressive but slower.")
+                    pt_n_layers  = gr.Number(label="n_layers",  value=6,    precision=0, info="Number of transformer blocks stacked.")
+                    pt_n_heads   = gr.Number(label="n_heads",   value=8,    precision=0, info="Number of attention heads. Must divide d_model evenly.")
+                    pt_n_kv_heads= gr.Number(label="n_kv_heads",value=2,    precision=0, info="Key/value heads for grouped query attention. Must divide n_heads evenly.")
+                    pt_d_ff      = gr.Number(label="d_ff",      value=1408, precision=0, info="Feed-forward hidden dimension. Default ≈ 2/3 × 4 × d_model.")
+
+                pt_preset.change(
+                    fn=apply_model_preset,
+                    inputs=[pt_preset],
+                    outputs=[pt_d_model, pt_n_layers, pt_n_heads, pt_n_kv_heads, pt_d_ff],
+                )
+
+                pt_attention_type = gr.Dropdown(
+                    choices=["gqa", "mla"],
+                    value="gqa",
+                    label="Attention type",
+                    info="gqa: shipped default, used by every existing checkpoint. "
+                         "mla (Multi-Head Latent Attention, experimental — "
+                         "docs/architecture_optimization.md item #1): compresses "
+                         "K/V into a shared low-rank latent instead of per-head "
+                         "caching, aiming for a smaller KV cache. Not yet "
+                         "validated by a real training run — compare against a "
+                         "gqa run before trusting it for production.",
+                )
+                with gr.Row(visible=False) as pt_mla_row:
+                    pt_mla_kv_latent_dim = gr.Number(
+                        label="MLA kv_latent_dim", value=0, precision=0,
+                        info="Compressed K/V bottleneck dimension (mla only). 0 = auto (2 × head_dim).",
+                    )
+                    pt_mla_rope_head_dim = gr.Number(
+                        label="MLA rope_head_dim", value=0, precision=0,
+                        info="Decoupled RoPE channel dimension per head (mla only). Must be even. 0 = auto (head_dim // 2).",
+                    )
+                pt_attention_type.change(
+                    fn=_toggle_mla_fields,
+                    inputs=[pt_attention_type],
+                    outputs=[pt_mla_row],
+                )
+
+            _pt_corpus_outputs = [
+                pt_preset, pt_d_model, pt_n_layers, pt_n_heads, pt_n_kv_heads, pt_d_ff,
+                pt_steps, pt_warmup, pt_log, pt_save, pt_eval_every,
+            ]
+            pt_corpus.change(
+                fn=_suggest_preset_from_corpus,
+                inputs=[pt_corpus, pt_batch, pt_accum],
+                outputs=_pt_corpus_outputs,
+            )
+            app.load(
+                fn=_suggest_preset_from_corpus,
+                inputs=[pt_corpus, pt_batch, pt_accum],
+                outputs=_pt_corpus_outputs,
+            )
+
+            pt_steps.change(
+                fn=_derive_pt_step_params,
+                inputs=[pt_steps],
+                outputs=[pt_warmup, pt_log, pt_save, pt_eval_every],
+            )
+
+            # ---- Sample weighting -----------------------------------------
+            with gr.Accordion("Sample weighting (optional)", open=False):
+                gr.Markdown(
+                    "If you tagged files with `--weight-pattern` in the "
+                    "Preprocess tab, build a per-window weights file here — "
+                    "training then uses a `WeightedRandomSampler` to see "
+                    "high-weight windows more often, instead of uniform "
+                    "shuffling. Also accepts a difficulty-weights file from "
+                    "`scripts/score_difficulty.py`. Leave the path blank to "
+                    "train unweighted, as before."
+                )
+                pt_sample_weights = gr.Textbox(
+                    label="Sample weights path (.npy)",
+                    value="",
+                    placeholder="data/processed/source_weights.npy",
+                    info="Loaded and passed to WeightedRandomSampler if set; ignored if blank.",
+                )
+                pt_build_weights_btn = gr.Button("Build sample weights from tags")
+                pt_build_weights_log = gr.Textbox(
+                    label="Build weights result", lines=4, interactive=False,
+                )
+                pt_build_weights_btn.click(
+                    fn=run_build_sample_weights,
+                    inputs=[
+                        pt_corpus, pt_val_split,
+                        pt_d_model, pt_n_layers, pt_n_heads, pt_n_kv_heads, pt_d_ff,
+                        pt_sample_weights, pt_val_stratified,
+                    ],
+                    outputs=[pt_build_weights_log],
+                )
+
+            with gr.Row():
+                pt_run_btn  = gr.Button("Start pre-training", variant="primary")
+                pt_stop_btn = gr.Button(
+                    "Stop", interactive=False, elem_classes="stop-btn", scale=0, min_width=80
+                )
+            pt_log_box  = gr.Textbox(
+                label="Training log",
+                lines=20,
+                interactive=False,
+                autoscroll=True,
+            )
+            pt_run_btn.click(
+                fn=run_pretrain,
+                inputs=[
+                    pt_corpus, pt_ckpt_dir, pt_resume,
+                    pt_steps, pt_warmup, pt_lr,
+                    pt_batch, pt_accum, pt_log, pt_save,
+                    pt_val_split, pt_eval_every, pt_eval_batches,
+                    pt_d_model, pt_n_layers, pt_n_heads, pt_n_kv_heads, pt_d_ff,
+                    pt_grad_ckpt, pt_compile_mode, pt_sample_weights, pt_val_stratified,
+                    pt_attention_type, pt_mla_kv_latent_dim, pt_mla_rope_head_dim,
+                ],
+                outputs=[pt_log_box, pt_run_btn, pt_stop_btn],
+            )
+            # No ``cancels=`` here: Trainer already polls ``stop_event`` and
+            # exits its loop gracefully, which lets this generator reach its
+            # final cleanup yield and re-enable the Start button. Cancelling
+            # the Gradio event outright would kill the generator mid-stream,
+            # leaving Start permanently disabled until the app restarts.
+            pt_stop_btn.click(fn=stop_pretrain, inputs=[], outputs=[])
+            pretrain_tab.select(fn=_refresh_ckpts_pretrain, outputs=[pt_resume])
+
+        # ----------------------------------------------------------------
+        with gr.Tab("Fine-tune") as finetune_tab:
+            gr.Markdown(
+                "Specialise a pre-trained model on a conversation dataset. "
+                "Fine-tuning teaches the model to respond in a specific style or domain "
+                "without retraining from scratch."
+            )
+            ft_mode = gr.Dropdown(
+                choices=["Base (instruction fine-tune)", "Agent (LoRA adapter)"],
+                value="Base (instruction fine-tune)",
+                label="Fine-tune mode",
+                info=(
+                    "Base: full fine-tune on general conversation examples — produces the shared "
+                    "base_chat.pt used by all agents. "
+                    "Agent: LoRA adapter for domain specialisation — produces a small .lora file "
+                    "that swaps in at inference time."
+                ),
+            )
+            with gr.Row():
+                ft_pretrain_ckpt = gr.Dropdown(
+                    choices=_ckpts_all,
+                    value="",
+                    label="Pre-trained checkpoint (.pt)",
+                    allow_custom_value=True,
+                    info="The checkpoint fine-tuning builds on — a Pre-train checkpoint for a "
+                         "new base fine-tune, or an existing base/fine-tuned checkpoint when "
+                         "training a LoRA agent on top of it.",
+                )
+                ft_ckpt_info = gr.Textbox(
+                    label="Checkpoint architecture",
+                    interactive=False,
+                    info="Architecture and step count read from the checkpoint above.",
+                )
+            ft_pretrain_ckpt.change(
+                fn=read_checkpoint_config,
+                inputs=[ft_pretrain_ckpt],
+                outputs=[ft_ckpt_info],
+            )
+            with gr.Row():
+                ft_data = gr.Dropdown(
+                    choices=_jsonl_choices,
+                    value="",
+                    label="JSONL dataset path",
+                    allow_custom_value=True,
+                    info='Each line must be a JSON object with "prompt" and "response" keys.',
+                )
+                ft_vocab = gr.Textbox(
+                    label="Vocabulary path (.json)",
+                    value="data/tokenizer/bpe.json",
+                    info="Must be the same vocabulary used during pre-training — mismatching produces garbled output.",
+                )
+            with gr.Row():
+                ft_ckpt_dir = gr.Textbox(
+                    label="Output checkpoint directory",
+                    value="checkpoints/finetune/",
+                )
+                ft_max_seq = gr.Number(
+                    label="Max sequence length", value=512, precision=0,
+                    info="Max tokens per prompt+response pair. Pairs longer than this are truncated. Longer = more memory.",
+                )
+            ft_resume = gr.Dropdown(
+                choices=_ckpts_all,
+                value="",
+                label="Resume fine-tune from checkpoint (.pt)",
+                allow_custom_value=True,
+                info="Continue a stopped fine-tuning run. Restores optimizer state and step counter. Leave blank to start from scratch.",
+            )
+            with gr.Row():
+                ft_steps  = gr.Number(
+                    label="Total steps", value=500, precision=0,
+                    info="Fine-tuning needs far fewer steps than pre-training. Too many can make the model forget its general knowledge.",
+                )
+                ft_warmup = gr.Number(
+                    label="Warmup steps", value=10, precision=0,
+                    info="Ramps the learning rate up gradually to avoid disruptive early updates.",
+                )
+                ft_lr = gr.Number(
+                    label="Peak LR", value=5e-5,
+                    info="Keep this much lower than pre-training (5e-5 vs 3e-4) to make careful adjustments without overwriting prior learning.",
+                )
+            with gr.Row():
+                ft_batch = gr.Number(
+                    label="Batch size", value=_dp["ft_batch"], precision=0,
+                    info="Reduce if you run out of memory.",
+                )
+                ft_accum = gr.Number(
+                    label="Gradient accum.", value=_dp["ft_accum"], precision=0,
+                    info="Simulates a larger batch without extra memory. Effective batch = Batch size × this value.",
+                )
+                ft_log = gr.Number(
+                    label="Log every N steps", value=25, precision=0,
+                )
+                ft_save = gr.Number(
+                    label="Save every N steps", value=100, precision=0,
+                    info="How often a snapshot is written to disk.",
+                )
+            with gr.Row():
+                ft_val_split = gr.Number(
+                    label="Validation split", value=0.0,
+                    info="Fraction of examples randomly held out for validation (e.g. 0.1 = 10%). 0 disables eval. Fine-tune sets are small, so watch for val loss rising — the classic sign of over-fitting.",
+                )
+                ft_eval_every = gr.Number(
+                    label="Eval every N steps", value=100, precision=0,
+                    info="How often to compute validation loss on the held-out examples.",
+                )
+                ft_eval_batches = gr.Number(
+                    label="Eval batches", value=0, precision=0,
+                    info="Max validation batches averaged per eval pass. 0 uses the whole held-out set (recommended for small fine-tune sets).",
+                )
+            with gr.Row():
+                ft_early_stop = gr.Checkbox(
+                    label="Auto-stop on validation plateau", value=True,
+                    info=(
+                        "Stops once validation loss stops improving beyond bootstrap "
+                        "sampling noise for N consecutive evals — removes the need to "
+                        "hand-pick a total step count. Falls back to a 10% validation "
+                        "split automatically if 'Validation split' above is 0."
+                    ),
+                )
+                ft_early_stop_patience = gr.Number(
+                    label="Patience (evals)", value=2, precision=0,
+                    info="Consecutive non-improving evals tolerated before stopping.",
+                )
+            ft_agent_name = gr.Textbox(
+                label="Agent name",
+                placeholder="saga",
+                info="Names the final output file: <name>.lora in the checkpoint directory. Leave blank for 'lora_final'.",
+                visible=False,
+            )
+            with gr.Accordion("LoRA (parameter-efficient fine-tuning)", open=False):
+                gr.Markdown(
+                    "LoRA freezes the base weights and trains only two small matrices "
+                    "per adapted layer (~0.5% of parameters). Each persona becomes a "
+                    "2–5 MB `.lora` file instead of a full checkpoint copy. "
+                    "Set **LoRA rank** to 0 to use standard full fine-tuning."
+                )
+                with gr.Row():
+                    ft_lora_rank = gr.Slider(
+                        minimum=0, maximum=64, step=1, value=0,
+                        label="LoRA rank (0 = full fine-tune)",
+                        info="Higher rank = more capacity but more parameters. Typical: 8 or 16.",
+                    )
+                    ft_lora_alpha = gr.Number(
+                        value=16.0, label="LoRA alpha",
+                        info="Effective scale = alpha / rank. Set equal to rank for scale=1.",
+                    )
+                    ft_lora_targets = gr.Textbox(
+                        value="q_proj,v_proj",
+                        label="LoRA targets (comma-separated)",
+                        info=(
+                            "Linear layers to adapt. Attention: q_proj, k_proj, v_proj, o_proj. "
+                            "FFN: gate_proj, up_proj, down_proj."
+                        ),
+                    )
+            with gr.Row():
+                ft_run_btn  = gr.Button("Start fine-tuning", variant="primary")
+                ft_stop_btn = gr.Button(
+                    "Stop", interactive=False, elem_classes="stop-btn", scale=0, min_width=80
+                )
+            ft_log_box  = gr.Textbox(
+                label="Training log",
+                lines=20,
+                interactive=False,
+                autoscroll=True,
+            )
+            ft_mode.change(
+                fn=_toggle_finetune_mode,
+                inputs=[ft_mode],
+                outputs=[ft_agent_name, ft_lora_rank, ft_ckpt_dir, ft_resume, ft_lora_alpha, ft_lr],
+            )
+            ft_steps.change(
+                fn=_derive_ft_step_params,
+                inputs=[ft_steps],
+                outputs=[ft_warmup, ft_log, ft_save, ft_eval_every],
+            )
+            _ft_data_outputs = [ft_steps, ft_warmup, ft_log, ft_save, ft_eval_every]
+            ft_data.change(
+                fn=_suggest_ft_steps_from_data,
+                inputs=[ft_data, ft_batch, ft_accum, ft_mode],
+                outputs=_ft_data_outputs,
+            )
+            ft_mode.change(
+                fn=_suggest_ft_steps_from_data,
+                inputs=[ft_data, ft_batch, ft_accum, ft_mode],
+                outputs=_ft_data_outputs,
+            )
+            ft_lora_rank.change(
+                fn=_derive_lora_alpha,
+                inputs=[ft_lora_rank],
+                outputs=[ft_lora_alpha],
+            )
+            ft_run_btn.click(
+                fn=run_finetune,
+                inputs=[
+                    ft_pretrain_ckpt, ft_resume, ft_data, ft_vocab, ft_ckpt_dir,
+                    ft_steps, ft_warmup, ft_lr,
+                    ft_batch, ft_accum, ft_log, ft_save,
+                    ft_val_split, ft_eval_every, ft_eval_batches,
+                    ft_early_stop, ft_early_stop_patience,
+                    ft_max_seq,
+                    ft_lora_rank, ft_lora_alpha, ft_lora_targets,
+                    ft_agent_name,
+                ],
+                outputs=[ft_log_box, ft_run_btn, ft_stop_btn],
+            )
+            # See the pretrain tab's stop button wiring for why ``cancels=``
+            # is intentionally omitted: Trainer's stop_event polling already
+            # lets this generator shut down gracefully and re-enable Start.
+            ft_stop_btn.click(fn=stop_finetune, inputs=[], outputs=[])
+            finetune_tab.select(fn=_refresh_ckpts_all, outputs=[ft_pretrain_ckpt])
+            finetune_tab.select(fn=_refresh_jsonl_choices, outputs=[ft_data])
+            finetune_tab.select(fn=_refresh_ckpts_all, outputs=[ft_resume])
+
+        # ----------------------------------------------------------------
+        with gr.Tab("Scale") as scale_tab:
+            gr.Markdown(
+                "Estimate how many training steps your corpus and model size warrant, "
+                "based on the Chinchilla scaling laws."
+            )
+            with gr.Row():
+                sc_corpus = gr.Textbox(
+                    label="Corpus binary (.bin)",
+                    value="data/processed/corpus.bin",
+                    info="The tokenised corpus written by the Preprocess tab. Used to count tokens.",
+                )
+                sc_checkpoint = gr.Dropdown(
+                    choices=_ckpts_all,
+                    value="",
+                    label="Checkpoint (.pt) — optional",
+                    allow_custom_value=True,
+                    info="Load a checkpoint to read the exact parameter count. Leave blank to use the 25M default.",
+                )
+            with gr.Row():
+                sc_batch  = gr.Number(label="Batch size",        value=_dp["pt_batch"],  precision=0,
+                    info="Must match what you use in Pre-train.")
+                sc_accum  = gr.Number(label="Gradient accum.",   value=_dp["pt_accum"],  precision=0,
+                    info="Must match what you use in Pre-train.")
+                sc_seq    = gr.Number(label="Sequence length",   value=1024, precision=0,
+                    info="Context window. Match your training run — pre-training uses max_seq_len=1024. A smaller value here under-counts tokens-per-step and inflates the pass estimate.")
+                sc_steps  = gr.Number(label="Planned total steps", value=20_000, precision=0,
+                    info="The total_steps value you intend to use. Adjust to see how it changes the estimates.")
+            sc_run_btn = gr.Button("Calculate", variant="primary")
+            sc_output  = gr.Textbox(
+                label="Results",
+                lines=22,
+                interactive=False,
+                elem_classes=["scale-output"],
+            )
+            sc_run_btn.click(
+                fn=run_scale_calc,
+                inputs=[sc_corpus, sc_checkpoint, sc_batch, sc_accum, sc_seq, sc_steps],
+                outputs=[sc_output],
+            )
+            scale_tab.select(fn=_refresh_ckpts_all, outputs=[sc_checkpoint])
+
+        # ----------------------------------------------------------------
+        with gr.Tab("Evaluate") as evaluate_tab:
+            gr.Markdown(
+                "Run the evaluation suite on a checkpoint: **perplexity / BPC** on a "
+                "held-out corpus slice, **retrieval hit-rate** over a fixed query set, "
+                "and a **factual Q&A quiz** with keyword-recall scoring.  "
+                "Results are saved to `data/eval/` as a timestamped JSON file."
+            )
+            with gr.Row():
+                ev_checkpoint = gr.Dropdown(
+                    choices=_ckpts_all,
+                    value="",
+                    label="Checkpoint (.pt)",
+                    allow_custom_value=True,
+                    info="Model to evaluate.",
+                )
+                ev_vocab = gr.Textbox(
+                    label="Vocabulary (.json)",
+                    value="data/tokenizer/bpe.json",
+                    info="BPE vocabulary used at training time.",
+                )
+                ev_lora = gr.Textbox(
+                    label="LoRA adapter (.lora) — optional",
+                    placeholder="checkpoints/finetune/step_0000500.lora",
+                    info="Apply a LoRA adapter on top of the checkpoint before evaluating.",
+                )
+            with gr.Row():
+                ev_corpus_dir = gr.Dropdown(
+                    choices=_corpus_dirs,
+                    value="",
+                    label="Corpus directory — retrieval eval (optional)",
+                    allow_custom_value=True,
+                    info="Directory of .txt files. Required for retrieval hit-rate.",
+                )
+                ev_corpus_bin = gr.Textbox(
+                    label="Corpus binary — perplexity eval (optional)",
+                    placeholder="data/processed/corpus.bin",
+                    info="Tokenised .bin file from Preprocess. Required for perplexity / BPC.",
+                )
+            ev_quiz = gr.Textbox(
+                label="Quiz file (optional)",
+                placeholder="scripts/eval_data/saga_quiz.jsonl",
+                info=(
+                    "JSONL file with {user, assistant, keywords} examples. "
+                    "Defaults to the built-in Saga quiz when left blank."
+                ),
+            )
+            ev_repetition_penalty = gr.Number(
+                label="Quiz repetition penalty",
+                value=1.0,
+                info="Penalty (>1.0) on already-generated tokens during quiz generation, "
+                     "to discourage repetition loops. 1.0 disables it (matches prior behaviour). "
+                     "Try 1.2-1.3 to see how much of a repetition pattern is decoding-time vs "
+                     "something that needs more training.",
+            )
+            with gr.Row():
+                ev_encoder = gr.Dropdown(
+                    choices=_ENCODER_CHOICES,
+                    value="Model (decoder embeddings)",
+                    label="Embedding backend",
+                    info="How corpus passages are matched to questions for retrieval. "
+                         "Model: the trained transformer's own embeddings — no extra install, "
+                         "but may be less discriminative early in training. "
+                         "MiniLM/MPNet: dedicated sentence encoders, independent of the "
+                         "checkpoint — requires pip install -e \".[encoder]\". "
+                         "Lexical: fast word-overlap matching, no neural embedding.",
+                )
+                ev_retrieval_threshold = gr.Slider(
+                    minimum=-1.0, maximum=1.0, value=0.0, step=0.05,
+                    label="Retrieval threshold",
+                    info="Minimum top-1 score for retrieved context to be injected. "
+                         "Previously unset here, meaning every quiz question got the "
+                         "top-1 passage injected unconditionally — even an irrelevant one. "
+                         "Cosine scores live in [-1, 1]; raise this if low-confidence "
+                         "matches seem to be confusing answers rather than grounding them.",
+                )
+                ev_quantize = gr.Checkbox(
+                    label="int8 quantization (CPU only)",
+                    value=_dp["quantize"],
+                    info="Quantize model weights to int8 before evaluation — reduces memory use.",
+                )
+                ev_max_ppl = gr.Number(
+                    label="Max perplexity batches",
+                    value=50,
+                    precision=0,
+                    info="0 = evaluate the full held-out split. 50 batches ≈ 30–60 s on CPU.",
+                )
+                ev_device = gr.Dropdown(
+                    choices=["Auto", "CPU", "CUDA", "MPS"],
+                    value="Auto",
+                    label="Device",
+                    info="Auto picks CUDA (NVIDIA) if available, otherwise MPS "
+                         "(Apple Silicon), otherwise CPU.",
+                )
+                ev_math_tool = gr.Checkbox(
+                    label="Enable math tool",
+                    value=False,
+                    info="Detect arithmetic/probability in quiz questions and inject the "
+                         "computed result as context, and resolve <TOOL:python> tags in "
+                         "responses — same tool available in the Chat tab.",
+                )
+            with gr.Row():
+                ev_run_btn  = gr.Button("Run evaluation", variant="primary")
+                ev_stop_btn = gr.Button("Stop", interactive=False, elem_classes=["stop-btn"])
+            ev_log = gr.Textbox(
+                label="Evaluation log",
+                lines=24,
+                interactive=False,
+                autoscroll=True,
+            )
+            ev_event = ev_run_btn.click(
+                fn=run_eval_ui,
+                inputs=[
+                    ev_checkpoint, ev_vocab, ev_corpus_dir, ev_corpus_bin,
+                    ev_quiz, ev_encoder, ev_quantize, ev_max_ppl, ev_device, ev_lora,
+                    ev_repetition_penalty, ev_math_tool, ev_retrieval_threshold,
+                ],
+                outputs=[ev_log, ev_run_btn, ev_stop_btn],
+            )
+            ev_stop_btn.click(fn=stop_eval, inputs=[], outputs=[], cancels=[ev_event])
+            evaluate_tab.select(fn=_refresh_ckpts_all, outputs=[ev_checkpoint])
+            evaluate_tab.select(fn=_refresh_corpus_dirs, outputs=[ev_corpus_dir])
+
+        # ----------------------------------------------------------------
+        with gr.Tab("Ingest"):
+            gr.Markdown(
+                "Convert web pages, documents, and images into corpus `.txt` files."
+            )
+
+            ing_mode = gr.Radio(
+                choices=["URL", "File", "Directory"],
+                value="URL",
+                label="Source type",
+                info="URL: scrape a web page | File: upload a document | Directory: process a local folder.",
+            )
+
+            # URL / Directory: text box
+            ing_url_or_dir = gr.Textbox(
+                label="URL or directory path",
+                placeholder="https://example.com/rules  or  data/documents/",
+                visible=True,
+            )
+            # File: upload widget
+            ing_file = gr.File(
+                label="Upload files",
+                visible=False,
+                file_count="multiple",
+                file_types=[".pdf", ".docx", ".xlsx", ".md", ".txt", ".png", ".jpg", ".jpeg", ".tiff"],
+            )
+
+            with gr.Row():
+                ing_output = gr.Textbox(
+                    label="Output directory",
+                    value="data/raw/",
+                    placeholder="data/raw/",
+                    info="Extracted text files are saved here, ready for the Preprocess tab.",
+                )
+                ing_cleaning = gr.Radio(
+                    choices=["minimal", "standard", "thorough"],
+                    value="standard",
+                    label="Cleaning level",
+                    info=(
+                        "minimal — whitespace only | "
+                        "standard — collapse blank lines & extra spaces | "
+                        "thorough — also drop very short lines & deduplicate paragraphs"
+                    ),
+                )
+
+            with gr.Row():
+                ing_recursive = gr.Checkbox(
+                    label="Recursive (subdirectories)",
+                    value=False,
+                    visible=False,
+                    info="Also process files inside subfolders.",
+                )
+                ing_timeout = gr.Number(
+                    label="HTTP timeout (seconds)",
+                    value=15,
+                    precision=0,
+                    visible=True,
+                    info="Seconds to wait for a web page before giving up. Increase for slow sites.",
+                )
+
+            with gr.Row():
+                ing_btn      = gr.Button("Start ingestion", variant="primary")
+                ing_stop_btn = gr.Button(
+                    "Stop", interactive=False, elem_classes="stop-btn", scale=0, min_width=80
+                )
+            ing_log = gr.Textbox(
+                label="Progress",
+                lines=12,
+                interactive=False,
+                autoscroll=True,
+            )
+
+            # Toggle input visibility when mode changes.
+            ing_mode.change(
+                fn=_toggle_ingest_inputs,
+                inputs=[ing_mode],
+                outputs=[ing_url_or_dir, ing_file, ing_recursive, ing_timeout],
+            )
+
+            ing_event = ing_btn.click(
+                fn=run_ingest,
+                inputs=[
+                    ing_mode, ing_url_or_dir, ing_file,
+                    ing_output, ing_cleaning, ing_recursive, ing_timeout,
+                ],  # ing_file now returns a list when file_count="multiple"
+                outputs=[ing_log, ing_btn, ing_stop_btn],
+            )
+            ing_stop_btn.click(fn=None, cancels=[ing_event])
+
+        # ----------------------------------------------------------------
+        with gr.Tab("Corpus") as corpus_tab:
+            gr.Markdown(
+                "Pre-compute the semantic embedding index for a corpus directory.  "
+                "The index is stored as `.semantic_index/` inside the corpus directory "
+                "and is reloaded automatically by the Chat tab whenever the source files "
+                "and checkpoint haven't changed.  Run this once after training or after "
+                "adding new corpus files — the Chat tab will load in seconds instead of "
+                "re-embedding from scratch on every session start.\n\n"
+                "Requires the same checkpoint that will be used in Chat.  Switching "
+                "checkpoints automatically invalidates the index (MD5 content hashes are "
+                "compared, not file timestamps)."
+            )
+            with gr.Row():
+                ci_corpus_dir = gr.Dropdown(
+                    choices=_corpus_dirs,
+                    value=_corpus_dirs[0] if _corpus_dirs else "",
+                    label="Corpus directory (.txt files)",
+                    allow_custom_value=True,
+                    info="Directory of plain-text corpus files.  The index is stored inside it as .semantic_index/.",
+                )
+                ci_checkpoint = gr.Dropdown(
+                    choices=_ckpts_all,
+                    value="",
+                    label="Checkpoint (.pt)",
+                    allow_custom_value=True,
+                    info="Model checkpoint used to embed passages.  Must match the checkpoint you will load in Chat.",
+                )
+            ci_vocab = gr.Textbox(
+                label="Vocabulary path (.json)",
+                value="data/tokenizer/bpe.json",
+                info="BPE vocabulary.  Must match the vocabulary used at training time.",
+            )
+            ci_status = gr.Textbox(
+                label="Index status",
+                interactive=False,
+                info="Shows whether the current index is fresh or needs a rebuild.",
+            )
+            with gr.Row():
+                ci_check_btn = gr.Button("Check status", scale=0, min_width=140)
+                ci_run_btn   = gr.Button("Build / Rebuild index", variant="primary")
+                ci_stop_btn  = gr.Button(
+                    "Stop", interactive=False, elem_classes="stop-btn", scale=0, min_width=80
+                )
+            ci_log = gr.Textbox(
+                label="Progress",
+                lines=10,
+                interactive=False,
+                autoscroll=True,
+            )
+            ci_check_btn.click(
+                fn=corpus_index_status,
+                inputs=[ci_corpus_dir, ci_checkpoint],
+                outputs=[ci_status],
+            )
+            ci_event = ci_run_btn.click(
+                fn=run_build_index,
+                inputs=[ci_corpus_dir, ci_checkpoint, ci_vocab],
+                outputs=[ci_log, ci_run_btn, ci_stop_btn],
+            )
+            ci_stop_btn.click(fn=stop_build_index, inputs=[], outputs=[], cancels=[ci_event])
+            corpus_tab.select(fn=_refresh_corpus_dirs, outputs=[ci_corpus_dir])
+            corpus_tab.select(fn=_refresh_ckpts_all, outputs=[ci_checkpoint])
+
+    return app
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def launch_train(
+    share: bool = False,
+    port: int = 7860,
+    inbrowser: bool = True,
+    server_name: str = "127.0.0.1",
+) -> None:
+    """Build and launch the training/eval Gradio app.
+
+    Args:
+        share: If ``True``, create a public Gradio tunnel (requires internet).
+        port: Local port to serve the app on.
+        inbrowser: If ``True`` (default), open the default browser automatically
+            when the server is ready.
+        server_name: Host to bind to. Defaults to localhost-only; pass
+            ``"0.0.0.0"`` to accept connections from outside the local
+            machine (e.g. when running inside a Docker container).
+    """
+    build_train_app().queue().launch(
+        server_name=server_name, server_port=port, share=share,
+        inbrowser=inbrowser, theme=_THEME, css=_CSS,
+    )
+
+
+def main() -> None:
+    """Console-script entry point (``grimoire-ui``).
+
+    Host/port/inbrowser are read from environment variables so the same
+    launch logic works unchanged for local development and for
+    containerized deployments — locally these env vars are simply unset and
+    the defaults below apply.
+    """
+    inbrowser_env = os.environ.get("GRIMOIRE_UI_INBROWSER", "1").strip().lower()
+    launch_train(
+        server_name=os.environ.get("GRIMOIRE_UI_HOST", "127.0.0.1"),
+        port=int(os.environ.get("GRIMOIRE_UI_PORT", "7860")),
+        inbrowser=inbrowser_env not in ("0", "false", "no"),
+    )
+
+
+if __name__ == "__main__":
+    main()
