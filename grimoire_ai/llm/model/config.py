@@ -78,6 +78,16 @@ class TransformerConfig:
             structure (no ``q_proj``/``k_proj``/``v_proj``), so it is not
             yet supported by ``add_lora_adapters()`` or GGUF export — both
             raise a clear error rather than silently doing the wrong thing.
+        retro_layers: Which ``TransformerBlock`` indices (0-indexed) get a
+            Chunked Cross-Attention sublayer (see
+            ``chunked_cross_attention.py`` and
+            ``docs/architecture_optimization.md`` item #3). ``None``
+            (default) disables RETRO entirely — no CCA modules are built and
+            ``forward()`` behaves exactly as it always has. A model built
+            with ``retro_layers`` set still runs normally when
+            ``forward()`` isn't given ``neighbor_ids`` — the CCA sublayers
+            just pass their input through unchanged (pure residual, no-op)
+            until retrieval is actually wired up.
         n_predict: Number of extra Multi-Token Prediction heads (see
             ``docs/architecture_optimization.md`` item #2). ``0`` (default)
             disables MTP entirely — ``GrimoireTransformer`` builds no extra
@@ -101,6 +111,7 @@ class TransformerConfig:
     mla_kv_latent_dim: Optional[int] = None
     mla_rope_head_dim: Optional[int] = None
     attention_type: str = "gqa"
+    retro_layers: Optional[list[int]] = None
     n_predict: int = 0
 
     def __post_init__(self) -> None:
@@ -109,8 +120,10 @@ class TransformerConfig:
         Raises:
             ValueError: If ``d_model`` is not divisible by ``n_heads``, if
                 ``n_heads`` is not divisible by ``n_kv_heads``, if
-                ``attention_type`` is not ``"gqa"`` or ``"mla"``, or if
-                ``n_predict`` is negative.
+                ``attention_type`` is not ``"gqa"`` or ``"mla"``, if
+                ``retro_layers`` is empty, contains duplicates, or contains
+                an index outside ``[0, n_layers)``, or if ``n_predict`` is
+                negative.
         """
         if self.d_model % self.n_heads != 0:
             raise ValueError(
@@ -127,6 +140,20 @@ class TransformerConfig:
                 f"attention_type ({self.attention_type!r}) must be "
                 f"'gqa' or 'mla'."
             )
+        if self.retro_layers is not None:
+            if not self.retro_layers:
+                raise ValueError(
+                    "retro_layers must be non-empty when set "
+                    "(use None to disable RETRO entirely)."
+                )
+            if len(set(self.retro_layers)) != len(self.retro_layers):
+                raise ValueError(f"retro_layers ({self.retro_layers}) must not contain duplicates.")
+            for idx in self.retro_layers:
+                if not (0 <= idx < self.n_layers):
+                    raise ValueError(
+                        f"retro_layers index {idx} is out of range for "
+                        f"n_layers={self.n_layers}."
+                    )
         if self.n_predict < 0:
             raise ValueError(f"n_predict ({self.n_predict}) must be non-negative.")
 

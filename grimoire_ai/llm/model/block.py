@@ -37,6 +37,7 @@ import torch
 import torch.nn as nn
 
 from grimoire_ai.llm.model.attention import GroupedQueryAttention
+from grimoire_ai.llm.model.chunked_cross_attention import ChunkedCrossAttention
 from grimoire_ai.llm.model.config import TransformerConfig
 from grimoire_ai.llm.model.feedforward import SwiGLUFeedForward
 from grimoire_ai.llm.model.mla_attention import MultiHeadLatentAttention
@@ -108,6 +109,7 @@ class TransformerBlock(nn.Module):
     language models:
 
         h = x + Attention(RMSNorm(x))
+        h = h + ChunkedCrossAttention(RMSNorm(h), neighbors)   # this block only, if RETRO-enabled
         out = h + FFN(RMSNorm(h))
 
     Attributes:
@@ -115,21 +117,38 @@ class TransformerBlock(nn.Module):
         attn: ``GroupedQueryAttention`` or ``MultiHeadLatentAttention``
             module, selected by ``config.attention_type`` (see
             ``_build_attention``).
+        use_cca: Whether this specific block (identified by ``layer_idx``)
+            is one of ``config.retro_layers`` — see
+            ``docs/architecture_optimization.md`` item #3.
+        cca_norm: RMSNorm applied before the CCA sublayer. Only built when
+            ``use_cca`` is ``True``.
+        cca: ``ChunkedCrossAttention`` module. Only built when ``use_cca``
+            is ``True`` — a block not in ``config.retro_layers`` has neither
+            the module nor its parameters.
         ffn_norm: RMSNorm applied to the post-attention hidden state before
             the feed-forward sublayer.
         ffn: ``SwiGLUFeedForward`` module.
     """
 
-    def __init__(self, config: TransformerConfig) -> None:
+    def __init__(self, config: TransformerConfig, layer_idx: int = 0) -> None:
         """Initialise one transformer block.
 
         Args:
             config: Model configuration passed through to the attention
                 and feed-forward submodules.
+            layer_idx: This block's position in ``GrimoireTransformer.blocks``
+                (0-indexed) — checked against ``config.retro_layers`` to
+                decide whether this specific block gets a CCA sublayer.
         """
         super().__init__()
         self.attn_norm = RMSNorm(config.d_model)
         self.attn = _build_attention(config)
+
+        self.use_cca = config.retro_layers is not None and layer_idx in config.retro_layers
+        if self.use_cca:
+            self.cca_norm = RMSNorm(config.d_model)
+            self.cca = ChunkedCrossAttention(config)
+
         self.ffn_norm = RMSNorm(config.d_model)
         self.ffn = SwiGLUFeedForward(config)
 
@@ -139,6 +158,8 @@ class TransformerBlock(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         past_kv: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
+        neighbor_emb: Optional[torch.Tensor] = None,
+        neighbor_mask: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, Optional[tuple[torch.Tensor, torch.Tensor]]]:
         """Run one transformer block.
 
@@ -147,6 +168,15 @@ class TransformerBlock(nn.Module):
             attention_mask: Optional padding mask passed through to attention.
             past_kv: Optional cached ``(k, v)`` from previous steps.
             use_cache: When ``True``, return updated KV tensors.
+            neighbor_emb: Optional embedded retrieved neighbor chunks, shape
+                ``(batch, n_neighbors, neighbor_len, d_model)`` — see
+                ``ChunkedCrossAttention.forward``. Ignored unless
+                ``self.use_cca`` is ``True``. When ``self.use_cca`` is
+                ``True`` but this is ``None`` (no retrieval wired up yet),
+                the CCA sublayer is skipped — pure residual passthrough, no
+                error.
+            neighbor_mask: Optional padding mask for ``neighbor_emb``, see
+                ``ChunkedCrossAttention.forward``.
 
         Returns:
             A tuple ``(output, present_kv)`` where ``output`` has shape
@@ -160,5 +190,9 @@ class TransformerBlock(nn.Module):
             use_cache=use_cache,
         )
         x = x + attn_out
+
+        if self.use_cca and neighbor_emb is not None:
+            x = x + self.cca(self.cca_norm(x), neighbor_emb, neighbor_mask)
+
         x = x + self.ffn(self.ffn_norm(x))
         return x, present_kv
