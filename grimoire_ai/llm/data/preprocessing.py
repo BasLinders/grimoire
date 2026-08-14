@@ -37,14 +37,33 @@ Arguments
 
 import argparse
 import fnmatch
+import json
 import sys
 from pathlib import Path
 from typing import Callable, Optional
 
 import numpy as np
 
+from grimoire_ai.llm.data.quality_filter import QualityReport, QualityThresholds
 from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
 from grimoire_ai.llm.tokenizer.special_tokens import EOS_ID
+
+
+def _write_quality_report(path: str, reports: list[QualityReport]) -> None:
+    """Write one JSON line per *dropped* document (reasons + raw stats) to *path*.
+
+    Kept documents are omitted — this is meant to be reviewed to decide
+    whether the filter is dropping the right things on a new corpus source,
+    not a full dump of every document's stats.
+    """
+    with open(path, "w", encoding="utf-8") as f:
+        for report in reports:
+            if not report.keep:
+                f.write(json.dumps({
+                    "index": report.index,
+                    "reasons": report.reasons,
+                    "stats": report.stats,
+                }) + "\n")
 
 
 def _collect_text_files(input_path: Path) -> list[Path]:
@@ -127,6 +146,9 @@ def preprocess(
     vocab_path: str,
     vocab_size: int = 16384,
     encoding: str = "utf-8",
+    quality_filter: bool = False,
+    quality_thresholds: Optional[QualityThresholds] = None,
+    quality_report_path: Optional[str] = None,
     dedup: bool = False,
     dedup_threshold: float = 0.8,
     bpe_sample_size: Optional[int] = 500,
@@ -155,6 +177,23 @@ def preprocess(
         vocab_size: Target vocabulary size when training a new encoder.
             Ignored if ``vocab_path`` already exists.
         encoding: Text encoding of the source files.
+        quality_filter: When ``True``, each document is scored against
+            heuristic coherence/quality rules (see
+            ``grimoire_ai.llm.data.quality_filter``) and dropped if it fails
+            any of them — catches near-empty, garbled/OCR-junk, nav-menu-only,
+            and degenerate-repetition documents that near-duplicate detection
+            alone would miss (a single garbled document with no near-duplicate
+            anywhere sails through ``dedup`` untouched). Requires loading all
+            files into RAM. Runs *before* ``dedup`` so junk documents don't
+            waste LSH comparisons and can't win a "keep the longest" dedup
+            tie-break against a shorter, clean document.
+        quality_thresholds: Cutoffs to apply when ``quality_filter`` is set.
+            Defaults to ``QualityThresholds()`` (permissive — catches clearly
+            broken documents, not marginal ones).
+        quality_report_path: When set and ``quality_filter`` drops anything,
+            write a JSONL audit log (one line per dropped document: index,
+            reasons, raw stats) to this path. Recommended on a new corpus
+            source before trusting the filter's drops.
         dedup: When ``True``, near-duplicate documents are detected with
             MinHash + LSH and only one representative of each duplicate cluster
             is kept before tokenisation.  Requires loading all files into RAM.
@@ -222,12 +261,31 @@ def preprocess(
     files = _collect_text_files(input_p)
     _emit(f"      Found {len(files)} file(s).")
 
-    # --- Optional near-duplicate removal --------------------------------
-    # Dedup requires all texts in RAM; accept that cost only when requested.
+    # --- Optional quality filtering + near-duplicate removal ------------
+    # Both require all texts in RAM; accept that cost only when requested,
+    # and load once even when both are requested.
     texts: Optional[list[str]] = None
-    if dedup:
-        _emit(f"      Loading {len(files)} files for deduplication ...")
+    if quality_filter or dedup:
+        _emit(f"      Loading {len(files)} files for curation ...")
         texts = _load_texts(files, encoding)
+
+    if quality_filter:
+        from grimoire_ai.llm.data.quality_filter import filter_low_quality
+        thresholds = quality_thresholds if quality_thresholds is not None else QualityThresholds()
+        _emit("      Scoring document quality ...")
+        kept, reports = filter_low_quality(texts, thresholds)
+        dropped = len(texts) - len(kept)
+        if dropped:
+            files = [files[i] for i in kept]
+            texts = [texts[i] for i in kept]
+            _emit(f"      Dropped {dropped} low-quality document(s); {len(texts)} remain.")
+            if quality_report_path:
+                _write_quality_report(quality_report_path, reports)
+                _emit(f"      Wrote quality report to {quality_report_path}")
+        else:
+            _emit("      No low-quality documents found.")
+
+    if dedup:
         from grimoire_ai.llm.data.dedup import deduplicate_indices
         _emit(f"      Deduplicating (threshold={dedup_threshold}) ...")
         kept, clusters = deduplicate_indices(texts, threshold=dedup_threshold)
@@ -361,6 +419,19 @@ def main() -> None:
         help="Text encoding of the input files.",
     )
     parser.add_argument(
+        "--quality-filter", action="store_true",
+        help="Drop individual documents that fail heuristic coherence/quality "
+             "checks (near-empty, garbled/OCR junk, nav-menu-only, degenerate "
+             "repetition) before tokenising. Independent of --dedup, which only "
+             "catches near-duplicates relative to each other.",
+    )
+    parser.add_argument(
+        "--quality-report", default=None, metavar="PATH",
+        help="Write a JSONL audit log of every dropped document's reasons/stats "
+             "to PATH when --quality-filter drops anything. Recommended: review "
+             "this before trusting the filter on a new corpus source.",
+    )
+    parser.add_argument(
         "--dedup", action="store_true",
         help="Remove near-duplicate documents (MinHash + LSH) before tokenising.",
     )
@@ -414,6 +485,8 @@ def main() -> None:
             vocab_path=args.vocab,
             vocab_size=args.vocab_size,
             encoding=args.encoding,
+            quality_filter=args.quality_filter,
+            quality_report_path=args.quality_report,
             dedup=args.dedup,
             dedup_threshold=args.dedup_threshold,
             bpe_sample_size=args.bpe_sample,
