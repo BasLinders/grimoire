@@ -25,7 +25,7 @@ the codebase — none of it is new capability.
 | 1 | Port AMP + `torch.compile` into `EmbedTuner` | `training/embed_tune.py` | ✓ shipped — [PR #183](https://github.com/BasLinders/grimoire/pull/183) |
 | 2 | Switch `Trainer`'s AMP dtype from fp16 to bf16 | `training/trainer.py` | ✓ shipped — [PR #184](https://github.com/BasLinders/grimoire/pull/184) |
 | 3 | `torch.compile(mode="max-autotune")` for pretraining | `training/trainer.py` | ✓ shipped as opt-in `compile_mode`/`--compile-mode` — [PR #185](https://github.com/BasLinders/grimoire/pull/185) — needs A/B on real hardware |
-| 4 | Rebalance `batch_size` vs `accumulate_steps` | trainer configs (`train.py`, `finetune.py`) | not started — needs empirical VRAM headroom check |
+| 4 | Rebalance `batch_size` vs `accumulate_steps` | trainer configs (`train.py`, `finetune.py`) | no code change needed — test protocol below, ready to run |
 | 5 | Skip no-op padding in `PaddingCollator` for fixed-length windows | `data/collator.py` | ✓ shipped |
 | 6 | Scope MPS mixed precision / compile correctly instead of blanket-disabling | `device.py`, `trainer.py`, `embed_tune.py` | not started — needs Apple Silicon hardware to validate |
 
@@ -87,6 +87,61 @@ doubling `batch_size` and halving `accumulate_steps` keeps the same
 effective batch size and memory-checkpointing tradeoff but roughly halves
 that overhead. Not guaranteed free on a 4 GB card (`finetune.py`'s own
 docstring targets an RTX 3050 4 GB) — this one needs measuring, not assuming.
+
+No code change needed here at all — `batch_size`/`accumulate_steps` are
+already fully configurable (train.py via `--config` JSON, finetune.py via
+`--batch-size`/`--accumulate` flags directly), so this is purely a
+measurement protocol to run on real hardware.
+
+### How to test
+
+Pick a short `total_steps` purely for timing (not a real training run —
+150-200 steps is enough to get past warmup into a steady-state rate), and
+compare the doubled-batch/halved-accum variant against your current config.
+`Trainer`'s own `step N | loss ... | lr ... | Xs` log line already reports
+elapsed time per `log_every` interval, so no separate profiling script is
+needed — just read the `Xs` figures once both runs are past their first
+`log_every` interval (the first one includes one-time warmup/compile cost
+and isn't representative).
+
+**Pretrain** — `train.py` has no `--total-steps` CLI flag; `total_steps`
+is config-only, alongside `batch_size`/`accumulate_steps`. Copy whatever
+`--config` JSON you already use into two short-run benchmark copies,
+setting only these three fields in each one's `"training"` section (JSON
+has no comment syntax, so this is the *values* to use, not literal text to
+paste — put them in your own config's existing structure):
+
+- `bench_baseline.json`: `total_steps: 150, batch_size: 4, accumulate_steps: 8` (effective batch 32, today's defaults)
+- `bench_rebalanced.json`: `total_steps: 150, batch_size: 8, accumulate_steps: 4` (same effective batch, half the accumulation micro-steps)
+
+```bash
+python -m grimoire_ai.llm.training.train --config bench_baseline.json --corpus data/processed/corpus.bin
+python -m grimoire_ai.llm.training.train --config bench_rebalanced.json --corpus data/processed/corpus.bin
+```
+
+Watch `nvidia-smi` (a second terminal, `nvidia-smi -l 1`) during the
+rebalanced run first — if it's already near the 4 GB ceiling at
+`batch_size=4`, `batch_size=8` will likely OOM before you get a timing
+number at all, which is itself the answer (not enough headroom on this
+card, `batch_size=4` stays as-is).
+
+**Fine-tune** — same idea, but these are direct CLI flags, no config file
+needed:
+
+```bash
+# Baseline (effective batch 16)
+python -m grimoire_ai.llm.training.finetune --resume checkpoints/pretrain/step_XXXXXXX.pt --data data/finetune/examples.jsonl --total-steps 150 --batch-size 4 --accumulate 4
+
+# Rebalanced (same effective batch)
+python -m grimoire_ai.llm.training.finetune --resume checkpoints/pretrain/step_XXXXXXX.pt --data data/finetune/examples.jsonl --total-steps 150 --batch-size 8 --accumulate 2
+```
+
+Compare the two runs' `Xs` figures directly — whichever is lower per
+`log_every` interval is faster in wall-clock terms for the same amount of
+real training. Loss trajectories should track closely between the two
+(same effective batch size, same data), so a meaningfully different loss
+curve — not just noise — would be worth a second look before trusting the
+timing win.
 
 ## 5. `PaddingCollator` pads sequences that are never actually variable-length
 
