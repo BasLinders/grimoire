@@ -24,11 +24,10 @@ Generation stops when the model emits ``<EOS>`` (id 2) or when
 
 KV-cache note
 -------------
-This implementation re-runs the full forward pass on every step — correct
-but O(n²) in sequence length.  A KV-cache (caching K/V projections from
-previous steps) would reduce this to O(n) per step.  That optimisation is
-deferred to Phase 5 as it requires non-trivial changes to
-``GroupedQueryAttention``.
+The prompt is run through the model once (the "prefill" pass) to populate a
+per-layer KV cache; each subsequent step feeds only the single newly
+sampled token and reuses the cache instead of re-running the full forward
+pass, giving O(n) total cost in sequence length rather than O(n²).
 """
 
 import math
@@ -384,9 +383,11 @@ def generate(
             # Top-p (nucleus) masking.
             if config.top_p < 1.0:
                 sorted_logits, sorted_indices = torch.sort(next_logits, descending=True)
-                cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+                # Compute softmax once and reuse to avoid fragile double-call.
+                probs_sorted = F.softmax(sorted_logits, dim=-1)
+                cumulative_probs = torch.cumsum(probs_sorted, dim=-1)
                 # Shift by one so the token that pushes us over the threshold is kept.
-                remove_mask = cumulative_probs - F.softmax(sorted_logits, dim=-1) > config.top_p
+                remove_mask = cumulative_probs - probs_sorted > config.top_p
                 sorted_logits[remove_mask] = float("-inf")
                 next_logits = torch.zeros_like(next_logits).scatter_(
                     0, sorted_indices, sorted_logits
