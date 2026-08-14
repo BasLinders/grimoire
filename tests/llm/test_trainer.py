@@ -941,3 +941,53 @@ def test_start_step_ignored_when_resume_from_given() -> None:
         # A bogus start_step that would be obviously wrong if honoured.
         trainer2.train(resume_from=ckpt_path, start_step=999)
     assert trainer2._step == 6  # resumed from the checkpoint's real step (5), ran 1 more
+
+
+# ---------------------------------------------------------------------------
+# AMP dtype selection (docs/speed_optimization.md item #2)
+#
+# _select_amp_dtype is a pure function of (use_amp, torch.cuda.is_bf16_supported())
+# so its branches are tested directly, without needing real CUDA hardware --
+# unlike full end-to-end AMP behaviour, which genuinely does need a GPU to
+# exercise (Trainer(device="cuda") calls model.to("cuda"), which raises with
+# no GPU present).
+# ---------------------------------------------------------------------------
+
+from unittest.mock import patch
+
+from grimoire_ai.llm.training.trainer import _select_amp_dtype
+
+
+class TestSelectAmpDtype:
+    def test_amp_off_never_queries_cuda(self) -> None:
+        """use_amp=False must short-circuit before touching torch.cuda at
+        all -- this is the path every CPU/MPS Trainer takes, and must stay
+        safe to call with no GPU present."""
+        with patch("torch.cuda.is_bf16_supported", side_effect=AssertionError("must not be called")):
+            dtype, grad_scaler_enabled = _select_amp_dtype(use_amp=False)
+        assert dtype == torch.float16
+        assert grad_scaler_enabled is False
+
+    def test_amp_on_with_bf16_support_disables_grad_scaler(self) -> None:
+        with patch("torch.cuda.is_bf16_supported", return_value=True):
+            dtype, grad_scaler_enabled = _select_amp_dtype(use_amp=True)
+        assert dtype == torch.bfloat16
+        assert grad_scaler_enabled is False
+
+    def test_amp_on_without_bf16_support_falls_back_to_fp16_with_grad_scaler(self) -> None:
+        """Pre-Ampere GPUs: the original fp16 + GradScaler path, unchanged."""
+        with patch("torch.cuda.is_bf16_supported", return_value=False):
+            dtype, grad_scaler_enabled = _select_amp_dtype(use_amp=True)
+        assert dtype == torch.float16
+        assert grad_scaler_enabled is True
+
+    def test_cpu_trainer_wires_up_the_disabled_fp16_default(self) -> None:
+        """A real Trainer(device="cpu") must actually call _select_amp_dtype
+        and store its result -- confirms the wiring, not just the pure
+        function in isolation."""
+        with tempfile.TemporaryDirectory() as tmp:
+            trainer, _ = _make_trainer(tmp, total_steps=1)
+        assert trainer._use_amp is False
+        assert trainer._amp_dtype == torch.float16
+        assert trainer._grad_scaler_enabled is False
+        assert trainer._scaler.is_enabled() is False
