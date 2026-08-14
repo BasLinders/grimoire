@@ -188,6 +188,28 @@ def test_cr_grammar_zero_valid() -> None:
 # StatBlockConstraint (fake tokenizer — decode-only stub, no real BPE needed)
 # ---------------------------------------------------------------------------
 
+class _FakeIncrementalDecoder:
+    """Fake counterpart to BytePairEncoder's IncrementalDecoder.
+
+    _FakeTokenizer maps each token id directly to a complete string (no
+    byte-level buffering, unlike the real BPE tokenizer), so every push()
+    immediately resolves -- nothing is ever held back pending more bytes,
+    and preview_pending() is always empty.
+    """
+
+    def __init__(self, vocab: dict[int, str]) -> None:
+        self._vocab = vocab
+
+    def push(self, token_id: int) -> str:
+        return self._vocab.get(token_id, "")
+
+    def preview_pending(self) -> str:
+        return ""
+
+    def finish(self) -> str:
+        return ""
+
+
 class _FakeTokenizer:
     """Minimal decode-only tokenizer: token id -> fixed string, via a dict."""
 
@@ -197,6 +219,9 @@ class _FakeTokenizer:
 
     def decode(self, ids: list[int]) -> str:
         return "".join(self._vocab.get(i, "") for i in ids)
+
+    def incremental_decoder(self) -> _FakeIncrementalDecoder:
+        return _FakeIncrementalDecoder(self._vocab)
 
 
 # Token ids used across the StatBlockConstraint tests below.
@@ -308,6 +333,38 @@ def test_stat_block_constraint_allows_terminator_after_value() -> None:
     logits = torch.zeros(64)
     masked = constraint.mask(logits, [_LABEL_CR, _DIGIT["5"]], tokenizer)
     assert masked[_SPACE] == 0.0
+
+
+def test_stat_block_constraint_incremental_text_matches_decode_each_step() -> None:
+    """_text_so_far's incrementally-cached result must match a fresh
+    tokenizer.decode(generated) at every step of a growing generation, not
+    just on the first call -- this is the property the cache in
+    docs/inference_optimization.md item #6 has to preserve relative to the
+    old call-decode()-fresh-every-step implementation."""
+    tokenizer = _build_fake_tokenizer()
+    constraint = StatBlockConstraint(tokenizer)
+
+    generated: list[int] = []
+    steps = [_LABEL_CR, _DIGIT["1"], _DIGIT["2"], _SPACE, _LABEL_XP, _DIGIT["4"]]
+    for token_id in steps:
+        generated.append(token_id)  # same list object, mutated in place -- matches sampler.py
+        incremental = constraint._text_so_far(generated, tokenizer)
+        assert incremental == tokenizer.decode(generated)
+
+
+def test_stat_block_constraint_cache_resets_for_a_new_generation() -> None:
+    """A StatBlockConstraint instance is attached to the engine once and
+    reused across separate chat turns/generations. A second, unrelated
+    `generated` list (as a fresh generate() call would pass) must not be
+    contaminated by a previous generation's cached text."""
+    tokenizer = _build_fake_tokenizer()
+    constraint = StatBlockConstraint(tokenizer)
+
+    first_generation = [_LABEL_CR, _DIGIT["5"]]
+    assert constraint._text_so_far(first_generation, tokenizer) == tokenizer.decode(first_generation)
+
+    second_generation = [_LABEL_XP, _DIGIT["9"], _DIGIT["9"]]
+    assert constraint._text_so_far(second_generation, tokenizer) == tokenizer.decode(second_generation)
 
 
 def test_default_stat_block_fields_cover_cr_xp_ac_hp() -> None:
