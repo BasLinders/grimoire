@@ -42,6 +42,61 @@ Mixed precision (fp16 AMP)
     On CPU and MPS (Apple Silicon) the scaler is a no-op and the autocast
     context is skipped — training still runs on the GPU on MPS, just
     without fp16 mixed precision.
+
+RETRO neighbor retrieval (optional, docs/architecture_optimization.md item #3)
+    When ``neighbor_ids`` is supplied (an array from
+    ``scripts/build_retrieval_neighbors.py``, aligned to
+    ``train_dataset``'s window order), ``train_dataset`` is wrapped in
+    ``NeighborAugmentedDataset`` and every batch also carries retrieved
+    neighbor token ids, fed into ``GrimoireTransformer.forward`` for the
+    Chunked Cross-Attention sublayers configured via
+    ``model.config.retro_layers`` to attend to. Retrieval itself is never
+    computed live during training — the retrieval database is frozen for
+    the whole run, so neighbors are looked up once, offline, ahead of time.
+    Requires ``model.config.retro_layers`` to be set; passing
+    ``neighbor_ids`` for a model with no CCA sublayers raises immediately
+    rather than silently wasting the precomputed data.
+
+    ``evaluate()`` does NOT currently consume neighbor data — validation
+    loss is computed on the plain self-attention path even when RETRO is
+    enabled for training. Unlike Multi-Token Prediction's auxiliary loss
+    (a training-only crutch never used at inference), CCA output genuinely
+    changes what the model predicts, so this is a real scope gap rather
+    than a deliberate comparability choice — it means ``val_loss`` under-
+    represents what a RETRO-enabled model actually does once retrieval is
+    wired into inference too. Left as-is for now since closing it needs a
+    second (validation-aligned) neighbor-ids array, not just a code change.
+
+Multi-Token Prediction (optional, docs/architecture_optimization.md item #2)
+    When ``model.config.n_predict > 0``, an auxiliary loss is added: each
+    of the model's ``n_predict`` extra heads predicts a token further
+    ahead than the primary next-token objective (head ``i`` predicts
+    ``i + 2`` positions ahead). Targets for these extra offsets are built
+    from the *same* ``(input_ids, target_ids)`` pair already produced by
+    the dataset — no dataset changes needed — by shifting further into
+    ``input_ids`` and padding the tail of each window with
+    ``ignore_index=-100`` where no target that far ahead exists yet (the
+    last few positions of a window). Because pretraining windows overlap
+    (``TokenizedDataset``'s default 50% stride), the predictions lost to
+    this tail-masking in one window are covered as mid-window predictions
+    in an adjacent one.
+
+    The auxiliary loss is combined into the total training loss as
+    ``primary_loss + mtp_loss_weight * mean(per_head_loss)`` — a small
+    weight (default 0.3, matching DeepSeek-V3's reported value) so the
+    auxiliary signal augments rather than dominates the primary objective.
+    ``evaluate()`` deliberately does NOT include the MTP term: ``val_loss``
+    stays pure next-token cross-entropy so it's directly comparable across
+    MTP-enabled and MTP-disabled runs, and so early stopping/checkpoint
+    selection isn't skewed by an auxiliary term nobody is optimising for at
+    inference time.
+
+    Combining the two: when both ``neighbor_ids`` and
+    ``model.config.n_predict > 0`` are active, the training-loop forward
+    call passes ``neighbor_ids`` unconditionally and requests
+    ``return_mtp_logits=True`` only when ``n_predict > 0`` — see the single
+    ``self._forward_model(...)`` call site in ``train()``, which is the one
+    place these two features' code paths actually intersect.
 """
 
 import logging
@@ -57,6 +112,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
 from grimoire_ai.llm.data.collator import PaddingCollator
+from grimoire_ai.llm.data.neighbor_dataset import NeighborAugmentedDataset, collate_with_neighbors
 from grimoire_ai.llm.device import select_device
 from grimoire_ai.llm.model.transformer import GrimoireTransformer
 from grimoire_ai.llm.tokenizer.special_tokens import PAD_ID
@@ -66,6 +122,42 @@ from grimoire_ai.llm.training.checkpoint import (
     resize_optimizer_vocab_state,
     save_checkpoint,
 )
+
+
+def _mtp_target(full_ids: torch.Tensor, offset: int, seq_len: int) -> torch.Tensor:
+    """Build one Multi-Token Prediction head's targets from the token stream.
+
+    ``full_ids`` is ``input_ids`` with the one extra real token from
+    ``target_ids`` appended (length ``seq_len + 1``) — the longest run of
+    genuine corpus tokens available without touching the dataset. For an
+    MTP head predicting ``offset`` positions ahead (``offset >= 2``; ``1``
+    is the primary head, handled separately with the existing
+    ``target_ids``), position ``t``'s target is ``full_ids[t + offset]``
+    when that index exists, else there is no real token that far ahead in
+    this window and the position is masked with ``-100`` (ignored by
+    ``cross_entropy``, identical to how padding is already handled).
+
+    Args:
+        full_ids: ``(batch, seq_len + 1)`` — ``input_ids`` with
+            ``target_ids[:, -1:]`` appended.
+        offset: How many positions ahead this head predicts. Must be
+            ``>= 2``.
+        seq_len: The window length (``input_ids.shape[1]``) — the returned
+            tensor always has this length so it aligns with the head's
+            logits.
+
+    Returns:
+        ``(batch, seq_len)`` integer tensor, ``-100`` past the point where
+        no real target token exists yet in this window.
+    """
+    shifted = full_ids[:, offset:]  # (batch, seq_len + 1 - offset), possibly empty
+    pad_len = seq_len - shifted.shape[1]
+    if pad_len <= 0:
+        return shifted[:, :seq_len]
+    pad = torch.full(
+        (shifted.shape[0], pad_len), -100, dtype=shifted.dtype, device=shifted.device
+    )
+    return torch.cat([shifted, pad], dim=1)
 
 
 def _torch_has_triton() -> bool:
@@ -114,6 +206,9 @@ class Trainer:
             (0 = use the entire validation set).
         _on_eval: Optional callback invoked after each validation pass with
             ``(step, val_loss, elapsed)``.
+        mtp_loss_weight: Weight applied to the mean Multi-Token Prediction
+            auxiliary loss before adding it to the primary loss. Only takes
+            effect when ``model.config.n_predict > 0``; otherwise unused.
     """
 
     def __init__(
@@ -140,7 +235,9 @@ class Trainer:
         swa_enabled: bool = False,
         swa_start_frac: float = 0.75,
         sample_weights: Optional["Sequence[float]"] = None,
+        neighbor_ids: Optional[np.ndarray] = None,
         gradient_checkpointing: bool = False,
+        mtp_loss_weight: float = 0.3,
         on_log: Optional[Callable[[int, float, float], None]] = None,
         on_save: Optional[Callable[[int, float], None]] = None,
         on_done: Optional[Callable[[int, float], None]] = None,
@@ -273,6 +370,10 @@ class Trainer:
             self.model.enable_gradient_checkpointing()
         self.gradient_checkpointing = gradient_checkpointing
 
+        if mtp_loss_weight < 0:
+            raise ValueError(f"mtp_loss_weight ({mtp_loss_weight}) must be non-negative.")
+        self.mtp_loss_weight = mtp_loss_weight
+
         # torch.compile() traces the model graph and emits optimised CUDA
         # kernels (operator fusion, reduced memory traffic).  Falls back
         # silently on CPU or if compilation is unavailable.
@@ -353,6 +454,21 @@ class Trainer:
             self._optimizer, lr_lambda=_lr_lambda
         )
 
+        # --- Optional RETRO neighbor retrieval ---------------------------
+        # See the module docstring's "RETRO neighbor retrieval" section.
+        self._neighbor_ids = neighbor_ids
+        collate_fn: Callable = PaddingCollator(pad_id=PAD_ID)
+        if neighbor_ids is not None:
+            if self.config.retro_layers is None:
+                raise ValueError(
+                    "neighbor_ids was given but model.config.retro_layers is "
+                    "None -- the model has no Chunked Cross-Attention "
+                    "sublayers to consume them. Set retro_layers when "
+                    "building the model, or omit neighbor_ids."
+                )
+            train_dataset = NeighborAugmentedDataset(train_dataset, neighbor_ids)
+            collate_fn = collate_with_neighbors
+
         # --- DataLoader -------------------------------------------------
         # With per-window importance weights, draw windows in proportion to
         # their difficulty (a WeightedRandomSampler) instead of uniformly.
@@ -365,7 +481,7 @@ class Trainer:
             batch_size=batch_size,
             shuffle=(sampler is None),
             sampler=sampler,
-            collate_fn=PaddingCollator(pad_id=PAD_ID),
+            collate_fn=collate_fn,
             num_workers=num_workers,
             pin_memory=(device == "cuda"),
             drop_last=True,
@@ -494,10 +610,15 @@ class Trainer:
 
             # Fetch the next micro-batch, cycling the loader if exhausted.
             try:
-                input_ids, target_ids, attention_mask = next(data_iter)
+                batch = next(data_iter)
             except StopIteration:
                 data_iter = iter(self._loader)
-                input_ids, target_ids, attention_mask = next(data_iter)
+                batch = next(data_iter)
+            if self._neighbor_ids is not None:
+                input_ids, target_ids, attention_mask, neighbor_ids = batch
+            else:
+                input_ids, target_ids, attention_mask = batch
+                neighbor_ids = None
 
             # non_blocking=True overlaps the H→D transfer with GPU work
             # when pin_memory=True on the DataLoader (CUDA only, no-op on CPU).
@@ -505,6 +626,8 @@ class Trainer:
             input_ids      = input_ids.to(self.device, non_blocking=non_blocking)
             target_ids     = target_ids.to(self.device, non_blocking=non_blocking)
             attention_mask = attention_mask.to(self.device, non_blocking=non_blocking)
+            if neighbor_ids is not None:
+                neighbor_ids = neighbor_ids.to(self.device, non_blocking=non_blocking)
 
             # --- Forward pass with optional AMP --------------------------
             with torch.autocast(
@@ -512,13 +635,37 @@ class Trainer:
                 dtype=torch.float16,
                 enabled=self._use_amp,
             ):
-                logits = self._forward_model(input_ids, attention_mask=attention_mask)
+                n_predict = self.config.n_predict
+                if n_predict > 0:
+                    logits, mtp_logits = self._forward_model(
+                        input_ids, attention_mask=attention_mask,
+                        neighbor_ids=neighbor_ids, return_mtp_logits=True,
+                    )
+                else:
+                    logits = self._forward_model(
+                        input_ids, attention_mask=attention_mask, neighbor_ids=neighbor_ids,
+                    )
                 # logits: (batch, seq_len, vocab_size) → flatten for cross_entropy
                 loss = F.cross_entropy(
                     logits.view(-1, self.config.vocab_size),
                     target_ids.view(-1),
                     ignore_index=-100,
                 )
+                if n_predict > 0:
+                    # See _mtp_target and the module docstring's "Multi-Token
+                    # Prediction" section for how these targets are derived
+                    # from input_ids/target_ids without any dataset changes.
+                    seq_len = input_ids.shape[1]
+                    full_ids = torch.cat([input_ids, target_ids[:, -1:]], dim=1)
+                    mtp_loss = sum(
+                        F.cross_entropy(
+                            mtp_logits[i].view(-1, self.config.vocab_size),
+                            _mtp_target(full_ids, i + 2, seq_len).view(-1),
+                            ignore_index=-100,
+                        )
+                        for i in range(n_predict)
+                    ) / n_predict
+                    loss = loss + self.mtp_loss_weight * mtp_loss
                 # Scale loss by 1/accumulate_steps so the gradient is the
                 # mean over all micro-batches in this optimizer step.
                 loss = loss / self.accumulate_steps
