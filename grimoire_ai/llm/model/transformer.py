@@ -41,6 +41,9 @@ from grimoire_ai.llm.model.config import TransformerConfig
 from grimoire_ai.llm.model.embedding import TokenEmbedding
 
 _ATTN_PROJS = ("q_proj", "k_proj", "v_proj", "o_proj")
+# MultiHeadLatentAttention's projection names (see mla_attention.py) — a
+# different set from GQA's, since MLA has no single q_proj/k_proj/v_proj.
+_MLA_ATTN_PROJS = ("w_dkv", "w_uk", "w_uv", "w_qc", "w_qr", "w_kr", "o_proj")
 _FFN_PROJS  = ("gate_proj", "up_proj", "down_proj")
 
 
@@ -328,36 +331,29 @@ class GrimoireTransformer(nn.Module):
                 Setting alpha == rank keeps the scale at 1.0.
                 Default 16.0 gives a scale of 2.0 for rank=8.
             targets: Names of ``nn.Linear`` submodules to wrap with LoRA.
-                Valid attention names: ``q_proj``, ``k_proj``, ``v_proj``,
-                ``o_proj``.  Valid FFN names: ``gate_proj``, ``up_proj``,
-                ``down_proj``.  Defaults to ``("q_proj", "v_proj")`` — the
-                two attention projections that give the best quality /
-                parameter trade-off for instruction tuning.
-
-        Raises:
-            NotImplementedError: If ``config.attention_type != "gqa"``.
-                ``MultiHeadLatentAttention`` has no ``q_proj``/``k_proj``/
-                ``v_proj`` submodules to wrap — checked up front, before any
-                parameter is frozen, so a rejected call leaves the model
-                untouched rather than partially mutated.
+                GQA models (``attention_type="gqa"``): ``q_proj``,
+                ``k_proj``, ``v_proj``, ``o_proj``. MLA models
+                (``attention_type="mla"``): ``w_dkv``, ``w_uk``, ``w_uv``,
+                ``w_qc``, ``w_qr``, ``w_kr``, ``o_proj`` — see
+                ``mla_attention.py``. FFN names (``gate_proj``, ``up_proj``,
+                ``down_proj``) are valid for either. Defaults to
+                ``("q_proj", "v_proj")`` for GQA or ``("w_qc", "w_uv")`` for
+                MLA — in both cases the query- and value-generating
+                projections, the best quality/parameter trade-off for
+                instruction tuning.
         """
-        if self.config.attention_type != "gqa":
-            raise NotImplementedError(
-                f"add_lora_adapters() only supports attention_type='gqa'; "
-                f"this model uses attention_type={self.config.attention_type!r}. "
-                "MultiHeadLatentAttention does not expose q_proj/k_proj/v_proj "
-                "targets."
-            )
-
         from grimoire_ai.llm.model.lora import LoRALinear
 
-        target_set = set(targets) if targets is not None else {"q_proj", "v_proj"}
+        is_mla = self.config.attention_type == "mla"
+        attn_proj_names = _MLA_ATTN_PROJS if is_mla else _ATTN_PROJS
+        default_targets = {"w_qc", "w_uv"} if is_mla else {"q_proj", "v_proj"}
+        target_set = set(targets) if targets is not None else default_targets
 
         for param in self.parameters():
             param.requires_grad_(False)
 
         for block in self.blocks:
-            for name in _ATTN_PROJS:
+            for name in attn_proj_names:
                 if name in target_set:
                     setattr(block.attn, name,
                             LoRALinear(getattr(block.attn, name), rank, alpha))
@@ -371,26 +367,18 @@ class GrimoireTransformer(nn.Module):
 
         After this call the model is functionally equivalent to one that was
         fully fine-tuned.  All parameters regain ``requires_grad=True``.
-
-        Raises:
-            NotImplementedError: If ``config.attention_type != "gqa"`` — see
-                ``add_lora_adapters``.
         """
-        if self.config.attention_type != "gqa":
-            raise NotImplementedError(
-                f"merge_and_unload() only supports attention_type='gqa'; "
-                f"this model uses attention_type={self.config.attention_type!r}."
-            )
-
         from grimoire_ai.llm.model.lora import LoRALinear
 
+        attn_proj_names = (
+            _MLA_ATTN_PROJS if self.config.attention_type == "mla" else _ATTN_PROJS
+        )
+
         for block in self.blocks:
-            for parent, name in [
-                (block.attn, "q_proj"), (block.attn, "k_proj"),
-                (block.attn, "v_proj"), (block.attn, "o_proj"),
-                (block.ffn,  "gate_proj"), (block.ffn, "up_proj"),
-                (block.ffn,  "down_proj"),
-            ]:
+            for parent, name in (
+                [(block.attn, n) for n in attn_proj_names]
+                + [(block.ffn, n) for n in _FFN_PROJS]
+            ):
                 mod = getattr(parent, name)
                 if isinstance(mod, LoRALinear):
                     setattr(parent, name, mod.merge())

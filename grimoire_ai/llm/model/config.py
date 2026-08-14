@@ -75,9 +75,11 @@ class TransformerConfig:
             (``MultiHeadLatentAttention``, see ``mla_attention.py``). Every
             shipped checkpoint and preset uses ``"gqa"``; ``"mla"`` is an
             experimental alternative with a different state_dict key
-            structure (no ``q_proj``/``k_proj``/``v_proj``), so it is not
-            yet supported by ``add_lora_adapters()`` or GGUF export — both
-            raise a clear error rather than silently doing the wrong thing.
+            structure (no ``q_proj``/``k_proj``/``v_proj``).
+            ``add_lora_adapters()`` supports both (see its own docstring for
+            MLA's target names). GGUF export does not yet support ``"mla"``
+            and raises a clear error rather than silently doing the wrong
+            thing.
     """
 
     vocab_size: int = 16384
