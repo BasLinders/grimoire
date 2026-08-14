@@ -85,10 +85,12 @@ print(torch.backends.mps.is_available())   # True on M1/M2/M3/M4 Macs
 
 Training/eval scripts and the UI auto-detect MPS the same way they
 auto-detect CUDA: CUDA first, then MPS, then CPU, so **no script flags
-change** on Apple Silicon either. Mixed-precision (fp16 AMP) and
+change** on Apple Silicon either. Mixed-precision (bf16/fp16 AMP) and
 `torch.compile`, which are CUDA-specific optimizations in this codebase,
 don't apply on MPS — training still runs on the GPU, just without those
-extra speedups, so it's still meaningfully faster than CPU.
+extra speedups, so it's still meaningfully faster than CPU. See
+[speed_optimization.md](speed_optimization.md) item #6 for scoping a
+proper MPS throughput path (not yet implemented).
 
 > **Docker note:** the provided `Dockerfile` targets CPU/CUDA — Docker
 > Desktop on macOS runs containers inside a Linux VM with no Metal

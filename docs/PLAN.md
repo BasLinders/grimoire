@@ -13,7 +13,7 @@
 | **4** | Inference pipeline: PromptBuilder, sampler (temperature/top-k/top-p/repetition), InferenceEngine | ✓ done |
 | **5** | KV-cache (O(n²) → O(1) per step) + richer corpus context (unstemmed excerpts) | ✓ done |
 | **6** | Instruction fine-tuning: `ConversationDataset`, response-only loss masking, `finetune.py` | ✓ done |
-| **6.5** | Training UI: Gradio app (Pre-train, Fine-tune, Chat tabs) + `Trainer.on_log` live streaming | ✓ done |
+| **6.5** | Training UI: Gradio app (Pre-train, Fine-tune, Chat tabs at the time; later split into separate training/eval and chat apps — see README.md) + `Trainer.on_log` live streaming | ✓ done |
 | **7** | Conversation state: `ConversationState`, `InferenceEngine.chat()`, terminal chat CLI | ✓ done |
 | **7.5** | Integration test suite: full pipeline from BPE training to multi-turn `chat()` | ✓ done |
 | **8** | Agent registry (`agents.json`) + agent selector dropdown in Chat UI | ✓ done |
@@ -47,7 +47,7 @@ Current gaps: no LoRA, no evaluation harness, no tool-calling, recomputed RAG in
 
 ### 1. int8 Quantization (Memory — CPU viability) ✓ done
 
-Dynamic int8 quantization via `torch.quantization.quantize_dynamic` / `torchao`. Zero-shot, cuts model size ~4×, speeds up CPU inference. Tries `torchao` first; falls back to legacy API with deprecation warning suppressed. `InferenceEngine(quantize=True)` + UI checkbox in Chat tab.
+Dynamic int8 quantization via `torch.quantization.quantize_dynamic` / `torchao`. Zero-shot, cuts model size ~4×, speeds up CPU inference. Tries `torchao` first; falls back to legacy API with deprecation warning suppressed. `InferenceEngine(quantize=True)` + checkbox in the chat UI.
 
 ### 2. Gradient Checkpointing (Memory — Training) ✓ done
 
@@ -74,7 +74,7 @@ Dynamic int8 quantization via `torch.quantization.quantize_dynamic` / `torchao`.
 - **Response-side tag resolution:** `MathTool.process_response()` replaces `<TOOL:python>…</TOOL>` tags emitted by fine-tuned models with evaluated results
 - **Fine-tune data:** 15 examples with `<TOOL:python>` format in `scripts/finetune_data/tool_call_examples.jsonl`
 - **CLI:** `--math-tool` flag on `python -m grimoire_ai.cli.chat`
-- **UI:** "Enable math tool" checkbox in Chat tab (wired to both agent load and manual load)
+- **UI:** "Enable math tool" checkbox in the chat UI (wired to both agent load and manual load)
 
 ### 5. LoRA / Adapter Fine-Tuning ✓ done
 
