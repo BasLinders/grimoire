@@ -39,6 +39,7 @@ from grimoire_ai.ui.shared import (
     _scan_files,
     _scan_subdirs,
     _semantic_index_dir,
+    _semantic_index_dir_external,
     add_header,
 )
 
@@ -192,10 +193,29 @@ def load_agent(
                     embed_fn = make_external_embed_fn(EXTERNAL_ENCODERS[encoder])
                 except ImportError as exc:
                     return None, None, str(exc), cfg.checkpoint, cfg.vocab
-                retriever = SemanticRetriever(embed_fn=embed_fn)
-                for text, source in documents:
-                    retriever.add_text(text, source=source)
-                retriever.index()
+                # Persistent index cache, same idiom as the model-embeddings
+                # branch below but keyed by encoder (not checkpoint/LoRA --
+                # an external encoder's embeddings don't depend on either).
+                index_dir = _semantic_index_dir_external(resolved_dirs, EXTERNAL_ENCODERS[encoder])
+                loaded_ok = False
+                if index_dir and _index_is_fresh(index_dir, resolved_dirs, ""):
+                    try:
+                        retriever = SemanticRetriever.from_index(index_dir, embed_fn=embed_fn)
+                        loaded_ok = retriever.size > 0
+                    except Exception:
+                        loaded_ok = False
+                if not loaded_ok:
+                    retriever = SemanticRetriever(embed_fn=embed_fn)
+                    for text, source in documents:
+                        retriever.add_text(text, source=source)
+                    retriever.index()
+                    if index_dir:
+                        try:
+                            from grimoire_ai.llm.inference.rag_index import RagIndex
+                            hashes = RagIndex.compute_source_hashes(resolved_dirs, "", cache_dir=index_dir)
+                            retriever.save_index(index_dir, source_hashes=hashes)
+                        except Exception:
+                            pass
                 engine.corpus = retriever
             else:
                 resolved_ckpt = str(registry._resolve(cfg.checkpoint))
@@ -325,10 +345,29 @@ def load_engine(
                 embed_fn = make_external_embed_fn(EXTERNAL_ENCODERS[encoder])
             except ImportError as e:
                 return None, None, str(e), gr.update()
-            retriever = SemanticRetriever(embed_fn=embed_fn)
-            for text, source in documents:
-                retriever.add_text(text, source=source)
-            retriever.index()
+            # Persistent index cache, same idiom as the model-embeddings
+            # branch below but keyed by encoder (not checkpoint/LoRA -- an
+            # external encoder's embeddings don't depend on either).
+            index_dir = _semantic_index_dir_external([corpus_dir], EXTERNAL_ENCODERS[encoder])
+            loaded_ok = False
+            if index_dir and _index_is_fresh(index_dir, [corpus_dir], ""):
+                try:
+                    retriever = SemanticRetriever.from_index(index_dir, embed_fn=embed_fn)
+                    loaded_ok = retriever.size > 0
+                except Exception:
+                    loaded_ok = False
+            if not loaded_ok:
+                retriever = SemanticRetriever(embed_fn=embed_fn)
+                for text, source in documents:
+                    retriever.add_text(text, source=source)
+                retriever.index()
+                if index_dir:
+                    try:
+                        from grimoire_ai.llm.inference.rag_index import RagIndex
+                        hashes = RagIndex.compute_source_hashes([corpus_dir], "", cache_dir=index_dir)
+                        retriever.save_index(index_dir, source_hashes=hashes)
+                    except Exception:
+                        pass
             engine.corpus = retriever
             engine.retrieval_threshold = retrieval_threshold
             status_suffix = (
