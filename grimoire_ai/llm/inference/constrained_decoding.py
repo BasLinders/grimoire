@@ -309,6 +309,17 @@ class StatBlockConstraint:
         self._terminator_token_ids = set(
             self._scan_tokens(tokenizer, None, exact=_TERMINATORS).keys()
         )
+        # Incremental-decode cache for mask() -- see _text_so_far()'s
+        # docstring. Keyed on the *object identity* of the `generated` list
+        # sampler.py passes in: within one generate()/generate_stream() call
+        # that list is the same object, mutated in place via .append() every
+        # step, so identity reliably distinguishes "still the same
+        # generation, one token longer" from "a new generation started"
+        # (a fresh call always builds a new list).
+        self._cache_generated_ref: Optional[list[int]] = None
+        self._cache_len: int = 0
+        self._cache_committed: str = ""
+        self._cache_decoder = None
 
     @staticmethod
     def _scan_tokens(
@@ -336,6 +347,38 @@ class StatBlockConstraint:
             elif allowed_chars is not None and set(text) <= allowed_chars:
                 out[token_id] = text
         return out
+
+    def _text_so_far(self, generated: list[int], tokenizer: "BytePairEncoder") -> str:
+        """Incrementally maintained equivalent of ``tokenizer.decode(generated)``.
+
+        ``mask()`` is called once per decode step with the full, ever-growing
+        ``generated`` list, and previously called ``tokenizer.decode()`` on
+        it fresh every time -- O(n) work repeated at every step, O(n^2) over
+        a full generation. This tracks a ``BytePairEncoder.incremental_decoder()``
+        across calls instead, feeding it only the tokens that arrived since
+        the last call.
+
+        Uses ``preview_pending()`` (not just the committed text) so the
+        result matches ``decode()``'s own eager ``errors="replace"``
+        behaviour exactly, including its "self-correcting" quirk where a
+        multi-byte character still mid-sequence previews as a placeholder on
+        one call and then resolves to the real character once completed on
+        a later call -- ``_active_field``'s regex matching needs to see
+        exactly what a fresh ``decode()`` call would have shown at each
+        step, not the stricter "only complete characters" text streaming
+        display wants.
+        """
+        if generated is not self._cache_generated_ref or len(generated) < self._cache_len:
+            self._cache_generated_ref = generated
+            self._cache_len = 0
+            self._cache_committed = ""
+            self._cache_decoder = tokenizer.incremental_decoder()
+
+        for token_id in generated[self._cache_len:]:
+            self._cache_committed += self._cache_decoder.push(token_id)
+        self._cache_len = len(generated)
+
+        return self._cache_committed + self._cache_decoder.preview_pending()
 
     def _active_field(self, text_so_far: str) -> Optional[tuple[FieldSpec, str]]:
         """Return ``(field, value_so_far)`` if a field's value is being
@@ -378,7 +421,7 @@ class StatBlockConstraint:
             ``logits`` unchanged if no field is currently active, else a
             new tensor with every invalid continuation set to ``-inf``.
         """
-        text_so_far = tokenizer.decode(generated)
+        text_so_far = self._text_so_far(generated, tokenizer)
         active = self._active_field(text_so_far)
         if active is None:
             return logits

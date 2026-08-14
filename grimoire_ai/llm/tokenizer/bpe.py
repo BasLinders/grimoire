@@ -704,6 +704,23 @@ class IncrementalDecoder:
         """
         return self._flush(errors="replace")
 
+    def preview_pending(self) -> str:
+        """Peek at the currently-buffered (not yet committed) bytes as text.
+
+        Unlike ``push()``/``finish()``, this never mutates state or clears
+        the buffer — repeated calls are safe and cheap (at most a few bytes
+        are ever pending). Decodes with ``errors="replace"``, so a genuinely
+        incomplete trailing sequence previews as a placeholder character
+        rather than raising. Intended for callers that need a full-text view
+        that matches what ``decode()`` would give if called fresh right now
+        — e.g. text a regex is matched against every step — as opposed to
+        ``push()``'s stricter "only ever emit complete characters" guarantee,
+        which is what streaming *display* text needs instead.
+        """
+        if not self._byte_buf:
+            return ""
+        return bytes(self._byte_buf).decode("utf-8", errors="replace")
+
     def _flush(self, errors: str) -> str:
         if not self._byte_buf:
             return ""

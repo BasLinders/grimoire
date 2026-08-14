@@ -171,6 +171,33 @@ def test_incremental_decode_with_special_tokens(trained_encoder: BytePairEncoder
     assert incremental == reference
 
 
+@pytest.mark.parametrize("text", [
+    "hello world",
+    "Héllo wörld",
+    "∇f(x) = 0",
+    "🎲 rolling dice 🎲",
+    "D&D 5e Player's Handbook",
+])
+def test_incremental_decode_preview_matches_decode_at_every_prefix_length(
+    trained_encoder: BytePairEncoder, text: str,
+) -> None:
+    """committed + preview_pending() must equal tokenizer.decode() of the ids
+    seen so far, at *every* prefix length -- not just the final one. This is
+    the exact contract StatBlockConstraint's incremental text cache
+    (docs/inference_optimization.md item #6) depends on: it needs the same
+    "self-correcting" text a fresh decode() call would show at each step
+    (a still-incomplete multi-byte character previews as a placeholder,
+    then resolves once completed), not push()'s stricter
+    only-complete-characters guarantee."""
+    ids = trained_encoder.encode(text)
+    decoder = trained_encoder.incremental_decoder()
+    committed = ""
+    for i, token_id in enumerate(ids):
+        committed += decoder.push(token_id)
+        preview_text = committed + decoder.preview_pending()
+        assert preview_text == trained_encoder.decode(ids[: i + 1])
+
+
 def test_incremental_decoder_requires_trained_encoder() -> None:
     enc = BytePairEncoder()
     with pytest.raises(RuntimeError, match="no vocabulary"):
