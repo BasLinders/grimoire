@@ -1209,7 +1209,7 @@ def run_eval_ui(
                     # Embedding every passage in a large corpus from scratch is
                     # the slowest step in this pipeline (one forward pass per
                     # batch). Reuse the same on-disk RagIndex + staleness check
-                    # as the Chat tab so re-running eval against an unchanged
+                    # as the chat app so re-running eval against an unchanged
                     # corpus doesn't pay that cost every time.
                     index_dir = _semantic_index_dir([corpus_dir])
                     loaded_ok = False
@@ -1787,7 +1787,7 @@ def build_train_app() -> gr.Blocks:
                 )
                 ft_warmup = gr.Number(
                     label="Warmup steps", value=10, precision=0,
-                    info="Ramps the learning rate up gradually to avoid disruptive early updates.",
+                    info="Ramps the learning rate up gradually to avoid disruptive early updates. ~2% of Total steps is a safe default.",
                 )
                 ft_lr = gr.Number(
                     label="Peak LR", value=5e-5,
@@ -1796,7 +1796,7 @@ def build_train_app() -> gr.Blocks:
             with gr.Row():
                 ft_batch = gr.Number(
                     label="Batch size", value=_dp["ft_batch"], precision=0,
-                    info="Reduce if you run out of memory.",
+                    info="Examples processed per step. Reduce to 1–2 if you run out of memory.",
                 )
                 ft_accum = gr.Number(
                     label="Gradient accum.", value=_dp["ft_accum"], precision=0,
@@ -1807,7 +1807,7 @@ def build_train_app() -> gr.Blocks:
                 )
                 ft_save = gr.Number(
                     label="Save every N steps", value=100, precision=0,
-                    info="How often a snapshot is written to disk.",
+                    info="How often a snapshot is written to disk. More checkpoints = more recovery points but more disk space.",
                 )
             with gr.Row():
                 ft_val_split = gr.Number(
@@ -1816,7 +1816,7 @@ def build_train_app() -> gr.Blocks:
                 )
                 ft_eval_every = gr.Number(
                     label="Eval every N steps", value=100, precision=0,
-                    info="How often to compute validation loss on the held-out examples.",
+                    info="How often to compute validation loss on the held-out examples. Watch train vs val: both falling = healthy; val flattening/rising while train falls = overfitting.",
                 )
                 ft_eval_batches = gr.Number(
                     label="Eval batches", value=0, precision=0,
@@ -1947,9 +1947,9 @@ def build_train_app() -> gr.Blocks:
                 )
             with gr.Row():
                 sc_batch  = gr.Number(label="Batch size",        value=_dp["pt_batch"],  precision=0,
-                    info="Must match what you use in Pre-train.")
+                    info="Feeds into effective batch size (Batch size × Gradient accum.), which sets tokens-per-step. Must match what you'll actually use in Pre-train, or the step/pass estimates below won't reflect the real run.")
                 sc_accum  = gr.Number(label="Gradient accum.",   value=_dp["pt_accum"],  precision=0,
-                    info="Must match what you use in Pre-train.")
+                    info="Feeds into effective batch size (Batch size × Gradient accum.), which sets tokens-per-step. Must match what you'll actually use in Pre-train, or the step/pass estimates below won't reflect the real run.")
                 sc_seq    = gr.Number(label="Sequence length",   value=1024, precision=0,
                     info="Context window. Match your training run — pre-training uses max_seq_len=1024. A smaller value here under-counts tokens-per-step and inflates the pass estimate.")
                 sc_steps  = gr.Number(label="Planned total steps", value=20_000, precision=0,
@@ -2067,7 +2067,7 @@ def build_train_app() -> gr.Blocks:
                     value=False,
                     info="Detect arithmetic/probability in quiz questions and inject the "
                          "computed result as context, and resolve <TOOL:python> tags in "
-                         "responses — same tool available in the Chat tab.",
+                         "responses — same tool available in the chat app.",
                 )
             with gr.Row():
                 ev_run_btn  = gr.Button("Run evaluation", variant="primary")
@@ -2185,9 +2185,9 @@ def build_train_app() -> gr.Blocks:
             gr.Markdown(
                 "Pre-compute the semantic embedding index for a corpus directory.  "
                 "The index is stored as `.semantic_index/` inside the corpus directory "
-                "and is reloaded automatically by the Chat tab whenever the source files "
+                "and is reloaded automatically by the chat app whenever the source files "
                 "and checkpoint haven't changed.  Run this once after training or after "
-                "adding new corpus files — the Chat tab will load in seconds instead of "
+                "adding new corpus files — the chat app will load in seconds instead of "
                 "re-embedding from scratch on every session start.\n\n"
                 "Requires the same checkpoint that will be used in Chat.  Switching "
                 "checkpoints automatically invalidates the index (MD5 content hashes are "
