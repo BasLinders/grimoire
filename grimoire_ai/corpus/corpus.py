@@ -240,9 +240,13 @@ class GrimoireCorpus:
 
         # (jaccard, frequency) per candidate -- frequency only decides sort
         # order between ties, never inflates the score itself (see the
-        # scoring note above).
+        # scoring note above). Only multi-tokens sharing at least one word
+        # with the query can score above 0, so the inverted-index lookup
+        # below narrows to exactly that set instead of scanning every
+        # multi-token ever indexed.
         scores: dict[tuple[str, ...], tuple[float, int]] = {}
-        for mt, entry in self._index.all_entries().items():
+        for mt in self._index.candidates_for_words(query_set):
+            entry = self._index.get(mt)
             overlap = len(set(mt) & query_set)
             if overlap > 0:
                 union = len(set(mt) | query_set)

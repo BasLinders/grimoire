@@ -11,8 +11,17 @@ which source document it came from. ``GrimoireCorpus.query`` uses this
 metadata for Jaccard-weighted lexical scoring; semantic retrieval (see
 ``grimoire_ai.llm.inference.semantic.SemanticRetriever``) does not use
 this index at all — it embeds passages directly with the trained model.
+
+Point lookups by exact multi-token key (``get``) were always O(1), matching
+the module docstring above. ``GrimoireCorpus.query`` doesn't do point
+lookups, though — it scores every candidate against a bag of query words,
+which the hash map alone doesn't help with. ``candidates_for_words`` adds a
+second, inverted index (stemmed word -> multi-tokens containing it) so a
+query only scores multi-tokens sharing at least one word with it, instead
+of every multi-token ever indexed (docs/inference_optimization.md item #8).
 """
 
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Optional
 
@@ -61,11 +70,15 @@ class CorpusIndex:
 
     Attributes:
         _store: The underlying dictionary mapping multi-tokens to entries.
+        _word_postings: Inverted index from a single stemmed word to every
+            multi-token (already in ``_store``) containing that word —
+            populated alongside ``_store`` in ``add``, never separately.
     """
 
     def __init__(self) -> None:
         """Initialise an empty corpus index."""
         self._store: dict[tuple[str, ...], IndexEntry] = {}
+        self._word_postings: dict[str, set[tuple[str, ...]]] = defaultdict(set)
 
     def add(
         self,
@@ -100,6 +113,8 @@ class CorpusIndex:
             self._store[multi_token] = IndexEntry(
                 next_token=next_token, source=source, excerpt=excerpt
             )
+            for word in multi_token:
+                self._word_postings[word].add(multi_token)
 
     def get(self, multi_token: tuple[str, ...]) -> Optional[IndexEntry]:
         """Retrieve the entry for a given multi-token.
@@ -112,6 +127,28 @@ class CorpusIndex:
             not been indexed.
         """
         return self._store.get(multi_token)
+
+    def candidates_for_words(self, words: "set[str]") -> "set[tuple[str, ...]]":
+        """Return every indexed multi-token sharing at least one word with *words*.
+
+        Inverted-index lookup: unions the postings list for each word in
+        *words* instead of scanning every multi-token ever indexed. A
+        multi-token with zero overlap with the query can never score above
+        0 Jaccard similarity anyway (see ``GrimoireCorpus.query``), so this
+        candidate set is exactly the set worth scoring at all — narrowing
+        to it first is a pure speedup, not an approximation.
+
+        Args:
+            words: Stemmed query words to look up.
+
+        Returns:
+            The union of postings lists for every word in *words*. Empty
+            when none of the words appear in any indexed multi-token.
+        """
+        candidates: set[tuple[str, ...]] = set()
+        for word in words:
+            candidates |= self._word_postings.get(word, set())
+        return candidates
 
     def all_entries(self) -> dict[tuple[str, ...], IndexEntry]:
         """Return the full index as a dictionary.
