@@ -76,6 +76,7 @@ whatever passage strings it's given, so it has no opinion on where they
 came from.
 """
 
+import logging
 import random
 from typing import Callable, Iterable, Optional
 
@@ -83,7 +84,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 
-from grimoire_ai.llm.device import select_device
+from grimoire_ai.llm.device import select_device, torch_has_triton
 from grimoire_ai.llm.model.transformer import GrimoireTransformer
 from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
 from grimoire_ai.llm.tokenizer.special_tokens import BOS_ID, PAD_ID
@@ -349,7 +350,11 @@ class EmbedTuner:
     """Runs contrastive training steps against a ``GrimoireTransformer``.
 
     Attributes:
-        model: The model being tuned, moved to ``device``.
+        model: The model being tuned, moved to ``device``. Stays the raw,
+            uncompiled module -- ``state_dict()``/``load_state_dict()`` keys
+            must not carry a ``torch.compile`` wrapper prefix, since
+            ``save_lora``/``load_lora`` and checkpoint round-trips read/write
+            this module directly.
         device: ``"cuda"``, ``"mps"``, or ``"cpu"``.
         temperature: Forwarded to ``contrastive_loss`` on every step.
         optimizer: ``AdamW`` over the model's trainable parameters — every
@@ -357,6 +362,18 @@ class EmbedTuner:
             ``model.add_lora_adapters(...)`` before constructing this tuner
             to train only a LoRA adapter instead of the full model; nothing
             else needs to change.
+        _use_amp: Whether fp16 automatic mixed precision is active (CUDA
+            only -- same restriction as ``Trainer``, since ``GradScaler`` is
+            CUDA-specific in PyTorch and MPS autocast support is immature).
+        _embed_fn: Callable with ``_embed_pooled``'s signature, used by
+            ``train_step``/``train_step_pairs`` instead of calling
+            ``self.model._embed_pooled`` directly. On CUDA this is
+            ``torch.compile(self.model._embed_pooled)`` -- compiled
+            separately from ``self.model`` because ``_embed_pooled`` is a
+            distinct method from ``forward``, not something a whole-module
+            ``torch.compile(self.model)`` would trace.
+        _scaler: ``GradScaler`` for AMP loss scaling (CUDA only; a no-op
+            when ``_use_amp`` is ``False``).
     """
 
     def __init__(
@@ -382,6 +399,28 @@ class EmbedTuner:
         self.optimizer = torch.optim.AdamW(
             (p for p in self.model.parameters() if p.requires_grad), lr=lr
         )
+
+        self._use_amp = device == "cuda"
+        self._scaler = torch.amp.GradScaler("cuda", enabled=self._use_amp)
+
+        # torch.compile() traces _embed_pooled specifically -- it is a
+        # distinct method from forward() (no output-head projection, just
+        # the pooled trunk representation), so it needs its own compiled
+        # handle rather than reusing torch.compile(self.model). Falls back
+        # silently on CPU or if compilation is unavailable, same as Trainer.
+        self._embed_fn = self.model._embed_pooled
+        if device == "cuda" and hasattr(torch, "compile"):
+            if hasattr(torch, "_dynamo"):
+                torch._dynamo.config.suppress_errors = True
+                torch._dynamo.config.verbose = False
+                if not torch_has_triton():
+                    try:
+                        torch._logging.set_logs(
+                            dynamo=logging.ERROR, inductor=logging.ERROR
+                        )
+                    except Exception:
+                        pass
+            self._embed_fn = torch.compile(self.model._embed_pooled)
 
     def train_step(
         self,
@@ -417,14 +456,19 @@ class EmbedTuner:
         if attention_mask is not None:
             attention_mask = attention_mask.to(self.device)
 
-        emb_a = self.model._embed_pooled(input_ids, attention_mask)
-        emb_b = self.model._embed_pooled(input_ids, attention_mask)
-        loss = contrastive_loss(emb_a, emb_b, temperature=self.temperature)
+        with torch.autocast(
+            device_type=self.device, dtype=torch.float16, enabled=self._use_amp,
+        ):
+            emb_a = self._embed_fn(input_ids, attention_mask)
+            emb_b = self._embed_fn(input_ids, attention_mask)
+            loss = contrastive_loss(emb_a, emb_b, temperature=self.temperature)
 
         self.optimizer.zero_grad()
-        loss.backward()
+        self._scaler.scale(loss).backward()
+        self._scaler.unscale_(self.optimizer)
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-        self.optimizer.step()
+        self._scaler.step(self.optimizer)
+        self._scaler.update()
         return loss.item()
 
     def train_step_pairs(
@@ -471,14 +515,19 @@ class EmbedTuner:
         if a_attention_mask is not None:
             a_attention_mask = a_attention_mask.to(self.device)
 
-        emb_q = self.model._embed_pooled(q_input_ids, q_attention_mask)
-        emb_a = self.model._embed_pooled(a_input_ids, a_attention_mask)
-        loss = contrastive_loss(emb_q, emb_a, temperature=self.temperature)
+        with torch.autocast(
+            device_type=self.device, dtype=torch.float16, enabled=self._use_amp,
+        ):
+            emb_q = self._embed_fn(q_input_ids, q_attention_mask)
+            emb_a = self._embed_fn(a_input_ids, a_attention_mask)
+            loss = contrastive_loss(emb_q, emb_a, temperature=self.temperature)
 
         self.optimizer.zero_grad()
-        loss.backward()
+        self._scaler.scale(loss).backward()
+        self._scaler.unscale_(self.optimizer)
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-        self.optimizer.step()
+        self._scaler.step(self.optimizer)
+        self._scaler.update()
         return loss.item()
 
     def _run_loop(
