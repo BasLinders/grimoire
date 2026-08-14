@@ -364,6 +364,9 @@ def read_checkpoint_config(checkpoint_path: str) -> str:
         vocab     = cfg.get("vocab_size", "?")
         max_seq   = cfg.get("max_seq_len", "?")
         step      = ckpt.get("step", "?")
+        # Absent in checkpoints saved before attention_type existed — those
+        # all predate MLA, so "gqa" is the correct default, not a guess.
+        attn_type = cfg.get("attention_type", "gqa")
         # Match to a known preset for a friendly label.
         from grimoire_ai.llm.model.config import MODEL_PRESETS
         label = next(
@@ -374,7 +377,7 @@ def read_checkpoint_config(checkpoint_path: str) -> str:
         return (
             f"Architecture: {label}  |  "
             f"d_model={d_model}  n_layers={n_layers}  n_heads={n_heads}  "
-            f"n_kv_heads={n_kv}  d_ff={d_ff}  "
+            f"n_kv_heads={n_kv}  d_ff={d_ff}  attention={attn_type}  "
             f"vocab={vocab}  max_seq={max_seq}  |  "
             f"saved at step {step}"
         )
@@ -404,6 +407,9 @@ def run_pretrain(
     gradient_checkpointing: bool = False,
     sample_weights_path: str = "",
     val_stratified: bool = False,
+    attention_type: str = "gqa",
+    mla_kv_latent_dim: float = 0,
+    mla_rope_head_dim: float = 0,
 ) -> Generator[str, None, None]:
     """Launch a pre-training run and stream log output.
 
@@ -429,6 +435,14 @@ def run_pretrain(
     with one weight per training window — used to build a
     ``WeightedRandomSampler`` instead of uniform shuffling. Left blank,
     training behaves exactly as before.
+
+    ``attention_type`` selects between ``GroupedQueryAttention`` ("gqa",
+    default) and the experimental ``MultiHeadLatentAttention`` ("mla") —
+    see ``docs/architecture_optimization.md`` item #1. ``mla_kv_latent_dim``
+    and ``mla_rope_head_dim`` only apply when ``attention_type="mla"``;
+    ``0`` means "let the module pick its own default" (``2 * head_dim`` and
+    ``head_dim // 2`` respectively), matching this UI's existing "0 = auto"
+    convention (e.g. ``eval_batches``).
     """
     import numpy as np
     from grimoire_ai.llm.device import select_device
@@ -448,6 +462,9 @@ def run_pretrain(
             n_heads=int(n_heads),
             n_kv_heads=int(n_kv_heads),
             d_ff=int(d_ff),
+            attention_type=attention_type,
+            mla_kv_latent_dim=_mla_dim_or_none(mla_kv_latent_dim),
+            mla_rope_head_dim=_mla_dim_or_none(mla_rope_head_dim),
         )
         model = GrimoireTransformer(model_config)
         train_dataset, val_dataset = _build_datasets(
@@ -983,6 +1000,22 @@ def _toggle_finetune_mode(mode: str):
         gr.update(value=2e-4 if is_agent else 5e-5),                                     # ft_lr
     )
 
+
+
+def _toggle_mla_fields(attention_type: str):
+    """Show the MLA-specific latent/rope dimension fields only when selected."""
+    return gr.update(visible=attention_type == "mla")
+
+
+def _mla_dim_or_none(value: float) -> Optional[int]:
+    """Convert an MLA dimension field's 0-means-auto sentinel to None.
+
+    Mirrors this app's existing "0 = use the built-in default" convention
+    (e.g. ``eval_batches``) for ``TransformerConfig``'s optional
+    ``mla_kv_latent_dim`` / ``mla_rope_head_dim`` fields, which themselves
+    treat ``None`` as "compute a sensible default from head_dim".
+    """
+    return int(value) or None
 
 
 def _toggle_ingest_inputs(mode: str):
@@ -2551,6 +2584,33 @@ def build_app() -> gr.Blocks:
                     outputs=[pt_d_model, pt_n_layers, pt_n_heads, pt_n_kv_heads, pt_d_ff],
                 )
 
+                pt_attention_type = gr.Dropdown(
+                    choices=["gqa", "mla"],
+                    value="gqa",
+                    label="Attention type",
+                    info="gqa: shipped default, used by every existing checkpoint. "
+                         "mla (Multi-Head Latent Attention, experimental — "
+                         "docs/architecture_optimization.md item #1): compresses "
+                         "K/V into a shared low-rank latent instead of per-head "
+                         "caching, aiming for a smaller KV cache. Not yet "
+                         "validated by a real training run — compare against a "
+                         "gqa run before trusting it for production.",
+                )
+                with gr.Row(visible=False) as pt_mla_row:
+                    pt_mla_kv_latent_dim = gr.Number(
+                        label="MLA kv_latent_dim", value=0, precision=0,
+                        info="Compressed K/V bottleneck dimension (mla only). 0 = auto (2 × head_dim).",
+                    )
+                    pt_mla_rope_head_dim = gr.Number(
+                        label="MLA rope_head_dim", value=0, precision=0,
+                        info="Decoupled RoPE channel dimension per head (mla only). Must be even. 0 = auto (head_dim // 2).",
+                    )
+                pt_attention_type.change(
+                    fn=_toggle_mla_fields,
+                    inputs=[pt_attention_type],
+                    outputs=[pt_mla_row],
+                )
+
             _pt_corpus_outputs = [
                 pt_preset, pt_d_model, pt_n_layers, pt_n_heads, pt_n_kv_heads, pt_d_ff,
                 pt_steps, pt_warmup, pt_log, pt_save, pt_eval_every,
@@ -2623,6 +2683,7 @@ def build_app() -> gr.Blocks:
                     pt_val_split, pt_eval_every, pt_eval_batches,
                     pt_d_model, pt_n_layers, pt_n_heads, pt_n_kv_heads, pt_d_ff,
                     pt_grad_ckpt, pt_sample_weights, pt_val_stratified,
+                    pt_attention_type, pt_mla_kv_latent_dim, pt_mla_rope_head_dim,
                 ],
                 outputs=[pt_log_box, pt_run_btn, pt_stop_btn],
             )
