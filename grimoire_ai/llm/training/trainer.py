@@ -113,7 +113,7 @@ from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
 from grimoire_ai.llm.data.collator import PaddingCollator
 from grimoire_ai.llm.data.neighbor_dataset import NeighborAugmentedDataset, collate_with_neighbors
-from grimoire_ai.llm.device import select_device
+from grimoire_ai.llm.device import select_device, torch_has_triton
 from grimoire_ai.llm.model.transformer import GrimoireTransformer
 from grimoire_ai.llm.tokenizer.special_tokens import PAD_ID
 from grimoire_ai.llm.training.checkpoint import (
@@ -158,16 +158,6 @@ def _mtp_target(full_ids: torch.Tensor, offset: int, seq_len: int) -> torch.Tens
         (shifted.shape[0], pad_len), -100, dtype=shifted.dtype, device=shifted.device
     )
     return torch.cat([shifted, pad], dim=1)
-
-
-def _torch_has_triton() -> bool:
-    """Best-effort check for a working Triton backend (private torch API)."""
-    try:
-        from torch.utils._triton import has_triton
-
-        return bool(has_triton())
-    except Exception:
-        return False
 
 
 class Trainer:
@@ -399,7 +389,7 @@ class Trainer:
                 # otherwise so a *genuine* compile regression on a working
                 # Triton setup still surfaces a visible warning instead of
                 # silently degrading to eager.
-                if not _torch_has_triton():
+                if not torch_has_triton():
                     try:
                         torch._logging.set_logs(
                             dynamo=logging.ERROR, inductor=logging.ERROR

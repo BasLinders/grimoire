@@ -37,3 +37,20 @@ def select_device(preferred: Optional[str] = None) -> str:
     if torch.backends.mps.is_available():
         return "mps"
     return "cpu"
+
+
+def torch_has_triton() -> bool:
+    """Best-effort check for a working Triton backend (private torch API).
+
+    Shared by ``Trainer`` and ``EmbedTuner`` to decide whether to silence
+    ``torch.compile``'s dynamo/inductor fallback warnings -- expected and
+    harmless when Triton itself isn't installed (e.g. Windows), but worth
+    leaving visible on a working Triton setup where a warning would signal a
+    genuine compile regression.
+    """
+    try:
+        from torch.utils._triton import has_triton
+
+        return bool(has_triton())
+    except Exception:
+        return False
