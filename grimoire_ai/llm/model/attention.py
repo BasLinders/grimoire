@@ -260,9 +260,19 @@ class GroupedQueryAttention(nn.Module):
         # Use PyTorch's fused SDPA when available (PyTorch >= 2.0).
         # It dispatches to Flash Attention on supported hardware, giving
         # lower memory use and better throughput than the manual matmul path.
-        # Fall back to the manual path during inference with a KV cache
-        # (use_cache=True) because SDPA's is_causal flag assumes full sequences.
-        use_sdpa = past_kv is None and hasattr(F, "scaled_dot_product_attention")
+        # Fall back to the manual path for a cached multi-token step (query
+        # length < key length with more than one new position) — that shape
+        # needs an explicit causal mask *between* the new positions, which
+        # the sliced self._mask below already builds correctly, but SDPA's
+        # own is_causal flag cannot express (see the no-mask decode branch
+        # below for why). No current caller produces this shape (generation
+        # always feeds one token per cached step), but the fallback keeps
+        # the manual path correct if a future caller (e.g. batched draft-
+        # token verification for self-speculative decoding) does.
+        use_sdpa = (
+            hasattr(F, "scaled_dot_product_attention")
+            and (past_kv is None or seq_len == 1)
+        )
         if use_sdpa:
             dropout_p = self._dropout.p if self.training else 0.0
             if attention_mask is not None:
@@ -270,6 +280,9 @@ class GroupedQueryAttention(nn.Module):
                 # bake BOTH the causal mask and the padding mask into a single
                 # additive bias.  Omitting the causal term here would let the
                 # model attend to future tokens — a silent correctness bug.
+                # This slice of self._mask is already correct for both the
+                # prefill (past_len=0) and single-token cached-decode
+                # (past_len>0, seq_len=1) shapes.
                 causal = self._mask[past_len : past_len + seq_len, :full_seq]
                 attn_bias = (
                     causal.to(q.dtype)
@@ -286,10 +299,25 @@ class GroupedQueryAttention(nn.Module):
                 # Guard against NaN from fully-padded positions (all-inf rows
                 # produce 0/0 in softmax). The manual path has this guard too.
                 out = torch.nan_to_num(out, nan=0.0)
-            else:
-                # No padding mask: let SDPA apply the causal mask internally.
+            elif past_kv is None:
+                # Prefill / training, no padding mask: query and key lengths
+                # match (L == S), so SDPA's internal causal handling is
+                # correct as-is.
                 out = F.scaled_dot_product_attention(
                     q, k, v, dropout_p=dropout_p, is_causal=True,
+                )
+            else:
+                # Single-token cached decode step, no padding mask: the new
+                # token comes chronologically after every cached key, so
+                # there is nothing to mask. SDPA's is_causal flag builds an
+                # L×S mask assuming L == S (top-left aligned per the
+                # reference implementation in the PyTorch docs) — with L=1
+                # and S=full_seq that would incorrectly mask out all but the
+                # single oldest cached key. Passing is_causal=False with no
+                # attn_mask gives fully unmasked attention instead, which is
+                # exactly correct for this shape.
+                out = F.scaled_dot_product_attention(
+                    q, k, v, dropout_p=dropout_p, is_causal=False,
                 )
         else:
             scale = math.sqrt(self.head_dim)
