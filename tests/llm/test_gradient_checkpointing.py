@@ -112,7 +112,10 @@ def test_checkpointing_inactive_during_eval() -> None:
 
     ids = torch.randint(0, cfg.vocab_size, (1, 4))
     logits, kvs = model(ids, use_cache=True)
-    assert logits.shape == (1, 4, cfg.vocab_size)
+    # use_cache=True without return_mtp_logits only returns the final
+    # position's logits (see transformer.py's forward() docstring) — the
+    # KV cache itself still covers all 4 prefilled positions.
+    assert logits.shape == (1, 1, cfg.vocab_size)
     assert len(kvs) == cfg.n_layers
 
 

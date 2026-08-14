@@ -198,7 +198,15 @@ class GrimoireTransformer(nn.Module):
             unchanged from before MTP existed.
 
             When ``use_cache=True`` and ``return_mtp_logits=False``
-            (inference): a tuple ``(logits, present_kvs)``, also unchanged.
+            (inference): a tuple ``(logits, present_kvs)``, where ``logits``
+            is ``(batch, 1, vocab_size)`` — only the final position's
+            distribution, regardless of input ``seq_len`` — since a KV-cache
+            forward pass with no MTP request is only ever used to sample the
+            next token. When ``return_mtp_logits`` is also ``True``,
+            ``logits`` stays full-sequence ``(batch, seq_len, vocab_size)``
+            — that combination is reserved for self-speculative decoding,
+            which needs every position's primary logits alongside the MTP
+            heads'.
 
             When ``return_mtp_logits=True``: ``mtp_logits`` is appended as
             the last element — ``(logits, mtp_logits)`` or
@@ -255,7 +263,21 @@ class GrimoireTransformer(nn.Module):
                     present_kvs.append(present_kv)
 
         x = self.final_norm(x)
-        logits = self.output_head(x)
+        if use_cache and not return_mtp_logits:
+            # Plain-generation inference path (use_cache is never set during
+            # training — see the arg docstring above): the sampler only ever
+            # wants the next-token distribution for the final position
+            # (sampler.py always indexes logits[:, -1, :]), so skip
+            # projecting the discarded earlier positions through
+            # output_head. Matters most on long, RAG-grounded prefill passes
+            # where seq_len can be in the hundreds. Left full-sequence when
+            # return_mtp_logits is also set — that combination is reserved
+            # for self-speculative decoding (see
+            # docs/architecture_optimization.md item #2), which needs every
+            # position's primary logits alongside the MTP heads' logits.
+            logits = self.output_head(x[:, -1:, :])
+        else:
+            logits = self.output_head(x)
 
         mtp_logits: Optional[list[torch.Tensor]] = None
         if return_mtp_logits and self.config.n_predict > 0:
