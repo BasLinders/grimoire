@@ -66,6 +66,24 @@ first/prefill pass (``past_kv is None``), since that pass has no cache to
 save and benefits from PyTorch's fused SDPA kernel. It switches to the
 absorbed computation only once a cache is being extended
 (``past_kv is not None``), where the memory/compute saving actually matters.
+
+LoRA and the absorbed path
+---------------------------
+``_forward_absorbed`` reads ``w_uk``/``w_uv``'s weight matrices directly
+(``self.w_uk.weight``) rather than calling them, since the whole point of
+absorption is to fold those matrices into the query/output computation
+instead of materializing K/V through a normal forward pass. If
+``add_lora_adapters()`` has wrapped either in a ``LoRALinear``, a plain
+``.weight`` attribute access no longer exists (``LoRALinear`` stores
+``base_weight`` and the ``lora_A``/``lora_B`` low-rank factors separately)
+— and even if it did, reading only the frozen base weight would silently
+drop the adapter's contribution from every cached-decode step after the
+first, while the materialized prefill path (which calls ``self.w_uk(c_kv)``
+normally) would correctly include it. That first-token/rest-of-response
+inconsistency would be a subtle, hard-to-notice correctness bug rather than
+a loud failure. ``_effective_weight`` below resolves the true
+(base + LoRA delta) matrix for either module type, so absorbed decoding
+stays correct whether or not ``w_uk``/``w_uv`` are LoRA-adapted.
 """
 
 import math
@@ -77,6 +95,25 @@ import torch.nn.functional as F
 
 from grimoire_ai.llm.model.attention import _apply_rope, _precompute_rope_tables
 from grimoire_ai.llm.model.config import TransformerConfig
+
+
+def _effective_weight(module: nn.Module) -> torch.Tensor:
+    """Return *module*'s effective weight matrix, accounting for a LoRA wrap.
+
+    Args:
+        module: A plain ``nn.Linear`` or a ``LoRALinear`` (see ``lora.py``).
+
+    Returns:
+        The weight matrix ``forward()`` would actually use: ``module.weight``
+        for a plain ``nn.Linear``, or ``base_weight + (lora_B @ lora_A) *
+        scale`` for a ``LoRALinear`` — the same formula ``LoRALinear.merge()``
+        uses, just without constructing a new module.
+    """
+    from grimoire_ai.llm.model.lora import LoRALinear
+
+    if isinstance(module, LoRALinear):
+        return module.base_weight + (module.lora_B @ module.lora_A) * module.scale
+    return module.weight
 
 
 class MultiHeadLatentAttention(nn.Module):
@@ -299,7 +336,9 @@ class MultiHeadLatentAttention(nn.Module):
 
         # Absorb W_uk into the query side: q_absorbed = W_uk^T @ q_content,
         # computed once per new token, so scoring never re-expands the cache.
-        w_uk_per_head = self.w_uk.weight.view(H, Dc, Dl)  # (H, Dc, Dl)
+        # _effective_weight (not .weight directly) so a LoRA-wrapped w_uk
+        # still contributes correctly — see the module docstring.
+        w_uk_per_head = _effective_weight(self.w_uk).view(H, Dc, Dl)  # (H, Dc, Dl)
         q_absorbed = torch.einsum("bhsc,hcl->bhsl", q_content, w_uk_per_head)  # (b,H,s,Dl)
 
         content_scores = torch.einsum("bhsl,bfl->bhsf", q_absorbed, c_kv_full)  # (b,H,s,full)
@@ -319,7 +358,7 @@ class MultiHeadLatentAttention(nn.Module):
         # Absorb W_uv into the output side: aggregate in latent space first,
         # then project to head_dim — V is never materialized either.
         agg = torch.einsum("bhsf,bfl->bhsl", weights, c_kv_full)  # (b,H,s,Dl)
-        w_uv_per_head = self.w_uv.weight.view(H, Dh, Dl)  # (H, Dh, Dl)
+        w_uv_per_head = _effective_weight(self.w_uv).view(H, Dh, Dl)  # (H, Dh, Dl)
         out = torch.einsum("bhsl,hdl->bhsd", agg, w_uv_per_head)  # (b,H,s,Dh)
 
         out = out.transpose(1, 2).contiguous().view(batch, seq_len, H * Dh)

@@ -11,9 +11,12 @@ The second half of this file covers wiring MLA into
 ``TransformerConfig(attention_type="mla")``: full-model forward shape,
 causal masking, KV-cache equivalence, and serialisation, mirroring the
 GQA-path tests in ``test_model.py``. It also checks that the default
-(``attention_type="gqa"``) is unchanged, and that the two downstream features
-MLA does not yet support — LoRA adapters and GGUF export — fail with a clear
-error instead of silently doing the wrong thing.
+(``attention_type="gqa"``) is unchanged, and — the section most likely to
+hide a subtle bug — that LoRA adapters on ``w_uk``/``w_uv`` stay correct
+through the absorbed cached-decode path, which reads their weights
+directly rather than calling them (see ``mla_attention.py``'s
+``_effective_weight``). GGUF export does not yet support MLA and still
+fails with a clear error instead of silently doing the wrong thing.
 
 See docs/architecture_optimization.md item #1.
 """
@@ -23,9 +26,11 @@ from pathlib import Path
 
 import pytest
 import torch
+import torch.nn as nn
 
 from grimoire_ai.llm.model.block import TransformerBlock
 from grimoire_ai.llm.model.config import TransformerConfig
+from grimoire_ai.llm.model.lora import LoRALinear
 from grimoire_ai.llm.model.mla_attention import MultiHeadLatentAttention
 from grimoire_ai.llm.model.transformer import GrimoireTransformer
 
@@ -320,15 +325,122 @@ def test_transformer_serialisation_with_mla(mla_cfg: TransformerConfig) -> None:
     )
 
 
-def test_lora_rejects_mla_attention_type(mla_cfg: TransformerConfig) -> None:
-    """add_lora_adapters() must refuse an MLA model with a clear error
-    instead of crashing on a missing q_proj/v_proj attribute mid-loop."""
+def test_lora_default_targets_for_mla(mla_cfg: TransformerConfig) -> None:
+    """add_lora_adapters() with no explicit targets must wrap w_qc/w_uv
+    (MLA's query-content and value-generating projections, the MLA analog
+    of GQA's default q_proj/v_proj) and leave everything else plain."""
     model = GrimoireTransformer(mla_cfg)
-    with pytest.raises(NotImplementedError, match="attention_type"):
-        model.add_lora_adapters()
+    model.add_lora_adapters(rank=4, alpha=8.0)
+    for block in model.blocks:
+        assert isinstance(block.attn.w_qc, LoRALinear)
+        assert isinstance(block.attn.w_uv, LoRALinear)
+        assert isinstance(block.attn.w_dkv, nn.Linear) and not isinstance(block.attn.w_dkv, LoRALinear)
+        assert isinstance(block.attn.w_uk, nn.Linear) and not isinstance(block.attn.w_uk, LoRALinear)
+        assert isinstance(block.attn.w_qr, nn.Linear) and not isinstance(block.attn.w_qr, LoRALinear)
+        assert isinstance(block.attn.w_kr, nn.Linear) and not isinstance(block.attn.w_kr, LoRALinear)
 
 
-def test_merge_and_unload_rejects_mla_attention_type(mla_cfg: TransformerConfig) -> None:
+def test_lora_custom_targets_for_mla(mla_cfg: TransformerConfig) -> None:
+    """Explicit targets must reach any MLA projection, not just the defaults."""
     model = GrimoireTransformer(mla_cfg)
-    with pytest.raises(NotImplementedError, match="attention_type"):
-        model.merge_and_unload()
+    model.add_lora_adapters(rank=4, alpha=8.0, targets=["w_dkv", "w_uk"])
+    for block in model.blocks:
+        assert isinstance(block.attn.w_dkv, LoRALinear)
+        assert isinstance(block.attn.w_uk, LoRALinear)
+        assert not isinstance(block.attn.w_qc, LoRALinear)
+        assert not isinstance(block.attn.w_uv, LoRALinear)
+
+
+def test_lora_freezes_base_params_for_mla(mla_cfg: TransformerConfig) -> None:
+    model = GrimoireTransformer(mla_cfg)
+    model.add_lora_adapters(rank=4, alpha=8.0)
+    trainable = {n for n, p in model.named_parameters() if p.requires_grad}
+    assert all(n.endswith("lora_A") or n.endswith("lora_B") for n in trainable)
+    assert len(trainable) > 0
+
+
+def test_mla_lora_absorbed_path_stays_correct_with_wuk_wuv_adapted(
+    mla_cfg: TransformerConfig,
+) -> None:
+    """The correctness-critical case: LoRA-adapting w_uk/w_uv must not
+    diverge between the full-forward (materialized) and cached-decode
+    (absorbed) paths. The absorbed path reads .weight directly rather than
+    calling the module — see mla_attention.py's "LoRA and the absorbed
+    path" docstring section and _effective_weight. Without that fix, this
+    test would show the cached path silently dropping the LoRA delta from
+    the second token onward.
+    """
+    model = GrimoireTransformer(mla_cfg)
+    model.add_lora_adapters(rank=4, alpha=8.0, targets=["w_uk", "w_uv"])
+    # LoRA's B matrix is zero-initialised (delta == 0 at construction), so a
+    # bug that silently drops the delta would pass trivially without this --
+    # give every adapter a real, non-zero contribution first.
+    for block in model.blocks:
+        nn.init.normal_(block.attn.w_uk.lora_B, std=0.02)
+        nn.init.normal_(block.attn.w_uv.lora_B, std=0.02)
+    model.eval()
+
+    prompt = torch.randint(1, mla_cfg.vocab_size, (1, 6))
+    new_token = torch.randint(1, mla_cfg.vocab_size, (1, 1))
+
+    with torch.no_grad():
+        full_input = torch.cat([prompt, new_token], dim=1)
+        ref_logits = model(full_input)[0, -1, :]
+
+        _, past_kvs = model(prompt, use_cache=True)
+        cached_logits, _ = model(new_token, past_kvs=past_kvs, use_cache=True)
+        cached_logits = cached_logits[0, -1, :]
+
+    assert torch.allclose(ref_logits, cached_logits, atol=1e-4), (
+        "LoRA-adapted w_uk/w_uv diverged between the full-forward and "
+        "absorbed cached-decode paths -- the LoRA delta is being dropped "
+        "somewhere in the absorbed path's direct .weight access."
+    )
+
+
+def test_mla_lora_actually_changes_output(mla_cfg: TransformerConfig) -> None:
+    """Sanity check behind the equivalence test above: the adapter must
+    actually change the model's output, not just happen to agree with
+    itself trivially (e.g. if lora_B were still all-zero)."""
+    torch.manual_seed(0)
+    baseline = GrimoireTransformer(mla_cfg)
+    torch.manual_seed(0)
+    adapted = GrimoireTransformer(mla_cfg)
+    adapted.load_state_dict(baseline.state_dict())
+    adapted.add_lora_adapters(rank=4, alpha=8.0, targets=["w_uk", "w_uv"])
+    for block in adapted.blocks:
+        nn.init.normal_(block.attn.w_uk.lora_B, std=0.02)
+        nn.init.normal_(block.attn.w_uv.lora_B, std=0.02)
+    baseline.eval()
+    adapted.eval()
+
+    input_ids = torch.randint(1, mla_cfg.vocab_size, (1, 6))
+    with torch.no_grad():
+        out_baseline = baseline(input_ids)
+        out_adapted = adapted(input_ids)
+
+    assert not torch.allclose(out_baseline, out_adapted)
+
+
+def test_mla_merge_and_unload_restores_plain_linear(mla_cfg: TransformerConfig) -> None:
+    model = GrimoireTransformer(mla_cfg)
+    model.add_lora_adapters(rank=4, alpha=8.0)
+    for block in model.blocks:
+        nn.init.normal_(block.attn.w_qc.lora_B, std=0.02)
+        nn.init.normal_(block.attn.w_uv.lora_B, std=0.02)
+    model.eval()
+
+    input_ids = torch.randint(1, mla_cfg.vocab_size, (1, 6))
+    with torch.no_grad():
+        logits_before = model(input_ids)
+
+    model.merge_and_unload()
+
+    for block in model.blocks:
+        assert isinstance(block.attn.w_qc, nn.Linear) and not isinstance(block.attn.w_qc, LoRALinear)
+        assert isinstance(block.attn.w_uv, nn.Linear) and not isinstance(block.attn.w_uv, LoRALinear)
+    assert all(p.requires_grad for p in model.parameters())
+
+    with torch.no_grad():
+        logits_after = model(input_ids)
+    assert torch.allclose(logits_before, logits_after, atol=1e-5)
