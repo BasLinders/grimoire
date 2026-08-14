@@ -196,6 +196,15 @@ _ENCODER_CHOICES = [
     "Lexical (Jaccard)",
 ]
 
+#: Cross-encoder reranker choices for the Chat tab's retrieval configuration.
+#: "None" disables reranking (default) -- retrieval results are used exactly
+#: as the first-stage retriever (above) ranked them.
+_RERANKER_CHOICES = [
+    "None",
+    "TinyBERT (ms-marco-TinyBERT-L-2-v2)",
+    "MiniLM-12 (ms-marco-MiniLM-L-12-v2)",
+]
+
 
 # ---------------------------------------------------------------------------
 # Theme + CSS

@@ -33,6 +33,7 @@ from grimoire_ai.ui.chat_adapter import history_to_messages
 from grimoire_ai.ui.shared import (
     _CSS,
     _ENCODER_CHOICES,
+    _RERANKER_CHOICES,
     _THEME,
     _detect_device_profile,
     _index_is_fresh,
@@ -123,6 +124,8 @@ def load_agent(
     math_tool_enabled: bool = False,
     routing_threshold: float = 0.05,
     stat_block_constraint_enabled: bool = False,
+    reranker: str = "None",
+    rerank_candidates: int = 20,
 ) -> tuple[object, object, str, str, str]:
     """Load an agent by display name, applying the chosen retrieval backend.
 
@@ -153,6 +156,14 @@ def load_agent(
         if stat_block_constraint_enabled:
             from grimoire_ai.llm.inference.constrained_decoding import StatBlockConstraint
             engine._engine.stat_block_constraint = StatBlockConstraint(engine._engine.tokenizer)
+        if reranker != "None":
+            from grimoire_ai.llm.inference.reranker import CROSS_ENCODER_MODELS, Reranker, make_cross_encoder_score_fn
+            try:
+                score_fn = make_cross_encoder_score_fn(CROSS_ENCODER_MODELS[reranker])
+            except ImportError as exc:
+                return None, None, str(exc), "", ""
+            engine._engine.reranker = Reranker(score_fn)
+            engine._engine.rerank_candidates = rerank_candidates
         default_cfg = registry.get(registry.default_key)
         n_agents = len(registry.keys())
         return (
@@ -178,6 +189,14 @@ def load_agent(
     if stat_block_constraint_enabled:
         from grimoire_ai.llm.inference.constrained_decoding import StatBlockConstraint
         engine.stat_block_constraint = StatBlockConstraint(engine.tokenizer)
+    if reranker != "None":
+        from grimoire_ai.llm.inference.reranker import CROSS_ENCODER_MODELS, Reranker, make_cross_encoder_score_fn
+        try:
+            score_fn = make_cross_encoder_score_fn(CROSS_ENCODER_MODELS[reranker])
+        except ImportError as exc:
+            return None, None, str(exc), cfg.checkpoint, cfg.vocab
+        engine.reranker = Reranker(score_fn)
+        engine.rerank_candidates = rerank_candidates
 
     if not use_lexical and engine.corpus is not None:
         # Resolve via the registry so paths are correct regardless of cwd.
@@ -261,6 +280,8 @@ def load_engine(
     lora_path: str = "",
     math_tool_enabled: bool = False,
     stat_block_constraint_enabled: bool = False,
+    reranker: str = "None",
+    rerank_candidates: int = 20,
 ) -> tuple[object, object, str]:
     """Load an ``InferenceEngine`` and a fresh ``ConversationState``.
 
@@ -332,6 +353,14 @@ def load_engine(
     if stat_block_constraint_enabled:
         from grimoire_ai.llm.inference.constrained_decoding import StatBlockConstraint
         engine.stat_block_constraint = StatBlockConstraint(engine.tokenizer)
+    if reranker != "None":
+        from grimoire_ai.llm.inference.reranker import CROSS_ENCODER_MODELS, Reranker, make_cross_encoder_score_fn
+        try:
+            score_fn = make_cross_encoder_score_fn(CROSS_ENCODER_MODELS[reranker])
+        except ImportError as exc:
+            return None, None, str(exc), gr.update()
+        engine.reranker = Reranker(score_fn)
+        engine.rerank_candidates = rerank_candidates
 
     if lora_path:
         try:
@@ -691,6 +720,22 @@ def build_chat_app() -> gr.Blocks:
                          "Queries below this score are answered without grounding (pure-chat). "
                          "Cosine scores live in [-1, 1]; 0.0 is a good starting point.",
                 )
+                chat_reranker = gr.Dropdown(
+                    choices=_RERANKER_CHOICES,
+                    value="None",
+                    label="Reranker",
+                    info="Rescore retrieved passages with a cross-encoder before injecting "
+                         "them — reads the query and each passage together, more accurate "
+                         "than the first-stage similarity score alone. Requires "
+                         "pip install -e \".[encoder]\". 'None' keeps first-stage ranking as-is.",
+                )
+                chat_rerank_candidates = gr.Slider(
+                    minimum=5, maximum=50, value=20, step=5,
+                    label="Rerank candidate pool",
+                    info="How many passages the first-stage retriever fetches before the "
+                         "reranker rescores and keeps the top results. Only used when a "
+                         "reranker is selected above.",
+                )
 
             # ---- Agent selector -----------------------------------------
             _agent_names = _load_agent_names()
@@ -905,12 +950,12 @@ def build_chat_app() -> gr.Blocks:
 
         agent_load_btn.click(
             fn=load_agent,
-            inputs=[agent_dropdown, chat_encoder, chat_threshold, chat_quantize, chat_math_tool, chat_routing_threshold, chat_stat_block_constraint],
+            inputs=[agent_dropdown, chat_encoder, chat_threshold, chat_quantize, chat_math_tool, chat_routing_threshold, chat_stat_block_constraint, chat_reranker, chat_rerank_candidates],
             outputs=[engine_state, conv_state, agent_status, chat_ckpt, chat_vocab],
         ).then(fn=lambda: [], outputs=[chatbot])
         load_btn.click(
             fn=load_engine,
-            inputs=[chat_ckpt, chat_vocab, chat_corpus_dir, chat_encoder, chat_threshold, chat_quantize, chat_lora, chat_math_tool, chat_stat_block_constraint],
+            inputs=[chat_ckpt, chat_vocab, chat_corpus_dir, chat_encoder, chat_threshold, chat_quantize, chat_lora, chat_math_tool, chat_stat_block_constraint, chat_reranker, chat_rerank_candidates],
             outputs=[engine_state, conv_state, load_status, chat_quantize],
         ).then(fn=lambda: [], outputs=[chatbot])
 
