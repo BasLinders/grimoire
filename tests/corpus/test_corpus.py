@@ -84,6 +84,41 @@ class TestCorpusIndex:
         index.add(("e", "f", "g", "h"))
         assert len(index) == 2
 
+    def test_candidates_for_words_finds_sharing_multi_tokens(self):
+        index = CorpusIndex()
+        index.add(("grappl", "creatur", "speed", "reduc"))
+        index.add(("fire", "burn", "everyth", "nearbi"))
+        candidates = index.candidates_for_words({"speed"})
+        assert candidates == {("grappl", "creatur", "speed", "reduc")}
+
+    def test_candidates_for_words_unions_across_multiple_words(self):
+        index = CorpusIndex()
+        mt_a = ("grappl", "creatur", "speed", "reduc")
+        mt_b = ("fire", "burn", "everyth", "nearbi")
+        index.add(mt_a)
+        index.add(mt_b)
+        candidates = index.candidates_for_words({"speed", "fire"})
+        assert candidates == {mt_a, mt_b}
+
+    def test_candidates_for_words_empty_for_unknown_word(self):
+        index = CorpusIndex()
+        index.add(("grappl", "creatur", "speed", "reduc"))
+        assert index.candidates_for_words({"nonexist"}) == set()
+
+    def test_candidates_for_words_empty_for_empty_query(self):
+        index = CorpusIndex()
+        index.add(("grappl", "creatur", "speed", "reduc"))
+        assert index.candidates_for_words(set()) == set()
+
+    def test_candidates_for_words_does_not_duplicate_across_shared_words(self):
+        """A multi-token sharing more than one word with the query must still
+        appear exactly once (set union, not concatenation)."""
+        index = CorpusIndex()
+        mt = ("grappl", "creatur", "speed", "reduc")
+        index.add(mt)
+        candidates = index.candidates_for_words({"grappl", "speed", "creatur"})
+        assert candidates == {mt}
+
 
 class TestGrimoireCorpus:
     def setup_method(self):
@@ -117,6 +152,52 @@ class TestGrimoireCorpus:
         corpus = GrimoireCorpus(n=4)
         count = corpus.add_text("The wizard cast a powerful fireball spell at the enemy.")
         assert count > 0
+
+    def test_query_matches_brute_force_scan_over_random_corpus(self):
+        """The inverted-index-backed query() (docs/inference_optimization.md
+        item #8) must return exactly the same (multi_token, score) pairs a
+        full linear scan over every indexed multi-token would -- narrowing
+        the candidate set is a pure speedup, never a change in results."""
+        import random
+
+        rng = random.Random(0)
+        words_pool = [
+            "grapple", "fire", "stealth", "wizard", "dragon", "sword",
+            "shield", "magic", "speed", "creature", "attack", "damage",
+        ]
+        corpus = GrimoireCorpus(n=4)
+        for i in range(50):
+            text = " ".join(rng.choices(words_pool, k=rng.randint(5, 20)))
+            corpus.add_text(text, source=f"doc{i}")
+
+        def brute_force_scores(query_text: str) -> dict:
+            query_tokens = corpus._stemmer.tokenize_and_stem(query_text)
+            query_mts = corpus._tokenizer.build(query_tokens)
+            query_set = (
+                {t for mt in query_mts for t in mt} if query_mts else set(query_tokens)
+            )
+            scores = {}
+            for mt, entry in corpus._index.all_entries().items():
+                overlap = len(set(mt) & query_set)
+                if overlap > 0:
+                    union = len(set(mt) | query_set)
+                    scores[mt] = (overlap / union, entry.frequency)
+            return scores
+
+        for query in [
+            "grapple speed creature",
+            "fire damage wizard",
+            "stealth attack dragon sword",
+            "nonexistent gibberish words",
+        ]:
+            # top_k large enough to return every scoring candidate, so this
+            # compares the full result set, not just a truncated head.
+            results = corpus.query(query, top_k=10_000)
+            actual = {(r.multi_token, r.score) for r in results}
+            expected = {
+                (mt, jaccard) for mt, (jaccard, _freq) in brute_force_scores(query).items()
+            }
+            assert actual == expected, f"Mismatch for query {query!r}"
 
 
 class TestExcerpts:
