@@ -8,6 +8,14 @@ scripts/build_retrieval_neighbors.py (the offline precomputation script) is
 not covered here — it depends on a live SemanticRetriever/InferenceEngine
 and is exercised manually rather than unit tested, consistent with how
 other scripts in this repo that need a real checkpoint are handled.
+
+The bottom section covers RETRO combined with Multi-Token Prediction
+(item #2, PR #180) in the same Trainer.train() run — the one place their
+independently-developed code paths actually intersect (Trainer's single
+self._forward_model(...) call, which must pass neighbor_ids
+unconditionally while only conditionally requesting return_mtp_logits).
+Neither feature's own test suite exercised this combination, since each
+was developed and tested against main before the other existed.
 """
 
 from pathlib import Path
@@ -28,10 +36,11 @@ from grimoire_ai.llm.training.trainer import Trainer
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _tiny_config(retro_layers=None) -> TransformerConfig:
+def _tiny_config(retro_layers=None, n_predict=0) -> TransformerConfig:
     return TransformerConfig(
         vocab_size=256, d_model=32, n_layers=2, n_heads=2, n_kv_heads=1,
         d_ff=64, max_seq_len=16, dropout=0.0, retro_layers=retro_layers,
+        n_predict=n_predict,
     )
 
 
@@ -194,3 +203,51 @@ def test_training_run_without_neighbor_ids_unaffected(tmp_path) -> None:
     ).train()
 
     assert len(logs) == 2
+
+
+# ---------------------------------------------------------------------------
+# RETRO + Multi-Token Prediction combined (PR #180 x PR #181 intersection)
+# ---------------------------------------------------------------------------
+
+def test_training_run_with_retro_and_mtp_both_enabled(tmp_path) -> None:
+    """A single training run with retro_layers set, neighbor_ids supplied,
+    AND n_predict > 0 must complete without error, produce a finite loss,
+    and persist both features' weights in the checkpoint. This is the exact
+    combination the two PRs' merge conflict resolution had to get right:
+    Trainer's forward call must pass neighbor_ids unconditionally while
+    only conditionally requesting return_mtp_logits.
+    """
+    cfg = _tiny_config(retro_layers=[0], n_predict=2)
+    model = GrimoireTransformer(cfg)
+    dataset = _tiny_bin_dataset(str(tmp_path), cfg)
+    neighbor_ids = np.random.randint(
+        1, cfg.vocab_size, size=(len(dataset), 2, 8)
+    ).astype(np.int32)
+    logs: list[float] = []
+
+    Trainer(
+        model=model,
+        train_dataset=dataset,
+        neighbor_ids=neighbor_ids,
+        mtp_loss_weight=0.3,
+        total_steps=3,
+        batch_size=2,
+        accumulate_steps=1,
+        log_every=1,
+        save_every=3,
+        checkpoint_dir=str(tmp_path),
+        device="cpu",
+        on_log=lambda step, loss, lr, elapsed: logs.append(loss),
+    ).train()
+
+    assert len(logs) == 3
+    assert all(torch.isfinite(torch.tensor(loss)) for loss in logs)
+
+    ckpt = torch.load(str(tmp_path / "step_0000003.pt"), map_location="cpu", weights_only=True)
+    state_dict = ckpt["model"]
+    assert any(key.startswith("blocks.0.cca.") for key in state_dict), (
+        "CCA weights missing from checkpoint with both features enabled."
+    )
+    assert any(key.startswith("mtp_transforms.") for key in state_dict), (
+        "MTP head weights missing from checkpoint with both features enabled."
+    )

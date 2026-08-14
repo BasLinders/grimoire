@@ -88,6 +88,15 @@ class TransformerConfig:
             ``forward()`` isn't given ``neighbor_ids`` — the CCA sublayers
             just pass their input through unchanged (pure residual, no-op)
             until retrieval is actually wired up.
+        n_predict: Number of extra Multi-Token Prediction heads (see
+            ``docs/architecture_optimization.md`` item #2). ``0`` (default)
+            disables MTP entirely — ``GrimoireTransformer`` builds no extra
+            modules and ``forward()`` behaves exactly as it always has. When
+            positive, the model gains ``n_predict`` auxiliary heads used
+            only during pretraining (``Trainer``) to predict further-ahead
+            tokens as an additional training signal; inference and export
+            are unaffected since ``forward()`` only computes them when
+            explicitly asked via ``return_mtp_logits=True``.
     """
 
     vocab_size: int = 16384
@@ -103,6 +112,7 @@ class TransformerConfig:
     mla_rope_head_dim: Optional[int] = None
     attention_type: str = "gqa"
     retro_layers: Optional[list[int]] = None
+    n_predict: int = 0
 
     def __post_init__(self) -> None:
         """Validate internal consistency of the configuration.
@@ -110,9 +120,10 @@ class TransformerConfig:
         Raises:
             ValueError: If ``d_model`` is not divisible by ``n_heads``, if
                 ``n_heads`` is not divisible by ``n_kv_heads``, if
-                ``attention_type`` is not ``"gqa"`` or ``"mla"``, or if
+                ``attention_type`` is not ``"gqa"`` or ``"mla"``, if
                 ``retro_layers`` is empty, contains duplicates, or contains
-                an index outside ``[0, n_layers)``.
+                an index outside ``[0, n_layers)``, or if ``n_predict`` is
+                negative.
         """
         if self.d_model % self.n_heads != 0:
             raise ValueError(
@@ -143,6 +154,8 @@ class TransformerConfig:
                         f"retro_layers index {idx} is out of range for "
                         f"n_layers={self.n_layers}."
                     )
+        if self.n_predict < 0:
+            raise ValueError(f"n_predict ({self.n_predict}) must be non-negative.")
 
     @property
     def head_dim(self) -> int:

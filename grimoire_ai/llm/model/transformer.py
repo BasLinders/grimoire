@@ -39,6 +39,7 @@ import torch.utils.checkpoint
 from grimoire_ai.llm.model.block import RMSNorm, TransformerBlock
 from grimoire_ai.llm.model.config import TransformerConfig
 from grimoire_ai.llm.model.embedding import TokenEmbedding
+from grimoire_ai.llm.model.feedforward import SwiGLUFeedForward
 
 _ATTN_PROJS = ("q_proj", "k_proj", "v_proj", "o_proj")
 _FFN_PROJS  = ("gate_proj", "up_proj", "down_proj")
@@ -60,6 +61,13 @@ class GrimoireTransformer(nn.Module):
         final_norm: ``RMSNorm`` applied after the last block.
         output_head: Linear projection from ``d_model`` to ``vocab_size``.
         Weight-tied to ``embedding.weight``; no bias.
+        mtp_transforms: ``nn.ModuleList`` of ``config.n_predict`` extra
+            ``SwiGLUFeedForward`` modules — one per auxiliary Multi-Token
+            Prediction head (see ``forward``'s ``return_mtp_logits``).
+            Empty when ``config.n_predict == 0`` (the default).
+        mtp_norms: Matching ``RMSNorm`` applied before each MTP head's
+            (tied) unembedding, mirroring ``final_norm``'s role for the
+            primary output.
     """
 
     def __init__(self, config: TransformerConfig) -> None:
@@ -80,6 +88,25 @@ class GrimoireTransformer(nn.Module):
         from grimoire_ai.llm.model.block import RMSNorm
         self.final_norm = RMSNorm(config.d_model)
         self.output_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
+
+        # Multi-Token Prediction (docs/architecture_optimization.md item #2):
+        # config.n_predict extra heads, each a SwiGLUFeedForward + RMSNorm
+        # applied to the SAME shared final hidden state as the primary
+        # prediction, then unembedded through the same tied output_head.
+        # Reusing SwiGLUFeedForward (rather than a bespoke module) keeps this
+        # proportionate to the model's existing capacity budget and gives
+        # each head genuine extra parameters to learn a distinct
+        # further-ahead prediction from — without extra parameters here,
+        # every head would just recompute the primary next-token logits.
+        # Built only when n_predict > 0, so a default-config model has
+        # neither the modules nor their parameters — zero footprint when
+        # unused.
+        self.mtp_transforms = nn.ModuleList(
+            [SwiGLUFeedForward(config) for _ in range(config.n_predict)]
+        )
+        self.mtp_norms = nn.ModuleList(
+            [RMSNorm(config.d_model) for _ in range(config.n_predict)]
+        )
 
         self._gradient_checkpointing = False
         # Initialise before weight tying so named_parameters() only visits the
@@ -121,7 +148,13 @@ class GrimoireTransformer(nn.Module):
         use_cache: bool = False,
         neighbor_ids: Optional[torch.Tensor] = None,
         neighbor_mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor | tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
+        return_mtp_logits: bool = False,
+    ) -> (
+        torch.Tensor
+        | tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]
+        | tuple[torch.Tensor, Optional[list[torch.Tensor]]]
+        | tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]], Optional[list[torch.Tensor]]]
+    ):
         """Compute next-token logits for a batch of token sequences.
 
         Args:
@@ -149,14 +182,30 @@ class GrimoireTransformer(nn.Module):
                 ``(batch, n_neighbors, neighbor_len)``, ``1`` for real
                 tokens. ``None`` when every neighbor chunk is exactly
                 ``neighbor_len`` tokens.
+            return_mtp_logits: When ``True`` and ``config.n_predict > 0``,
+                also compute and return the auxiliary Multi-Token
+                Prediction logits — see ``mtp_transforms``. Defaults to
+                ``False``, matching every existing caller (the sampler and
+                ``InferenceEngine`` never set this); only ``Trainer`` sets
+                it, and only when the model was built with ``n_predict>0``.
 
         Returns:
-            When ``use_cache=False`` (default / training): a float tensor of
-            shape ``(batch, seq_len, vocab_size)``.
+            When both flags are ``False`` (the default / most callers): a
+            float tensor of shape ``(batch, seq_len, vocab_size)`` —
+            unchanged from before MTP existed.
 
-            When ``use_cache=True`` (inference): a tuple
-            ``(logits, present_kvs)`` where ``present_kvs`` is a list of
-            ``(k, v)`` tensors, one per layer, ready for the next step.
+            When ``use_cache=True`` and ``return_mtp_logits=False``
+            (inference): a tuple ``(logits, present_kvs)``, also unchanged.
+
+            When ``return_mtp_logits=True``: ``mtp_logits`` is appended as
+            the last element — ``(logits, mtp_logits)`` or
+            ``(logits, present_kvs, mtp_logits)`` depending on
+            ``use_cache``. ``mtp_logits`` is a list of ``config.n_predict``
+            tensors, each ``(batch, seq_len, vocab_size)``, where element
+            ``i`` predicts the token ``i + 2`` positions ahead (element 0
+            is the first *extra* head — the primary ``logits`` already
+            covers the ``+1`` offset). ``None`` when ``config.n_predict``
+            is ``0``.
         """
         x = self.embedding(input_ids)
         present_kvs: list[tuple[torch.Tensor, torch.Tensor]] = []
@@ -205,8 +254,24 @@ class GrimoireTransformer(nn.Module):
         x = self.final_norm(x)
         logits = self.output_head(x)
 
+        mtp_logits: Optional[list[torch.Tensor]] = None
+        if return_mtp_logits and self.config.n_predict > 0:
+            # Each head transforms the SAME shared trunk output x
+            # independently (parallel heads off one representation, not a
+            # sequential chain) then unembeds through the tied output_head —
+            # gradients from every head flow back into the shared trunk,
+            # which is the actual point of the auxiliary objective.
+            mtp_logits = [
+                self.output_head(self.mtp_norms[i](self.mtp_transforms[i](x)))
+                for i in range(self.config.n_predict)
+            ]
+
+        if use_cache and return_mtp_logits:
+            return logits, present_kvs, mtp_logits
         if use_cache:
             return logits, present_kvs
+        if return_mtp_logits:
+            return logits, mtp_logits
         return logits
 
     def _embed_pooled(
