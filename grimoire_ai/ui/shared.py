@@ -283,97 +283,24 @@ _CSS = """
     border-color: #b8860b !important;
     color: #e8c97a !important;
 }
-/* Tabs, styled as a left-hand sidebar nav instead of Gradio's default
-   horizontal bar -- gr.Tabs has no built-in vertical/sidebar placement
-   option in this Gradio version, so this repositions the real DOM
-   structure directly (confirmed via live inspection: Gradio 6 renders tabs
-   as .tabs > .tab-wrapper > .tab-container > button; the old .tab-nav
-   selector here matched nothing at all -- some earlier Gradio version
-   renamed the class and this rule silently went dead). */
-.tabs {
-    display: flex !important;
-    flex-direction: row !important;
-    align-items: flex-start !important;
-    gap: 24px;
-}
-.tab-wrapper {
-    flex-direction: column !important;
-    align-items: stretch !important;
-    width: 200px;
-    flex-shrink: 0;
-    height: auto !important;
-    padding-bottom: 0 !important;
-    margin-bottom: 0 !important;
-    padding-right: 16px;
-}
-.tab-container {
-    flex-direction: column !important;
-    align-items: stretch !important;
-    width: 100% !important;
-    height: auto !important;
-    overflow: visible !important;
-}
-.tab-container::after {
-    display: none; /* old horizontal-bar underline -- not needed vertically */
-}
-.tab-container button {
+/* Tabs */
+.tab-nav button {
     font-family: 'Cinzel', serif !important;
     font-size: 0.85rem !important;
     letter-spacing: 0.05em !important;
-    width: 100% !important;
-    text-align: left !important;
-    justify-content: flex-start !important;
-    padding: 10px 14px !important;
-    border-radius: 6px !important;
-    border-bottom: none !important;
-    transition: color 0.2s, border-color 0.2s, background-color 0.2s;
-}
-/* Colors gated on :not([data-theme="light"]) rather than a plain rule
-   competing with _LIGHT_CSS's injected override on equal specificity +
-   !important -- an equal-specificity tie between a static stylesheet rule
-   and a dynamically-injected <style> isn't guaranteed to resolve by
-   insertion order the way it looks like it should (confirmed empirically:
-   the injected override lost that tie for this selector, unlike border-
-   right-color below which has no competing !important on the dark side).
-   Gating the dark rule so it self-deactivates in light mode sidesteps the
-   tie entirely -- same pattern already used for the textarea color rule
-   above. */
-:root:not([data-theme="light"]) .tab-wrapper {
-    border-right: 1px solid #2e2e45;
-}
-:root:not([data-theme="light"]) .tab-container button {
     color: #aaaacc !important;
-    border-left: 3px solid transparent !important;
+    border-bottom: 2px solid transparent !important;
+    transition: color 0.2s, border-color 0.2s;
 }
-:root:not([data-theme="light"]) .tab-container button:hover {
+.tab-nav button:hover {
     color: #c8a84b !important;
-    background: rgba(184, 134, 11, 0.08);
 }
-:root:not([data-theme="light"]) .tab-container button.selected {
+.tab-nav button.selected {
     color: #e8c97a !important;
-    border-left: 3px solid #b8860b !important;
-    background: rgba(184, 134, 11, 0.08);
+    border-bottom: 2px solid #b8860b !important;
 }
-[data-theme="light"] .tab-wrapper {
-    border-right: 1px solid #c8bfa8;
-}
-[data-theme="light"] .tab-container button {
-    color: #4a4a6a !important;
-    border-left: 3px solid transparent !important;
-}
-[data-theme="light"] .tab-container button:hover {
-    color: #7a5800 !important;
-    background: rgba(184, 134, 11, 0.08);
-}
-[data-theme="light"] .tab-container button.selected {
-    color: #6a4e00 !important;
-    border-left: 3px solid #b8860b !important;
-    background: rgba(184, 134, 11, 0.08);
-}
-/* The content pane next to the nav column, filling remaining width. */
-.tabitem {
-    flex: 1;
-    min-width: 0;
+.tab-nav button:hover {
+    color: #c8a84b !important;
 }
 /* Scrollable log boxes — green only in dark mode; light mode overridden by _LIGHT_CSS */
 :root:not([data-theme="light"]) textarea {
@@ -478,11 +405,9 @@ _LIGHT_CSS = (
     "background-clip:text!important}"
     "#theme-btn{border-color:#c8bfa8!important;color:#4a4a6a!important}"
     "#theme-btn:hover{border-color:#b8860b!important;color:#6a4e00!important}"
-    # .tab-wrapper/.tab-container button colors are handled by the static
-    # [data-theme="light"]-gated rules in _CSS instead -- an equal-
-    # specificity !important tie against those didn't reliably resolve in
-    # this override's favor, unlike everything else in this list where the
-    # dark-mode counterpart isn't also !important.
+    ".tab-nav button{color:#4a4a6a!important}"
+    ".tab-nav button.selected{color:#6a4e00!important;border-bottom:2px solid #b8860b!important}"
+    ".tab-nav button:hover{color:#7a5800!important}"  # 5.9:1 on #f5f3ee (WCAG AA ✓)
     "textarea{color:#1a1a2e!important}"      # dark navy, no green in light mode; 15.4:1 ✓
     # Primary CTA button text — #0d0d14 on #b8860b = 5.9:1 ✓
     "button.primary{color:#0d0d14!important}"
