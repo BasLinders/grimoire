@@ -22,9 +22,9 @@ but not its sibling.
 
 | # | Item | Where | Status |
 |---|---|---|---|
-| 1 | `output_head` projects the full prompt during prefill, not just the last token | `model/transformer.py` | not started |
-| 2 | Cached (decode-step) attention never uses fused SDPA | `model/attention.py` | not started |
-| 3 | `generate()` computes softmax twice in top-p sampling | `inference/sampler.py` | not started |
+| 1 | `output_head` projects the full prompt during prefill, not just the last token | `model/transformer.py` | ✓ shipped — [PR #189](https://github.com/BasLinders/grimoire/pull/189) |
+| 2 | Cached (decode-step) attention never uses fused SDPA | `model/attention.py` | ✓ shipped — [PR #190](https://github.com/BasLinders/grimoire/pull/190) |
+| 3 | `generate()` computes softmax twice in top-p sampling | `inference/sampler.py` | ✓ shipped — [PR #191](https://github.com/BasLinders/grimoire/pull/191) |
 | 4 | `repetition_penalty` loop does per-token scalar tensor writes | `inference/sampler.py` | not started |
 | 5 | `chat_stream()` re-decodes the full sequence on every yielded token | `inference/engine.py` | not started |
 | 6 | `StatBlockConstraint.mask()` compounds full-redecode + per-step vocab scan | `inference/constrained_decoding.py` | not started |
