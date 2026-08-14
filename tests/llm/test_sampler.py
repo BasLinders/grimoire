@@ -17,6 +17,7 @@ import torch.nn as nn
 
 from grimoire_ai.llm.inference.sampler import (
     GenerationConfig,
+    _apply_repetition_penalty,
     adaptive_temperature,
     generate,
 )
@@ -228,3 +229,38 @@ def test_repetition_penalty_reduces_repeats() -> None:
         f"Repetition penalty should reduce token 10 count: "
         f"no_penalty={count_no_penalty}, with_penalty={count_with_penalty}."
     )
+
+
+def test_apply_repetition_penalty_matches_per_token_loop() -> None:
+    """The vectorised helper must produce the exact same result as looping
+    over set(generated) and scaling each token's logit individually."""
+    torch.manual_seed(0)
+    logits = torch.randn(50)
+    generated = [3, 7, 3, 12, 40, 7, 25]  # deliberately has duplicates
+    penalty = 1.3
+
+    reference = logits.clone()
+    for token_id in set(generated):
+        if reference[token_id] > 0:
+            reference[token_id] /= penalty
+        else:
+            reference[token_id] *= penalty
+
+    actual = logits.clone()
+    _apply_repetition_penalty(actual, generated, penalty)
+
+    assert torch.equal(reference, actual)
+
+
+def test_apply_repetition_penalty_handles_duplicate_tokens_once() -> None:
+    """A token appearing many times in `generated` must still only be scaled
+    once (matching set(generated)'s dedup), not once per occurrence."""
+    logits = torch.tensor([2.0, -3.0, 5.0])
+    generated = [0, 0, 0, 0, 1]
+    penalty = 2.0
+
+    _apply_repetition_penalty(logits, generated, penalty)
+
+    assert logits[0].item() == pytest.approx(1.0)   # 2.0 / 2.0, scaled once
+    assert logits[1].item() == pytest.approx(-6.0)  # -3.0 * 2.0
+    assert logits[2].item() == pytest.approx(5.0)   # untouched (never generated)

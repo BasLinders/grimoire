@@ -148,6 +148,33 @@ def _resolve_loop_guard(config: GenerationConfig) -> Optional[RepetitionLoopGuar
     return RepetitionLoopGuard(config.loop_guard_max_repeats, config.loop_guard_max_period)
 
 
+def _apply_repetition_penalty(
+    next_logits: torch.Tensor,
+    generated: list[int],
+    penalty: float,
+) -> None:
+    """Discount logits of tokens already present in ``generated``, in place.
+
+    Vectorised equivalent of looping over ``set(generated)`` and scaling each
+    token's logit individually: that loop does one Python-level scalar
+    tensor read + write per unique generated token, every decode step (O(n)
+    per step, O(n^2) over a full generation), which is especially costly on
+    CUDA/MPS where each scalar access is effectively its own tiny kernel
+    launch. This does the same discount as a single gather, one vectorised
+    ``torch.where``, and one scatter, regardless of how many unique tokens
+    have been generated so far.
+    """
+    penalty_ids = torch.unique(
+        torch.tensor(generated, dtype=torch.long, device=next_logits.device)
+    )
+    penalty_logits = next_logits[penalty_ids]
+    next_logits[penalty_ids] = torch.where(
+        penalty_logits > 0,
+        penalty_logits / penalty,
+        penalty_logits * penalty,
+    )
+
+
 def _require_tokenizer_for_stat_block_constraint(
     stat_block_constraint: Optional["StatBlockConstraint"],
     tokenizer: Optional["BytePairEncoder"],
@@ -213,11 +240,7 @@ def generate_stream(
     with torch.no_grad():
         for _ in range(config.max_new_tokens):
             if config.repetition_penalty != 1.0 and generated:
-                for token_id in set(generated):
-                    if next_logits[token_id] > 0:
-                        next_logits[token_id] /= config.repetition_penalty
-                    else:
-                        next_logits[token_id] *= config.repetition_penalty
+                _apply_repetition_penalty(next_logits, generated, config.repetition_penalty)
 
             # Structural constraints — hard-mask before the probability-shaping
             # steps below. Masking to -inf commutes with temperature scaling
@@ -347,11 +370,7 @@ def generate(
 
             # Repetition penalty on the generated portion only.
             if config.repetition_penalty != 1.0 and generated:
-                for token_id in set(generated):
-                    if next_logits[token_id] > 0:
-                        next_logits[token_id] /= config.repetition_penalty
-                    else:
-                        next_logits[token_id] *= config.repetition_penalty
+                _apply_repetition_penalty(next_logits, generated, config.repetition_penalty)
 
             # Structural constraints — hard-mask before the probability-shaping
             # steps below (see the matching comment in generate_stream for why
