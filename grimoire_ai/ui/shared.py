@@ -194,11 +194,26 @@ _THEME = gr.themes.Base(
     block_background_fill_dark="#16161f",
     input_background_fill="#1e1e2e",
     input_background_fill_dark="#1e1e2e",
+    # background_fill_primary/secondary are the generic Base-theme tokens
+    # gr.Sidebar (and its collapse toggle button) use directly -- unlike
+    # block_background_fill/input_background_fill above, nothing else in
+    # this file happened to set these, so Sidebar silently fell back to
+    # Gradio's own default value (a Tailwind slate navy unrelated to this
+    # palette) and never moved when the light/dark toggle ran, since
+    # _DARK_VARS/_LIGHT_VARS below didn't cover it either.
+    background_fill_primary="#1e1e2e",
+    background_fill_primary_dark="#1e1e2e",
+    background_fill_secondary="#16161f",
+    background_fill_secondary_dark="#16161f",
     # Borders
     block_border_color="#2e2e45",
     block_border_color_dark="#2e2e45",
     input_border_color="#2e2e45",
     input_border_color_dark="#2e2e45",
+    # border_color_primary: the generic token Sidebar's collapse toggle
+    # button borders with directly, same gap as background_fill_* above.
+    border_color_primary="#2e2e45",
+    border_color_primary_dark="#2e2e45",
     block_border_width="1px",
     # Text
     body_text_color="#c8c8d8",
@@ -411,8 +426,15 @@ _DARK_VARS = {
     "--body-background-fill": "#0d0d14",
     "--block-background-fill": "#16161f",
     "--input-background-fill": "#1e1e2e",
+    # gr.Sidebar and its collapse toggle read these directly rather than
+    # block-background-fill/input-background-fill -- without them here the
+    # toggle changes every other panel's color but leaves the Sidebar stuck
+    # on whatever it resolved to at load time.
+    "--background-fill-primary": "#1e1e2e",
+    "--background-fill-secondary": "#16161f",
     "--block-border-color": "#2e2e45",
     "--input-border-color": "#2e2e45",
+    "--border-color-primary": "#2e2e45",
     "--body-text-color": "#c8c8d8",
     "--block-title-text-color": "#e8c97a",
     "--block-label-text-color": "#9999bb",
@@ -430,8 +452,11 @@ _LIGHT_VARS = {
     "--body-background-fill": "#f5f3ee",
     "--block-background-fill": "#fffef9",
     "--input-background-fill": "#eeeae0",
+    "--background-fill-primary": "#eeeae0",
+    "--background-fill-secondary": "#fffef9",
     "--block-border-color": "#c8bfa8",
     "--input-border-color": "#c8bfa8",
+    "--border-color-primary": "#c8bfa8",
     "--body-text-color": "#1a1a2e",
     "--block-title-text-color": "#6a4e00",
     "--block-label-text-color": "#4a4a6a",
@@ -525,10 +550,21 @@ def add_header() -> None:
         root.setAttribute('data-theme', isDark ? 'light' : 'dark');
 
         // Override Gradio theme CSS variables with inline !important,
-        // which beats any !important in Gradio's compiled <style> block.
+        // which beats any !important in Gradio's compiled <style> block --
+        // EXCEPT for a property a descendant redefines itself. Gradio 6
+        // tags <body> with its own "dark"/"" class from prefers-color-scheme
+        // (independent of our data-theme attribute) and some of its own
+        // CSS keys background-fill-primary/secondary and border-color-
+        // primary off that class -- newer components like gr.Sidebar read
+        // those directly. A redefinition on <body> shadows our override on
+        // <html> for anything inheriting through <body>, !important or not,
+        // since custom-property cascade resolves per-element -- so this has
+        // to also set every var on <body> itself, not just <html>.
         const vars = isDark ? {_vars_to_js(_LIGHT_VARS)} : {_vars_to_js(_DARK_VARS)};
-        for (const [p, v] of Object.entries(vars))
+        for (const [p, v] of Object.entries(vars)) {{
             root.style.setProperty(p, v, 'important');
+            document.body.style.setProperty(p, v, 'important');
+        }}
 
         // Inject (or clear) the light-mode element-specific overrides.
         let el = document.getElementById('grimoire-theme-overrides');
