@@ -28,6 +28,7 @@ the original GPT-2 design:
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Optional
 
 
 @dataclass
@@ -60,6 +61,15 @@ class TransformerConfig:
             inference time.
         rope_theta: Base frequency for RoPE sinusoidal curves.  The
             default ``10000.0`` matches the original RoPE paper and Llama.
+        mla_kv_latent_dim: Latent dimension for Multi-Head Latent Attention's
+            compressed K/V bottleneck (``MultiHeadLatentAttention`` in
+            ``grimoire_ai/llm/model/mla_attention.py``).  Only consulted when
+            that module is used in place of ``GroupedQueryAttention`` — has
+            no effect otherwise.  ``None`` (the default) lets the module pick
+            ``2 * head_dim``.
+        mla_rope_head_dim: Dimension of MLA's decoupled RoPE key/query
+            channel — must be even and smaller than ``head_dim``.  ``None``
+            lets the module pick ``head_dim // 2``.
     """
 
     vocab_size: int = 16384
@@ -71,6 +81,8 @@ class TransformerConfig:
     max_seq_len: int = 1024
     dropout: float = 0.1
     rope_theta: float = 10000.0
+    mla_kv_latent_dim: Optional[int] = None
+    mla_rope_head_dim: Optional[int] = None
 
     def __post_init__(self) -> None:
         """Validate internal consistency of the configuration.
