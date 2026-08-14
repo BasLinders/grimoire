@@ -146,6 +146,7 @@ DEFAULT_TRAINING_CONFIG = {
     "swa_enabled":           False,
     "swa_start_frac":        0.75,
     "gradient_checkpointing": False,
+    "compile_mode":          None,
 }
 
 
@@ -198,6 +199,17 @@ def main() -> None:
         help="Enable gradient checkpointing to reduce VRAM at ~20%% training speed cost.",
     )
     parser.add_argument(
+        "--compile-mode", default=None,
+        choices=["default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"],
+        help="torch.compile mode (CUDA only; no effect on CPU/MPS). Omit for "
+             "torch.compile's own default -- fast to warm up, the right choice "
+             "for short runs. 'max-autotune' spends much longer autotuning "
+             "kernels per shape in exchange for faster steady-state steps; "
+             "worth it for pretraining's thousands of steps at one fixed "
+             "shape, but A/B it on your GPU first -- see "
+             "docs/speed_optimization.md item #3.",
+    )
+    parser.add_argument(
         "--val-stratified", action="store_true", default=False,
         help="Stratify the validation split by --weight-pattern document "
              "tags instead of scattering blocks corpus-wide, so every "
@@ -221,6 +233,8 @@ def main() -> None:
     train_cfg_dict  = {**DEFAULT_TRAINING_CONFIG, **cfg.get("training", {})}
     if args.gradient_checkpointing:
         train_cfg_dict["gradient_checkpointing"] = True
+    if args.compile_mode:
+        train_cfg_dict["compile_mode"] = args.compile_mode
     corpus_path     = args.corpus or cfg.get("corpus_path", DEFAULT_CORPUS_PATH)
     val_corpus_path = cfg.get("val_corpus_path", None)
     checkpoint_dir  = cfg.get("checkpoint_dir", DEFAULT_CHECKPOINT_DIR)

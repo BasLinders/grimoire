@@ -991,3 +991,42 @@ class TestSelectAmpDtype:
         assert trainer._amp_dtype == torch.float16
         assert trainer._grad_scaler_enabled is False
         assert trainer._scaler.is_enabled() is False
+
+
+# ---------------------------------------------------------------------------
+# compile_mode (docs/speed_optimization.md item #3)
+#
+# torch.compile only ever engages when device == "cuda" (see Trainer.__init__),
+# so compile_mode has no observable effect on CPU beyond being stored --
+# there is no way to exercise the actual compiled-forward-pass behaviour
+# without real CUDA hardware. These tests confirm the plumbing: the value
+# passed in is what ends up on the instance, and it stays inert off CUDA.
+# ---------------------------------------------------------------------------
+
+class TestCompileMode:
+    def test_defaults_to_none(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            trainer, _ = _make_trainer(tmp, total_steps=1)
+        assert trainer.compile_mode is None
+
+    def test_custom_mode_is_stored_but_inert_on_cpu(self) -> None:
+        cfg = _tiny_config()
+        model = GrimoireTransformer(cfg)
+        with tempfile.TemporaryDirectory() as tmp:
+            corpus_path = _write_corpus(500, cfg.vocab_size, tmp)
+            dataset = TokenizedDataset(corpus_path, seq_len=cfg.max_seq_len, stride=cfg.max_seq_len)
+            trainer = Trainer(
+                model=model,
+                train_dataset=dataset,
+                total_steps=1,
+                batch_size=2,
+                log_every=2,
+                save_every=2,
+                checkpoint_dir=tmp,
+                device="cpu",
+                compile_mode="max-autotune",
+            )
+        assert trainer.compile_mode == "max-autotune"
+        # torch.compile is CUDA-only in Trainer -- on CPU the forward handle
+        # must stay the raw, uncompiled module regardless of compile_mode.
+        assert trainer._forward_model is trainer.model
