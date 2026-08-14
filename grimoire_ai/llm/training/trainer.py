@@ -33,15 +33,28 @@ Gradient accumulation
     passes before a single optimizer step.  This simulates a larger batch
     without requiring the GPU/CPU to hold more activations in memory at once.
 
-Mixed precision (fp16 AMP)
-    When training on CUDA, ``torch.autocast`` runs the forward pass in
-    fp16, which roughly halves memory usage and exploits RTX tensor cores.
-    A ``GradScaler`` multiplies the loss by a large scale factor before
-    the backward pass to prevent fp16 underflow (very small gradients
-    rounding to zero), then unscales before the optimizer step.
+Mixed precision (bf16/fp16 AMP)
+    When training on CUDA, ``torch.autocast`` runs the forward pass in a
+    reduced-precision dtype, which roughly halves memory usage and exploits
+    RTX tensor cores. The dtype is chosen per-GPU via
+    ``torch.cuda.is_bf16_supported()``:
+
+    - bf16 (Ampere and newer, e.g. RTX 3050): bf16 has fp32's exponent
+      range, so it never underflows -- no loss scaling needed, and
+      ``GradScaler`` is instantiated but permanently disabled
+      (``enabled=False``) on this path.
+    - fp16 (pre-Ampere GPUs, where bf16 tensor cores aren't available): the
+      original path. A ``GradScaler`` multiplies the loss by a large scale
+      factor before the backward pass to prevent fp16 underflow (very small
+      gradients rounding to zero), then unscales before the optimizer step.
+      Whenever the scale factor overshoots, that optimizer step is skipped
+      entirely -- a real (if infrequent) source of wasted compute that bf16
+      doesn't have.
+
     On CPU and MPS (Apple Silicon) the scaler is a no-op and the autocast
     context is skipped — training still runs on the GPU on MPS, just
-    without fp16 mixed precision.
+    without mixed precision (see ``docs/speed_optimization.md`` item #6 for
+    scoping MPS's own bf16-without-GradScaler path, not yet implemented).
 
 RETRO neighbor retrieval (optional, docs/architecture_optimization.md item #3)
     When ``neighbor_ids`` is supplied (an array from
@@ -160,6 +173,30 @@ def _mtp_target(full_ids: torch.Tensor, offset: int, seq_len: int) -> torch.Tens
     return torch.cat([shifted, pad], dim=1)
 
 
+def _select_amp_dtype(use_amp: bool) -> tuple[torch.dtype, bool]:
+    """Pick the AMP dtype and whether ``GradScaler`` should actually scale.
+
+    bf16 has fp32's exponent range and never underflows, so it needs no
+    loss scaling -- preferred whenever the GPU's tensor cores support it
+    (Ampere+, via ``torch.cuda.is_bf16_supported()``). Older CUDA GPUs fall
+    back to fp16 + ``GradScaler``, the original path (fp16's narrow
+    exponent range underflows without loss scaling).
+
+    Args:
+        use_amp: Whether AMP is active at all (``device == "cuda"``). When
+            ``False``, returns fp16/disabled without querying CUDA -- safe
+            to call on any device, including one with no GPU at all.
+
+    Returns:
+        ``(dtype, grad_scaler_enabled)``. ``grad_scaler_enabled`` is
+        ``False`` whenever ``dtype`` is bf16 or ``use_amp`` is ``False``;
+        ``True`` only for the fp16-on-CUDA fallback.
+    """
+    if use_amp and torch.cuda.is_bf16_supported():
+        return torch.bfloat16, False
+    return torch.float16, use_amp
+
+
 class Trainer:
     """Manages the full training loop for a ``GrimoireTransformer``.
 
@@ -181,8 +218,17 @@ class Trainer:
         log_every: Log training metrics every this many optimizer steps.
         save_every: Save a checkpoint every this many optimizer steps.
         checkpoint_dir: Directory where checkpoints are written.
-        _use_amp: Whether fp16 automatic mixed precision is active.
-        _scaler: ``GradScaler`` for AMP loss scaling (CUDA only).
+        _use_amp: Whether automatic mixed precision is active (CUDA only).
+        _amp_dtype: ``torch.bfloat16`` when the GPU's tensor cores support
+            it (``torch.cuda.is_bf16_supported()``), else ``torch.float16``.
+            Only consulted when ``_use_amp`` is ``True``.
+        _grad_scaler_enabled: Whether ``_scaler`` actually scales losses.
+            ``False`` whenever ``_amp_dtype`` is bf16 (never needed — bf16
+            has fp32's exponent range) or AMP is off entirely; ``True`` only
+            for the fp16-on-CUDA fallback path, where loss scaling prevents
+            underflow.
+        _scaler: ``GradScaler`` for AMP loss scaling. Instantiated
+            unconditionally but a no-op unless ``_grad_scaler_enabled``.
         _optimizer: ``AdamW`` optimizer.
         _scheduler: Lambda-based LR scheduler.
         _step: Current global optimizer step count.
@@ -347,6 +393,7 @@ class Trainer:
         device = select_device(device)
         self.device = device
         self._use_amp = device == "cuda"
+        self._amp_dtype, self._grad_scaler_enabled = _select_amp_dtype(self._use_amp)
 
         if device == "cuda":
             # Let cuDNN auto-tune kernel selection for the fixed input shapes
@@ -398,9 +445,10 @@ class Trainer:
                         pass
             self._forward_model = torch.compile(self.model)
 
-        # GradScaler is a no-op on CPU but we instantiate it uniformly
-        # to avoid branching in the training loop.
-        self._scaler = torch.amp.GradScaler("cuda", enabled=self._use_amp)
+        # GradScaler is a no-op whenever _grad_scaler_enabled is False (CPU,
+        # MPS, or CUDA-with-bf16) but we instantiate it uniformly to avoid
+        # branching in the training loop.
+        self._scaler = torch.amp.GradScaler("cuda", enabled=self._grad_scaler_enabled)
 
         # --- Optimizer --------------------------------------------------
         # Separate parameters into two groups:
@@ -586,9 +634,13 @@ class Trainer:
         t0 = t_start
 
         compiled = self._forward_model is not self.model
+        amp_status = (
+            f"on ({'bf16' if self._amp_dtype == torch.bfloat16 else 'fp16'})"
+            if self._use_amp else "off"
+        )
         print(
             f"Training on {self.device.upper()} | "
-            f"AMP={'on' if self._use_amp else 'off'} | "
+            f"AMP={amp_status} | "
             f"compile={'on' if compiled else 'off'} | "
             f"params={self.model.num_parameters():,} | "
             f"effective batch={self.batch_size * self.accumulate_steps}"
@@ -622,7 +674,7 @@ class Trainer:
             # --- Forward pass with optional AMP --------------------------
             with torch.autocast(
                 device_type=self.device,
-                dtype=torch.float16,
+                dtype=self._amp_dtype,
                 enabled=self._use_amp,
             ):
                 n_predict = self.config.n_predict
@@ -887,7 +939,7 @@ class Trainer:
 
             with torch.autocast(
                 device_type=self.device,
-                dtype=torch.float16,
+                dtype=self._amp_dtype,
                 enabled=self._use_amp,
             ):
                 logits = self.model(input_ids, attention_mask=attention_mask)

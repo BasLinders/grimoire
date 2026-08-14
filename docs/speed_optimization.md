@@ -23,7 +23,7 @@ the codebase — none of it is new capability.
 | # | Item | Where | Status |
 |---|---|---|---|
 | 1 | Port AMP + `torch.compile` into `EmbedTuner` | `training/embed_tune.py` | ✓ shipped — [PR #183](https://github.com/BasLinders/grimoire/pull/183) |
-| 2 | Switch `Trainer`'s AMP dtype from fp16 to bf16 | `training/trainer.py` | not started |
+| 2 | Switch `Trainer`'s AMP dtype from fp16 to bf16 | `training/trainer.py` | ✓ shipped |
 | 3 | `torch.compile(mode="max-autotune")` for pretraining | `training/trainer.py` | not started |
 | 4 | Rebalance `batch_size` vs `accumulate_steps` | trainer configs (`train.py`, `finetune.py`) | not started — needs empirical VRAM headroom check |
 | 5 | Skip no-op padding in `PaddingCollator` for fixed-length windows | `data/collator.py` | not started |
