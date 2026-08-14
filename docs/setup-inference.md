@@ -257,12 +257,12 @@ engine.chat("Roll for initiative", state, gen_config=GenerationConfig(max_new_to
 ## 7 — Chat UI
 
 ```bash
-python -m grimoire_ai.ui
+python -m grimoire_ai.ui.chat_app
 ```
 
-Open `http://localhost:7860` and go to the **Chat** tab:
+Open `http://localhost:7861` — a dedicated app, separate from the training/eval UI (`python -m grimoire_ai.ui`):
 
-1. **Select an agent** from the dropdown (populated from `agents.json`) and click **Load agent** — the engine and corpus load automatically.
+1. **Select an agent** from the sidebar dropdown (populated from `agents.json`) and click **Load agent** — the engine and corpus load automatically.
 2. Or expand **Load checkpoint manually** to load any `.pt` file directly.
    - Optionally enter a **Corpus directory** path to ground replies in your corpus.
    - The **Semantic retrieval** checkbox (on by default) uses the model's own embeddings. Uncheck for faster lexical Jaccard matching.

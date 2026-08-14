@@ -1,30 +1,25 @@
-"""Command-line entry point for the Grimoire training UI.
+"""Command-line entry point for the Grimoire training/eval UI.
 
-Host/port/inbrowser are read from environment variables so the same launch
-logic works unchanged for local development and for containerized
-deployments (see ``Dockerfile``) — locally these env vars are simply unset
-and the original defaults apply.
+``python -m grimoire_ai.ui`` runs the training/eval app -- see
+``grimoire_ai.ui.train_app`` for the app itself (Preprocess/Pre-train/
+Fine-tune/Scale/Evaluate/Ingest/Corpus) and its own ``main()`` for the
+env-var-driven launch logic (host/port/inbrowser, shared with containerized
+deployments -- see ``Dockerfile``). Chat is a separate app: run
+``python -m grimoire_ai.ui.chat_app`` instead.
 """
 
-import os
 import sys
 
 
 def main() -> None:
     try:
-        from grimoire_ai.ui.app import launch
+        from grimoire_ai.ui.train_app import main as _train_main
     except ImportError:
         sys.exit(
             "The training UI requires the 'ui' extra. Install it with:\n"
             '    pip install -e ".[ui]"'
         )
-
-    inbrowser_env = os.environ.get("GRIMOIRE_UI_INBROWSER", "1").strip().lower()
-    launch(
-        server_name=os.environ.get("GRIMOIRE_UI_HOST", "127.0.0.1"),
-        port=int(os.environ.get("GRIMOIRE_UI_PORT", "7860")),
-        inbrowser=inbrowser_env not in ("0", "false", "no"),
-    )
+    _train_main()
 
 
 if __name__ == "__main__":

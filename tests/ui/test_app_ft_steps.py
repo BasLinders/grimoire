@@ -17,7 +17,7 @@ import pytest
 
 gr = pytest.importorskip("gradio")
 
-from grimoire_ai.ui import app  # noqa: E402
+from grimoire_ai.ui import train_app as app  # noqa: E402
 
 _BASE = "Base (instruction fine-tune)"
 _AGENT = "Agent (LoRA adapter)"

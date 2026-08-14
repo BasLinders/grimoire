@@ -17,6 +17,7 @@ dependencies = [
 [project.scripts]
 grimoire-chat = "grimoire_ai.cli.chat:main"
 grimoire-ui = "grimoire_ai.ui.__main__:main"
+grimoire-chat-ui = "grimoire_ai.ui.chat_app:main"
 grimoire-train = "grimoire_ai.llm.training.train:main"
 grimoire-finetune = "grimoire_ai.llm.training.finetune:main"
 grimoire-preprocess = "grimoire_ai.llm.data.preprocessing:main"
@@ -26,7 +27,7 @@ dev = [
     "pytest>=8.0",
 ]
 ui = [
-    "gradio>=4.0",
+    "gradio>=6.0",
 ]
 scraper = [
     "requests>=2.28",

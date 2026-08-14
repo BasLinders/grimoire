@@ -31,7 +31,7 @@ grimoire/
 │   │   └── inference/      # PromptBuilder, KV-cache sampler, InferenceEngine, SemanticRetriever
 │   ├── state/              # ConversationState — rolling multi-turn history + prompt build
 │   ├── cli/                # Interactive terminal chat loop
-│   └── ui/                 # Gradio app — Preprocess, Pre-train, Fine-tune, Scale, Evaluate, Ingest, Corpus, Chat tabs
+│   └── ui/                 # Two Gradio apps: training/eval (Preprocess/Pre-train/Fine-tune/Scale/Evaluate/Ingest/Corpus) + chat
 ├── agents.json             # Named agent configurations (checkpoint, vocab, corpus, gen defaults)
 ├── scripts/
 │   ├── scrape_*.py                 # Per-source corpus scrapers: Wikipedia, Wikibooks, arXiv,
@@ -100,15 +100,16 @@ Both halves run the same model, in the same learned representation space. There 
 | **Semantic Retriever** | Chunks documents into passages, embeds each with the model's own representations, and ranks by cosine similarity — the primary retrieval path | ✓ done |
 | **Retrieval Router** | Compares the top retrieval score against a configurable threshold; routes to grounded or pure-chat generation per query | ✓ done |
 | **GrimoireTransformer** | Scratch-built decoder-only transformer (25 M / 85 M / 250 M params); GQA, RoPE, SwiGLU, RMSNorm, weight-tied output head; `embed()` for sentence embeddings; gradient checkpointing support | ✓ done |
-| **Training Pipeline** | AdamW + cosine-warmup LR, fp16 AMP, Flash Attention (SDPA), `torch.compile`, gradient accumulation, gradient checkpointing, SWA, bootstrap early stopping, difficulty- or source-weighted sampling, scattered-block validation split (holds out many small blocks across the whole corpus rather than one contiguous tail, so held-out loss reflects a representative sample) | ✓ done |
+| **Training Pipeline** | AdamW + cosine-warmup LR, bf16/fp16 AMP, Flash Attention (SDPA), `torch.compile`, gradient accumulation, gradient checkpointing, SWA, bootstrap early stopping, difficulty- or source-weighted sampling, scattered-block validation split (holds out many small blocks across the whole corpus rather than one contiguous tail, so held-out loss reflects a representative sample) | ✓ done |
 | **Instruction Fine-tuning** | `ConversationDataset` on `{user, assistant, context?}` JSONL; response-only loss masking | ✓ done |
 | **Inference Engine** | PromptBuilder (corpus → prompt), KV-cache autoregressive sampler with adaptive entropy temperature, `respond()`, `chat()`, `chat_stream()`, `embed()`, `build_semantic_corpus()`; optional int8 quantization | ✓ done |
 | **KV-Cache** | Caches K/V projections: O(n²) → O(1) per generation step; sliding-window truncation at `max_seq_len` | ✓ done |
 | **int8 Quantization** | `InferenceEngine(quantize=True)` replaces all Linear layers with dynamic int8 equivalents; ~4× smaller, faster on CPU; uses `torchao` when available, falls back to `torch.ao` | ✓ done |
 | **Conversation State** | `ConversationState` packs rolling history newest-first within the token budget, then fills remaining space with corpus context | ✓ done |
 | **Evaluation Harness** | Perplexity / BPC on held-out corpus, retrieval hit-rate over a fixed query set, keyword-recall + token-F1 Q&A quiz; `run_eval()` harness writes timestamped JSON to `data/eval/`; CLI at `scripts/evaluate.py` | ✓ done |
-| **Math Tool** | `MathTool` detects arithmetic in queries, evaluates safely via pure-`ast` visitor (no `eval()`), injects result as context; resolves `<TOOL:python>…</TOOL>` tags from fine-tuned models; stdlib functions (factorial, exp, comb, hypot, trig, …) + scipy stats (norm_cdf, binom_pmf, t_ppf, …) with graceful fallback; `--math-tool` CLI flag; UI checkbox in Chat tab | ✓ done |
-| **Training UI** | Gradio app: Preprocess (BPE training, `--extend-vocab`, weight-pattern tagging), Pre-train (size presets, gradient checkpointing, Chinchilla-optimal step suggestion from corpus size, sample-weight building), Fine-tune (LoRA rank/alpha/targets, step suggestion from dataset example count), Scale (Chinchilla calculator), Evaluate, Ingest, Corpus (pre-build semantic index), Chat (int8 toggle, adaptive temperature, retrieval controls, math tool) tabs | ✓ done |
+| **Math Tool** | `MathTool` detects arithmetic in queries, evaluates safely via pure-`ast` visitor (no `eval()`), injects result as context; resolves `<TOOL:python>…</TOOL>` tags from fine-tuned models; stdlib functions (factorial, exp, comb, hypot, trig, …) + scipy stats (norm_cdf, binom_pmf, t_ppf, …) with graceful fallback; `--math-tool` CLI flag; checkbox in the chat UI | ✓ done |
+| **Training/Eval UI** | Gradio app: Preprocess (BPE training, `--extend-vocab`, weight-pattern tagging), Pre-train (size presets, gradient checkpointing, `torch.compile` mode, Chinchilla-optimal step suggestion from corpus size, sample-weight building), Fine-tune (LoRA rank/alpha/targets, step suggestion from dataset example count), Scale (Chinchilla calculator), Evaluate, Ingest, Corpus (pre-build semantic index) tabs | ✓ done |
+| **Chat UI** | Separate Gradio app: scrolling `gr.Chatbot` transcript, pinned input, agent selector or manual checkpoint loading, int8 toggle, adaptive temperature, retrieval controls, math tool, dataset builder for saving exchanges as fine-tune pairs | ✓ done |
 | **Agent Registry** | `AgentRegistry` reads `agents.json`; `build_engine(key, quantize=)` returns a ready `InferenceEngine` with corpus auto-loaded | ✓ done |
 | **Saga Corpus** | `scripts/build_saga_corpus.py` builds a minimal SRD + math-reference seed; the corpus actually in use has grown far beyond that seed via the scrapers above (Gutenberg, Stack Exchange RPG, Forgotten Realms wiki, official rulebooks/adventures, Wikipedia/Wikibooks) plus MinHash dedup and source-based weighting — see [docs/expansion_PLAN.md](docs/expansion_PLAN.md) for current scale and composition | ✓ done |
 | **Saga Fine-tune Dataset** | Multiple JSONL sets in `scripts/finetune_data/` (D&D rules/math Q&A, math-tool-call examples, general conversation) plus `scripts/build_finetune_data_from_qa.py` to derive fine-tune examples from the cleaned Q&A corpus data; the production checkpoint in `agents.json` is fine-tuned on the latter, not the seed dataset alone | ✓ done |
@@ -156,7 +157,7 @@ Three size presets (all share `vocab_size=16384`, `max_seq_len=1024`):
 
 With `InferenceEngine(quantize=True)` the fp32 size shrinks ~4× (int8 Linear layers).
 
-**Training optimisations:** Flash Attention (SDPA), `torch.compile`, `cudnn.benchmark`, non-blocking GPU transfers, fp16 AMP, gradient accumulation, gradient checkpointing (halves VRAM at ~20% speed cost), Stochastic Weight Averaging, bootstrap-confidence early stopping, difficulty-weighted sampling. `torch.compile`/`cudnn.benchmark`/AMP are CUDA-specific; on Apple Silicon (MPS) training still runs on the GPU, just without those extra speedups.
+**Training optimisations:** Flash Attention (SDPA), `torch.compile`, `cudnn.benchmark`, non-blocking GPU transfers, bf16/fp16 AMP (bf16 preferred on Ampere+, fp16 fallback on older CUDA), gradient accumulation, gradient checkpointing (halves VRAM at ~20% speed cost), Stochastic Weight Averaging, bootstrap-confidence early stopping, difficulty-weighted sampling. `torch.compile`/`cudnn.benchmark`/AMP are CUDA-specific; on Apple Silicon (MPS) training still runs on the GPU, just without those extra speedups.
 
 ## Agents
 
@@ -188,8 +189,8 @@ python scripts/finetune_saga.py \
     --vocab      data/tokenizer/bpe.json
 
 # 5. Update agents.json with the fine-tuned checkpoint path, then load
-#    Saga from the Chat tab dropdown in the UI.
-python -m grimoire_ai.ui
+#    Saga from the agent dropdown in the chat app.
+python -m grimoire_ai.ui.chat_app
 ```
 
 **Reproducing the full production corpus** is a larger, ongoing effort — see [docs/expansion_PLAN.md](docs/expansion_PLAN.md) for the current source list, scale, dedup process, source-weighting scheme, and open decisions. In short: run the `scrape_*.py` scripts for whichever sources you want, `dedup_corpus.py` to catch near-duplicates, tag categories with `--weight-pattern` during `grimoire-preprocess`, and build fine-tune data with `scripts/build_finetune_data_from_qa.py` rather than the minimal `saga_v1.jsonl` alone.
@@ -292,7 +293,7 @@ registry = AgentRegistry("agents.json")
 engine = registry.build_engine("saga")  # loads checkpoint + corpus from agents.json
 ```
 
-### Training UI
+### Training/eval UI
 
 ```bash
 pip install -e ".[ui]"
@@ -300,7 +301,17 @@ python -m grimoire_ai.ui
 # open http://localhost:7860
 ```
 
-Eight tabs: **Preprocess** (BPE training, `--extend-vocab`, weight-pattern tagging for source-based sample weighting), **Pre-train** (model size presets, gradient checkpointing, "Build sample weights from tags" button), **Fine-tune** (LoRA rank/alpha/targets), **Scale** (Chinchilla scaling calculator), **Evaluate** (perplexity, retrieval hit-rate, Q&A quiz), **Ingest** (multi-file upload), **Corpus** (pre-build the semantic embedding index), **Chat** (streaming responses, corpus directory, semantic toggle, retrieval threshold slider, math tool).
+Seven tabs: **Preprocess** (BPE training, `--extend-vocab`, weight-pattern tagging for source-based sample weighting), **Pre-train** (model size presets, gradient checkpointing, `torch.compile` mode, "Build sample weights from tags" button), **Fine-tune** (LoRA rank/alpha/targets), **Scale** (Chinchilla scaling calculator), **Evaluate** (perplexity, retrieval hit-rate, Q&A quiz), **Ingest** (multi-file upload), **Corpus** (pre-build the semantic embedding index).
+
+### Chat UI
+
+```bash
+pip install -e ".[ui]"
+python -m grimoire_ai.ui.chat_app
+# open http://localhost:7861
+```
+
+A separate, dedicated app — not a tab in the training UI. Streaming responses in a scrolling transcript, agent selector or manual checkpoint loading, corpus directory + embedding backend + retrieval threshold, generation controls (temperature, top-k/top-p, adaptive temperature, repetition-loop guard), math tool, and a dataset builder for turning good exchanges into fine-tune pairs.
 
 ### Console scripts
 
@@ -310,6 +321,7 @@ Eight tabs: **Preprocess** (BPE training, `--extend-vocab`, weight-pattern taggi
 |---|---|
 | `grimoire-chat` | `python -m grimoire_ai.cli.chat` |
 | `grimoire-ui` | `python -m grimoire_ai.ui` |
+| `grimoire-chat-ui` | `python -m grimoire_ai.ui.chat_app` |
 | `grimoire-train` | `python -m grimoire_ai.llm.training.train` |
 | `grimoire-finetune` | `python -m grimoire_ai.llm.training.finetune` |
 | `grimoire-preprocess` | `python -m grimoire_ai.llm.data.preprocessing` |
@@ -318,7 +330,17 @@ Standalone scripts in `scripts/` (corpus scrapers, `evaluate.py`, `export_gguf.p
 
 ## Deployment
 
-### Docker (Training UI)
+### Docker
+
+One image, both apps — `docker-compose.yml` runs them side by side:
+
+```bash
+docker compose up --build
+# training/eval: http://localhost:7860
+# chat:          http://localhost:7861
+```
+
+Or run just one directly with `docker run`, overriding `CMD` for chat:
 
 ```bash
 docker build -t grimoire-ai .
@@ -328,9 +350,16 @@ docker run --rm -p 7860:7860 \
     -v "$(pwd)/agents.json:/app/agents.json" \
     grimoire-ai
 # open http://localhost:7860
+
+docker run --rm -p 7861:7861 \
+    -v "$(pwd)/data:/app/data" \
+    -v "$(pwd)/checkpoints:/app/checkpoints" \
+    -v "$(pwd)/agents.json:/app/agents.json" \
+    grimoire-ai grimoire-chat-ui
+# open http://localhost:7861
 ```
 
-The image is CPU-only (`python:3.11-slim` base, CPU build of torch) and runs the same Gradio UI as `grimoire-ui` / `python -m grimoire_ai.ui`, bound to `0.0.0.0` instead of localhost so it's reachable from outside the container. Mount `data/`, `checkpoints/`, and `agents.json` from the host so corpora, checkpoints, and agent configs persist across container restarts and survive image rebuilds. For CUDA, see the comments at the top of the `Dockerfile`.
+The image is CPU-only (`python:3.11-slim` base, CPU build of torch), bound to `0.0.0.0` instead of localhost so it's reachable from outside the container. Mount `data/`, `checkpoints/`, and `agents.json` from the host so corpora, checkpoints, and agent configs persist across container restarts and survive image rebuilds. For CUDA, see the comments at the top of the `Dockerfile`.
 
 ### GGUF export (llama.cpp)
 
