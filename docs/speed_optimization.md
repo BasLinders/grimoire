@@ -24,7 +24,7 @@ the codebase — none of it is new capability.
 |---|---|---|---|
 | 1 | Port AMP + `torch.compile` into `EmbedTuner` | `training/embed_tune.py` | ✓ shipped — [PR #183](https://github.com/BasLinders/grimoire/pull/183) |
 | 2 | Switch `Trainer`'s AMP dtype from fp16 to bf16 | `training/trainer.py` | ✓ shipped — [PR #184](https://github.com/BasLinders/grimoire/pull/184) |
-| 3 | `torch.compile(mode="max-autotune")` for pretraining | `training/trainer.py` | ✓ shipped as opt-in `compile_mode`/`--compile-mode` — needs A/B on real hardware |
+| 3 | `torch.compile(mode="max-autotune")` for pretraining | `training/trainer.py` | ✓ shipped as opt-in `compile_mode`/`--compile-mode` — [PR #185](https://github.com/BasLinders/grimoire/pull/185) — needs A/B on real hardware |
 | 4 | Rebalance `batch_size` vs `accumulate_steps` | trainer configs (`train.py`, `finetune.py`) | not started — needs empirical VRAM headroom check |
 | 5 | Skip no-op padding in `PaddingCollator` for fixed-length windows | `data/collator.py` | not started |
 | 6 | Scope MPS mixed precision / compile correctly instead of blanket-disabling | `device.py`, `trainer.py`, `embed_tune.py` | not started — needs Apple Silicon hardware to validate |
