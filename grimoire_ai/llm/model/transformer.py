@@ -333,7 +333,22 @@ class GrimoireTransformer(nn.Module):
                 ``down_proj``.  Defaults to ``("q_proj", "v_proj")`` — the
                 two attention projections that give the best quality /
                 parameter trade-off for instruction tuning.
+
+        Raises:
+            NotImplementedError: If ``config.attention_type != "gqa"``.
+                ``MultiHeadLatentAttention`` has no ``q_proj``/``k_proj``/
+                ``v_proj`` submodules to wrap — checked up front, before any
+                parameter is frozen, so a rejected call leaves the model
+                untouched rather than partially mutated.
         """
+        if self.config.attention_type != "gqa":
+            raise NotImplementedError(
+                f"add_lora_adapters() only supports attention_type='gqa'; "
+                f"this model uses attention_type={self.config.attention_type!r}. "
+                "MultiHeadLatentAttention does not expose q_proj/k_proj/v_proj "
+                "targets."
+            )
+
         from grimoire_ai.llm.model.lora import LoRALinear
 
         target_set = set(targets) if targets is not None else {"q_proj", "v_proj"}
@@ -356,7 +371,17 @@ class GrimoireTransformer(nn.Module):
 
         After this call the model is functionally equivalent to one that was
         fully fine-tuned.  All parameters regain ``requires_grad=True``.
+
+        Raises:
+            NotImplementedError: If ``config.attention_type != "gqa"`` — see
+                ``add_lora_adapters``.
         """
+        if self.config.attention_type != "gqa":
+            raise NotImplementedError(
+                f"merge_and_unload() only supports attention_type='gqa'; "
+                f"this model uses attention_type={self.config.attention_type!r}."
+            )
+
         from grimoire_ai.llm.model.lora import LoRALinear
 
         for block in self.blocks:

@@ -121,6 +121,20 @@ def export_gguf(
             "the adapter into the base weights."
         )
 
+    # GGUF export assumes GQA's q_proj/k_proj/v_proj state_dict keys (see
+    # _per_block_suffixes below); MLA uses a different key structure
+    # entirely. Checked explicitly here for a clear message — the
+    # missing-block-keys check further down would also catch this, but with
+    # a much less obvious error.
+    attention_type = cfg.get("attention_type", "gqa")
+    if attention_type != "gqa":
+        raise NotImplementedError(
+            f"GGUF export only supports attention_type='gqa' checkpoints; "
+            f"this checkpoint uses attention_type={attention_type!r}. "
+            "MultiHeadLatentAttention is not yet supported by "
+            "scripts/export_gguf.py."
+        )
+
     vocab_size: int = cfg["vocab_size"]
     d_model: int = cfg["d_model"]
     n_layers: int = cfg["n_layers"]

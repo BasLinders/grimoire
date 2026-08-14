@@ -39,6 +39,27 @@ import torch.nn as nn
 from grimoire_ai.llm.model.attention import GroupedQueryAttention
 from grimoire_ai.llm.model.config import TransformerConfig
 from grimoire_ai.llm.model.feedforward import SwiGLUFeedForward
+from grimoire_ai.llm.model.mla_attention import MultiHeadLatentAttention
+
+
+def _build_attention(config: TransformerConfig) -> nn.Module:
+    """Construct the attention submodule selected by ``config.attention_type``.
+
+    ``GroupedQueryAttention`` and ``MultiHeadLatentAttention`` both implement
+    the same ``forward(x, attention_mask, past_kv, use_cache) -> (output,
+    present_kv)`` contract, so ``TransformerBlock`` needs no branching beyond
+    this one construction site to support either.
+
+    Args:
+        config: Model configuration; ``config.attention_type`` picks the
+            module (``"gqa"`` default, or ``"mla"``).
+
+    Returns:
+        A ``GroupedQueryAttention`` or ``MultiHeadLatentAttention`` instance.
+    """
+    if config.attention_type == "mla":
+        return MultiHeadLatentAttention(config)
+    return GroupedQueryAttention(config)
 
 
 class RMSNorm(nn.Module):
@@ -91,7 +112,9 @@ class TransformerBlock(nn.Module):
 
     Attributes:
         attn_norm: RMSNorm applied to ``x`` before the attention sublayer.
-        attn: ``GroupedQueryAttention`` module.
+        attn: ``GroupedQueryAttention`` or ``MultiHeadLatentAttention``
+            module, selected by ``config.attention_type`` (see
+            ``_build_attention``).
         ffn_norm: RMSNorm applied to the post-attention hidden state before
             the feed-forward sublayer.
         ffn: ``SwiGLUFeedForward`` module.
@@ -106,7 +129,7 @@ class TransformerBlock(nn.Module):
         """
         super().__init__()
         self.attn_norm = RMSNorm(config.d_model)
-        self.attn = GroupedQueryAttention(config)
+        self.attn = _build_attention(config)
         self.ffn_norm = RMSNorm(config.d_model)
         self.ffn = SwiGLUFeedForward(config)
 

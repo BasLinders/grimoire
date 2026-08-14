@@ -70,6 +70,14 @@ class TransformerConfig:
         mla_rope_head_dim: Dimension of MLA's decoupled RoPE key/query
             channel — must be even and smaller than ``head_dim``.  ``None``
             lets the module pick ``head_dim // 2``.
+        attention_type: Which attention module ``TransformerBlock`` builds:
+            ``"gqa"`` (default, ``GroupedQueryAttention``) or ``"mla"``
+            (``MultiHeadLatentAttention``, see ``mla_attention.py``). Every
+            shipped checkpoint and preset uses ``"gqa"``; ``"mla"`` is an
+            experimental alternative with a different state_dict key
+            structure (no ``q_proj``/``k_proj``/``v_proj``), so it is not
+            yet supported by ``add_lora_adapters()`` or GGUF export — both
+            raise a clear error rather than silently doing the wrong thing.
     """
 
     vocab_size: int = 16384
@@ -83,13 +91,15 @@ class TransformerConfig:
     rope_theta: float = 10000.0
     mla_kv_latent_dim: Optional[int] = None
     mla_rope_head_dim: Optional[int] = None
+    attention_type: str = "gqa"
 
     def __post_init__(self) -> None:
         """Validate internal consistency of the configuration.
 
         Raises:
-            ValueError: If ``d_model`` is not divisible by ``n_heads``, or
-                if ``n_heads`` is not divisible by ``n_kv_heads``.
+            ValueError: If ``d_model`` is not divisible by ``n_heads``, if
+                ``n_heads`` is not divisible by ``n_kv_heads``, or if
+                ``attention_type`` is not ``"gqa"`` or ``"mla"``.
         """
         if self.d_model % self.n_heads != 0:
             raise ValueError(
@@ -100,6 +110,11 @@ class TransformerConfig:
             raise ValueError(
                 f"n_heads ({self.n_heads}) must be divisible by "
                 f"n_kv_heads ({self.n_kv_heads})."
+            )
+        if self.attention_type not in ("gqa", "mla"):
+            raise ValueError(
+                f"attention_type ({self.attention_type!r}) must be "
+                f"'gqa' or 'mla'."
             )
 
     @property
