@@ -85,6 +85,21 @@ class PaddingCollator:
         """
         inputs, targets = zip(*batch)
 
+        # Fast path: TokenizedDataset always yields fixed-length windows
+        # during pretraining, so in the common case there is nothing to pad
+        # at all -- skip the flip/pad_sequence/flip machinery below (which
+        # runs on the main thread, synchronously, every micro-batch) and
+        # just stack directly. Falls back to the general padding path
+        # whenever lengths actually differ (inference/eval with variable-
+        # length prompts, or any future variable-length dataset -- see the
+        # module docstring's two documented use cases for that).
+        lengths = [seq.shape[0] for seq in inputs]
+        if len(set(lengths)) == 1:
+            input_ids = torch.stack(inputs)
+            target_ids = torch.stack(targets)
+            attention_mask = torch.ones_like(input_ids)
+            return input_ids, target_ids, attention_mask
+
         # Build attention masks before padding — each mask has the same
         # length as its corresponding unpadded sequence.
         masks = [torch.ones(len(seq), dtype=torch.long) for seq in inputs]

@@ -8,10 +8,13 @@ Gate criteria:
 - PaddingCollator produces correctly shaped tensors and masks.
 - PaddingCollator pads shorter sequences correctly (left-pad).
 - PaddingCollator handles a batch of equal-length sequences without padding.
+- PaddingCollator's equal-length fast path actually skips pad_sequence,
+  not just produces the same shape the slow path would also produce.
 """
 
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -268,3 +271,35 @@ def test_collator_real_tokens_unchanged() -> None:
     inp, tgt, _ = collator(batch)
     assert torch.equal(inp[0], seq)
     assert torch.equal(tgt[0], seq + 1)
+
+
+def test_collator_equal_length_batch_skips_pad_sequence() -> None:
+    """Equal-length batches (the pretraining norm) must take the fast
+    torch.stack path, not the flip/pad_sequence/flip machinery -- proven by
+    making pad_sequence raise if it's called at all, not just by checking
+    the output shape (which the slow path would also get right)."""
+    collator = PaddingCollator(pad_id=PAD_ID)
+    batch = _make_batch([8, 8, 8])
+    with patch(
+        "grimoire_ai.llm.data.collator.pad_sequence",
+        side_effect=AssertionError("pad_sequence must not be called on an equal-length batch"),
+    ):
+        inp, tgt, mask = collator(batch)
+    assert inp.shape == (3, 8)
+    assert tgt.shape == (3, 8)
+    assert mask.all()
+
+
+def test_collator_variable_length_batch_still_uses_pad_sequence() -> None:
+    """Confirms the mock in the test above would actually catch a
+    regression -- variable-length batches must still go through
+    pad_sequence, not silently take the fast path with wrong output."""
+    collator = PaddingCollator(pad_id=PAD_ID)
+    batch = _make_batch([4, 8, 6])
+    with patch(
+        "grimoire_ai.llm.data.collator.pad_sequence",
+        side_effect=AssertionError("pad_sequence must not be called on an equal-length batch"),
+    ) as mocked:
+        with pytest.raises(AssertionError, match="must not be called"):
+            collator(batch)
+    mocked.assert_called()
