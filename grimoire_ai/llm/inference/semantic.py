@@ -30,6 +30,10 @@ Pipeline
    vectors so cosine similarity reduces to a dot product.
 3. ``query`` embeds the query, dots it against the passage matrix, and
    returns the ``top_k`` highest-scoring passages as ``QueryResult`` objects.
+   ``query_batch`` does the same for many query texts at once, embedding
+   them in a single ``embed_fn`` call — worth using over repeated ``query``
+   calls whenever a caller already has a batch of texts on hand (see
+   ``scripts/build_retrieval_neighbors.py``).
 """
 
 import re
@@ -330,6 +334,67 @@ class SemanticRetriever:
                 excerpt=self._excerpts[idx],
             )
             for score, idx in zip(top_scores.tolist(), top_idx.tolist())
+        ]
+
+    def query_batch(self, texts: list[str], top_k: int = 5) -> list[list[QueryResult]]:
+        """Batched form of :meth:`query` — one embedding call for many queries.
+
+        Embeds every text in *texts* with a single ``embed_fn`` call (instead
+        of one call per text, as repeated calls to :meth:`query` would do),
+        then searches for each embedding's nearest passages. Intended for
+        callers that already have a batch of query texts on hand — e.g.
+        offline corpus-prep scripts that process many texts at once — where
+        the per-call overhead of embedding a batch of 1 repeatedly would
+        otherwise dominate.
+
+        Args:
+            texts: Plain-language queries.
+            top_k: Maximum number of passages to return per query.
+
+        Returns:
+            A list of length ``len(texts)``, each element the same
+            ``list[QueryResult]`` :meth:`query` returns for a single text.
+            Every element is ``[]`` when nothing has been indexed.
+        """
+        if self._vectors is None or self.size == 0:
+            return [[] for _ in texts]
+        if not texts:
+            return []
+
+        query_vecs = self._embed_fn(texts)  # (len(texts), d_model), normalised
+
+        if self._rag_index is not None and self._rag_index._faiss_index is not None:
+            batched = self._rag_index.query_batch(query_vecs.numpy(), top_k)
+            return [
+                [
+                    QueryResult(
+                        multi_token=(),
+                        next_token=None,
+                        score=score,
+                        source=self._sources[idx],
+                        excerpt=self._excerpts[idx],
+                    )
+                    for score, idx in row
+                ]
+                for row in batched
+            ]
+
+        # Brute-force cosine (matmul on L2-normalised vectors), one topk per row.
+        k = min(top_k, self.size)
+        scores = query_vecs @ self._vectors.T  # (len(texts), n)
+        top_scores, top_idx = torch.topk(scores, k, dim=1)
+        return [
+            [
+                QueryResult(
+                    multi_token=(),
+                    next_token=None,
+                    score=float(score),
+                    source=self._sources[idx],
+                    excerpt=self._excerpts[idx],
+                )
+                for score, idx in zip(row_scores.tolist(), row_idx.tolist())
+            ]
+            for row_scores, row_idx in zip(top_scores, top_idx)
         ]
 
     def save_cache(self, path) -> None:

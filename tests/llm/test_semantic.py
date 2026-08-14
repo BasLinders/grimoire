@@ -85,6 +85,51 @@ def test_retriever_empty_returns_empty() -> None:
     assert retriever.size == 0
 
 
+def test_query_batch_matches_per_call_query() -> None:
+    retriever = SemanticRetriever(embed_fn=_keyword_embed)
+    retriever.add_text("A grappled creature has its speed reduced to zero.", source="srd")
+    retriever.add_text("The fireball ignites and burns everything nearby.", source="srd")
+    retriever.add_text("A rogue can hide and move with stealth.", source="srd")
+    retriever.index()
+
+    queries = ["grapple and speed", "fire and burning", "hide with stealth"]
+    batched = retriever.query_batch(queries, top_k=2)
+    assert len(batched) == 3
+    for query_text, row in zip(queries, batched):
+        assert row == retriever.query(query_text, top_k=2)
+
+
+def test_query_batch_embeds_in_one_call() -> None:
+    """The whole point of query_batch: one embed_fn call for the batch, not
+    one per query text."""
+    calls: list[int] = []
+
+    def counting_embed(texts: list[str]) -> torch.Tensor:
+        calls.append(len(texts))
+        return _keyword_embed(texts)
+
+    retriever = SemanticRetriever(embed_fn=counting_embed)
+    retriever.add_text("A grappled creature is held fast.")
+    retriever.add_text("The fire spreads quickly.")
+    retriever.index()
+
+    calls.clear()
+    retriever.query_batch(["grapple", "fire", "stealth"], top_k=1)
+    assert calls == [3]
+
+
+def test_query_batch_empty_index_returns_empty_per_row() -> None:
+    retriever = SemanticRetriever(embed_fn=_keyword_embed)
+    assert retriever.query_batch(["a", "b"], top_k=5) == [[], []]
+
+
+def test_query_batch_empty_texts_returns_empty_list() -> None:
+    retriever = SemanticRetriever(embed_fn=_keyword_embed)
+    retriever.add_text("A grappled creature is held fast.")
+    retriever.index()
+    assert retriever.query_batch([], top_k=5) == []
+
+
 def test_retriever_incremental_index() -> None:
     retriever = SemanticRetriever(embed_fn=_keyword_embed)
     retriever.add_text("A grappled creature is held fast.")

@@ -215,7 +215,7 @@ for start in range(0, len(dataset), embed_batch_size):
 ([`scripts/build_retrieval_neighbors.py:152-169`](../scripts/build_retrieval_neighbors.py#L152-L169))
 
 `SemanticRetriever.query()`
-([`semantic.py:304`](../grimoire_ai/retrieval/semantic.py#L304)) always
+([`semantic.py:304`](../grimoire_ai/llm/inference/semantic.py#L304)) always
 calls `self._embed_fn([text])` — a batch-size-1 forward pass. The outer
 loop groups windows into chunks of `embed_batch_size` (default 32) purely
 for token-decode and progress reporting; the actually expensive part
