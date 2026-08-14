@@ -405,6 +405,7 @@ def run_pretrain(
     n_kv_heads: int,
     d_ff: int,
     gradient_checkpointing: bool = False,
+    compile_mode: str = "default",
     sample_weights_path: str = "",
     val_stratified: bool = False,
     attention_type: str = "gqa",
@@ -494,6 +495,7 @@ def run_pretrain(
             checkpoint_dir=checkpoint_dir,
             device=device,
             gradient_checkpointing=gradient_checkpointing,
+            compile_mode=compile_mode,
             sample_weights=sample_weights,
             on_log=on_log,
             on_save=on_save,
@@ -2575,6 +2577,21 @@ def build_app() -> gr.Blocks:
                          "Recommended for medium-85M / large-250M on GPUs with < 16 GB VRAM.",
                 )
 
+            # ---- Compile options ------------------------------------------
+            with gr.Row():
+                pt_compile_mode = gr.Dropdown(
+                    choices=["default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"],
+                    value="default",
+                    label="torch.compile mode",
+                    info="CUDA only, no effect on CPU/MPS. 'max-autotune' spends much "
+                         "longer autotuning kernels per shape in exchange for faster "
+                         "steady-state steps -- worth it for pretraining's thousands of "
+                         "steps at one fixed shape, but the actual crossover point "
+                         "depends on your GPU. Not switched by default: A/B it against "
+                         "'default' on your own hardware first (see "
+                         "docs/speed_optimization.md item #3).",
+                )
+
             # ---- Model architecture -------------------------------------
             with gr.Accordion("Model architecture", open=False):
                 gr.Markdown(
@@ -2699,7 +2716,7 @@ def build_app() -> gr.Blocks:
                     pt_batch, pt_accum, pt_log, pt_save,
                     pt_val_split, pt_eval_every, pt_eval_batches,
                     pt_d_model, pt_n_layers, pt_n_heads, pt_n_kv_heads, pt_d_ff,
-                    pt_grad_ckpt, pt_sample_weights, pt_val_stratified,
+                    pt_grad_ckpt, pt_compile_mode, pt_sample_weights, pt_val_stratified,
                     pt_attention_type, pt_mla_kv_latent_dim, pt_mla_rope_head_dim,
                 ],
                 outputs=[pt_log_box, pt_run_btn, pt_stop_btn],
