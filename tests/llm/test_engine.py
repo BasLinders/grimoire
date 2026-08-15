@@ -19,6 +19,7 @@ import torch
 
 from grimoire_ai.corpus.corpus import GrimoireCorpus, QueryResult
 from grimoire_ai.llm.inference.engine import InferenceEngine
+from grimoire_ai.llm.inference.reranker import Reranker
 from grimoire_ai.llm.inference.sampler import GenerationConfig
 from grimoire_ai.llm.model.config import TransformerConfig
 from grimoire_ai.llm.model.transformer import GrimoireTransformer
@@ -265,6 +266,124 @@ def test_top_k_corpus_forwarded_to_query() -> None:
         engine.respond("anything", top_k_corpus=7)
 
     corpus.query.assert_called_once_with("anything", top_k=7)
+
+
+# ---------------------------------------------------------------------------
+# Reranker wiring (docs/architecture_optimization.md item #7)
+# ---------------------------------------------------------------------------
+
+def _reverse_score_fn(query: str, passages: list[str]) -> list[float]:
+    """Fake cross-encoder: reverses whatever order it's given (last passage
+    gets the highest score) -- makes rerank's effect on ordering unambiguous
+    in tests, independent of any real ranking signal."""
+    n = len(passages)
+    return [float(i) for i in range(n)]
+
+
+def test_reranker_none_is_noop() -> None:
+    """With no reranker attached, _retrieve() must query for exactly top_k,
+    not a widened pool -- regression guard for the default (unreranked) path."""
+    corpus = MagicMock()
+    corpus.query.return_value = []
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt, tok = _save_artifacts(tmp)
+        engine = InferenceEngine(
+            checkpoint_path=ckpt, tokenizer_path=tok, corpus=corpus, device="cpu",
+        )
+        assert engine.reranker is None
+        engine._retrieve("anything", top_k=3)
+
+    corpus.query.assert_called_once_with("anything", top_k=3)
+
+
+def test_reranker_widens_query_then_truncates() -> None:
+    """With a reranker attached, _retrieve() must fetch rerank_candidates
+    (not just top_k) from the first-stage retriever, then truncate the
+    rescored result back down to top_k."""
+    candidates = [
+        QueryResult(multi_token=(), next_token=None, score=0.0, source=None, excerpt=f"passage {i}")
+        for i in range(10)
+    ]
+    corpus = MagicMock()
+    corpus.query.return_value = candidates
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt, tok = _save_artifacts(tmp)
+        engine = InferenceEngine(
+            checkpoint_path=ckpt, tokenizer_path=tok, corpus=corpus, device="cpu",
+            reranker=Reranker(_reverse_score_fn), rerank_candidates=10,
+        )
+        results = engine._retrieve("anything", top_k=3)
+
+    corpus.query.assert_called_once_with("anything", top_k=10)
+    assert len(results) == 3
+    # _reverse_score_fn scores the last-seen candidate highest, so the
+    # top 3 after rerank should be passages 9, 8, 7 in that order.
+    assert [r.excerpt for r in results] == ["passage 9", "passage 8", "passage 7"]
+
+
+def test_reranker_changes_prompt_order() -> None:
+    """The reranked order must actually reach the assembled prompt, not just
+    get reordered internally and ignored -- PromptBuilder joins context in
+    list order and trims excess from the right, so reversing the order with
+    a tight token budget must flip which excerpt survives truncation."""
+    corpus = MagicMock()
+    corpus.query.return_value = [
+        QueryResult(multi_token=(), next_token=None, score=0.0, source=None, excerpt="zzzalpha zzzalpha zzzalpha"),
+        QueryResult(multi_token=(), next_token=None, score=0.0, source=None, excerpt="zzzbeta zzzbeta zzzbeta"),
+    ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt, tok = _save_artifacts(tmp)
+        engine = InferenceEngine(
+            checkpoint_path=ckpt, tokenizer_path=tok, corpus=corpus,
+            max_context_tokens=20,  # tight budget: only one excerpt's tokens fit
+            reranker=Reranker(_reverse_score_fn), rerank_candidates=2,
+            device="cpu",
+        )
+
+        captured: dict[str, list[int]] = {}
+
+        def _fake_generate(model, prompt_ids, config=None, device="cpu", **_kwargs):
+            captured["prompt_ids"] = prompt_ids
+            return []
+
+        with patch("grimoire_ai.llm.inference.engine.generate", _fake_generate):
+            engine.respond("query", top_k_corpus=2)
+
+    decoded = engine.tokenizer.decode(captured["prompt_ids"])
+    # _reverse_score_fn ranks the second (zzzbeta) candidate first, so after
+    # rerank it's listed first and should survive the right-side trim.
+    assert "zzzbeta" in decoded
+    assert "zzzalpha" not in decoded
+
+
+def test_retrieval_threshold_uses_reranked_score() -> None:
+    """The top-1 retrieval_threshold gate must read the post-rerank score,
+    not the first-stage retriever's original score."""
+    corpus = MagicMock()
+    # First-stage top result scores 0.0 (would fail a threshold of 0.5);
+    # _reverse_score_fn promotes the last candidate to the top with score 1.0.
+    corpus.query.return_value = [
+        QueryResult(multi_token=(), next_token=None, score=0.0, source=None, excerpt="first"),
+        QueryResult(multi_token=(), next_token=None, score=0.0, source=None, excerpt="second"),
+    ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt, tok = _save_artifacts(tmp)
+        engine = InferenceEngine(
+            checkpoint_path=ckpt, tokenizer_path=tok, corpus=corpus,
+            retrieval_threshold=0.5,
+            reranker=Reranker(_reverse_score_fn), rerank_candidates=2,
+            device="cpu",
+        )
+        results = engine._retrieve("anything", top_k=2)
+
+    # Post-rerank top score is 1.0 (>= 0.5 threshold), so results must NOT
+    # be dropped -- if the gate were still reading the pre-rerank score
+    # (0.0 for both), this would incorrectly return [].
+    assert len(results) == 2
 
 
 def test_per_call_gen_config_override() -> None:

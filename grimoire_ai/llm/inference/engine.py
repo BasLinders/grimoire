@@ -48,6 +48,7 @@ from grimoire_ai.llm.training.checkpoint import load_checkpoint
 
 if TYPE_CHECKING:
     from grimoire_ai.llm.inference.constrained_decoding import StatBlockConstraint
+    from grimoire_ai.llm.inference.reranker import Reranker
     from grimoire_ai.tools.math_tool import MathTool
 
 
@@ -103,6 +104,8 @@ class InferenceEngine:
         quantize: bool = False,
         math_tool: Optional["MathTool"] = None,
         stat_block_constraint: Optional["StatBlockConstraint"] = None,
+        reranker: Optional["Reranker"] = None,
+        rerank_candidates: int = 20,
     ) -> None:
         """Load model and tokenizer from disk and prepare the engine.
 
@@ -144,6 +147,17 @@ class InferenceEngine:
                 Rating, XP, AC, HP) to well-formed values at decode time.
                 Construct with ``StatBlockConstraint(self.tokenizer)`` after
                 the engine loads, since it needs the trained tokenizer.
+            reranker: Optional ``Reranker`` (see ``reranker.py``) — when
+                set, ``_retrieve()`` fetches ``rerank_candidates`` passages
+                from the first-stage retriever instead of just ``top_k``,
+                rescores them all with the reranker, and returns only the
+                top ``top_k`` after rescoring. ``None`` (default) leaves
+                retrieval exactly as the first-stage retriever ranked it.
+            rerank_candidates: Size of the first-stage candidate pool
+                fetched before rescoring. Only consulted when ``reranker``
+                is set — widening the pool is what lets reranking actually
+                promote a passage the first-stage retriever ranked outside
+                the final ``top_k``, not just reorder an already-truncated set.
         """
         self.device = select_device(device)
         device = self.device
@@ -178,6 +192,8 @@ class InferenceEngine:
         self.gen_config = gen_config if gen_config is not None else GenerationConfig()
         self.math_tool = math_tool
         self.stat_block_constraint = stat_block_constraint
+        self.reranker = reranker
+        self.rerank_candidates = rerank_candidates
 
     @property
     def checkpoint_path(self) -> str:
@@ -255,13 +271,20 @@ class InferenceEngine:
         self.model.eval()
 
     def _retrieve(self, query: str, top_k: int) -> list:
-        """Query the corpus and apply the retrieval threshold router.
+        """Query the corpus, optionally rerank, and apply the retrieval threshold router.
+
+        When ``self.reranker`` is set, fetches ``self.rerank_candidates``
+        passages from the first-stage retriever (instead of just ``top_k``)
+        and rescores all of them before truncating to ``top_k`` — a
+        cross-encoder can only promote a passage the first-stage retriever
+        ranked outside the final cut if it's actually given a wider pool to
+        work with.
 
         Returns an empty list when no corpus is attached, when the corpus
-        returns no results, or when the top result's score falls below
-        ``self.retrieval_threshold``. In the last case the query is treated
-        as pure-chat — context would not improve the answer and would only
-        consume prompt budget.
+        returns no results, or when the top (post-rerank, if reranking is
+        active) result's score falls below ``self.retrieval_threshold``. In
+        the last case the query is treated as pure-chat — context would not
+        improve the answer and would only consume prompt budget.
 
         Args:
             query: Plain-text query string.
@@ -272,14 +295,17 @@ class InferenceEngine:
         """
         if self.corpus is None:
             return []
-        results = self.corpus.query(query, top_k=top_k)
+        query_k = max(top_k, self.rerank_candidates) if self.reranker is not None else top_k
+        results = self.corpus.query(query, top_k=query_k)
+        if self.reranker is not None and results:
+            results = self.reranker.rerank(query, results)
         if (
             results
             and self.retrieval_threshold is not None
             and results[0].score < self.retrieval_threshold
         ):
             return []
-        return results
+        return results[:top_k]
 
     def respond(
         self,
