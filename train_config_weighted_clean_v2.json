@@ -1,0 +1,16 @@
+{
+    "corpus_path": "data/processed/corpus.bin",
+    "checkpoint_dir": "checkpoints/pretrain/weighted_clean_v2",
+    "sample_weights_path": "data/processed/sample_weights.npy",
+
+    "training": {
+        "total_steps": 15259,
+        "batch_size": 4,
+        "accumulate_steps": 8,
+        "warmup_steps": 763,
+        "log_every": 76,
+        "save_every": 1526,
+        "eval_every": 1526,
+        "val_split": 0.01
+    }
+}
