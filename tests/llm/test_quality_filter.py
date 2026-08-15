@@ -67,6 +67,25 @@ def test_drops_nav_menu_shape() -> None:
     assert any("short-line ratio" in r for r in report.reasons)
 
 
+def test_keeps_structured_entries_with_many_short_header_lines() -> None:
+    """A document shaped like the real corpus's ``5etools_*``/``wp_math_*``
+    files: most *lines* are short structural ones ("# Header", "Category:
+    skill", rendered-equation tokens), but most *characters* are real
+    prose. short_line_ratio must be measured by character volume, not raw
+    line count, or this legitimate content gets dropped -- caught by
+    empirically running the quality filter against the real corpus
+    (docs/architecture_optimization.md item #9 PR review)."""
+    entry = (
+        "# Acrobatics\n"
+        "Category: skill\n\n"
+        + _GOOD_PROSE
+        + "\n\n---\n\n"
+    )
+    text = entry * 20
+    report = score_document(text)
+    assert report.keep, report.reasons
+
+
 def test_drops_degenerate_repetition() -> None:
     text = "the quick fox jumps " * 200
     report = score_document(text, thresholds=QualityThresholds(max_top_ngram_repetition_ratio=0.05))

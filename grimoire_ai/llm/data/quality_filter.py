@@ -55,10 +55,21 @@ class QualityThresholds:
         max_mean_word_length: Maximum average word length. Catches
             concatenated/garbled OCR "words" (real prose rarely averages
             much above 8-10 characters per word).
-        max_short_line_ratio: Maximum fraction of non-blank lines with fewer
-            than 3 words. Catches navigation menus, tables of contents, and
-            broken table scrapes (which tend to be almost all short lines);
-            only applied when there are enough lines to be meaningful.
+        max_short_line_ratio: Maximum fraction of a document's characters
+            (not lines) that fall on a "short" line -- one with fewer than
+            3 words. Catches navigation menus, tables of contents, and
+            broken table scrapes, which are short-line-dominated by both
+            line count *and* character volume. A character-volume ratio
+            (rather than a raw count of short lines) is what keeps this
+            rule from misfiring on documents that are legitimately prose
+            but happen to contain many one-token lines -- e.g. rendered
+            MathML/LaTeX ("n", "(", ")" each on their own line) or
+            structured entries (a "# Header" / "Category: skill" line per
+            short D&D rules entry) -- since those short lines are
+            individually tiny and so contribute little to the document's
+            actual character volume even when they dominate the line
+            count. Only applied when there are enough lines to be
+            meaningful.
         max_top_ngram_repetition_ratio: Maximum share of all word 3-grams
             that are the single most common 3-gram. Catches degenerate
             repetition ("does does does...", a boilerplate line repeated
@@ -154,8 +165,12 @@ def score_document(
 
     lines = [line for line in stripped.splitlines() if line.strip()]
     if len(lines) >= 5:
-        short_lines = sum(1 for line in lines if len(_WORD_RE.findall(line)) < 3)
-        short_line_ratio = short_lines / len(lines)
+        line_chars = [len(line) for line in lines]
+        total_line_chars = sum(line_chars)
+        short_line_chars = sum(
+            n for line, n in zip(lines, line_chars) if len(_WORD_RE.findall(line)) < 3
+        )
+        short_line_ratio = short_line_chars / total_line_chars if total_line_chars else 0.0
         stats["short_line_ratio"] = short_line_ratio
         if short_line_ratio > thresholds.max_short_line_ratio:
             reasons.append(
