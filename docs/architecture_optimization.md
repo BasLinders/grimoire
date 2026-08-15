@@ -15,9 +15,9 @@ tracked below since that's no longer true.
 | 4 | Contrastive retrieval fine-tuning | ✓ already existed — `grimoire_ai/llm/training/embed_tune.py` / `scripts/embed_tune.py`, predates this document (this list was written without checking for it first) |
 | 5 | Grammar-constrained decoding | ✓ shipped — [PR #179](https://github.com/BasLinders/grimoire/pull/179) |
 | 6 | Training-recipe stability & optimizer improvements | not started |
-| 7 | Cross-encoder reranking | not started |
-| 8 | Adaptive/corrective retrieval (CRAG / Self-RAG) | not started |
-| 9 | Data-centric: curation & synthetic augmentation | not started |
+| 7 | Cross-encoder reranking | ✓ shipped — [PR #198](https://github.com/BasLinders/grimoire/pull/198) |
+| 8 | Adaptive/corrective retrieval (CRAG / Self-RAG) | CRAG half ✓ shipped — [PR #199](https://github.com/BasLinders/grimoire/pull/199); Self-RAG parked with #6 (needs fine-tune data) |
+| 9 | Data-centric: curation & synthetic augmentation | curation ✓ shipped — [PR #200](https://github.com/BasLinders/grimoire/pull/200); EntiGraph entity recombination ✓ shipped — [PR #201](https://github.com/BasLinders/grimoire/pull/201); synthetic augmentation via rephrasing dropped — out of scope (see `expansion_PLAN.md`'s reasoning against bulk LLM-generated content) |
 
 ## Known limitations in shipped items
 
