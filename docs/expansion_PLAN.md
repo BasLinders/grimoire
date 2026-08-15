@@ -515,3 +515,28 @@ match-wins (`grimoire_ai/llm/data/preprocessing.py`'s `_resolve_weight`).
 - [ ] Phase 5 (pre-existing gap, unrelated to this plan): wire semantic/LoRA
       retrieval into the live UI — it currently only supports lexical search
       via `corpus_dirs`.
+- [ ] EntiGraph-generated passages (`scripts/generate_open5e_entigraph.py`,
+      output in `data/corpus/saga_derived/entigraph_*.txt`) still need a
+      real preprocess+retrain pass to actually reach the model.
+      `corpus_dirs` in `agents.json` was found to only control retrieval at
+      chat time, not what's in the trained corpus — `grimoire-preprocess
+      --input` (now repeatable, e.g. `--input data/corpus/saga/ --input
+      data/corpus/saga_derived/`) is the actual wiring point. Recommended
+      weight: `entigraph_*:1`, same baseline as `synth_*` above — it's
+      grounded/verified content like the rest of the corpus (once
+      generated with `--document-slug wotc-srd`, the default, to avoid the
+      Open5e third-party-document mixing found while building this), just
+      template- rather than prose-generated, and capped/small by design so
+      the dilution concern that justified downweighting `gutenberg_*`/
+      `wp_fantasy_*` doesn't apply. Insert before the trailing `*:1.75`
+      catch-all.
+- [ ] `open5e_spells.txt`/`open5e_monsters.txt` in the existing corpus are
+      43%/48% duplicate-name entries blending Open5e's official `wotc-srd`
+      document with unrelated third-party rulesets (`a5e`, `kp`), yet both
+      currently sit in the corpus's highest weight tier (`*:1.75` catch-all)
+      as if uniformly official. `scripts/scrape_open5e.py --endpoints
+      spells monsters --document-slug wotc-srd` now exists to re-scrape
+      just those two files, filtered — cheaper than a full re-scrape (2 of
+      11 endpoints, each filtered server-side to roughly half its
+      unfiltered page count) — but not run yet; needs a re-preprocess
+      afterward too.
