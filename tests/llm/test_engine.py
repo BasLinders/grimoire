@@ -408,7 +408,9 @@ def test_crag_filter_applied_before_top1_gate() -> None:
         engine = InferenceEngine(
             checkpoint_path=ckpt, tokenizer_path=tok, corpus=corpus,
             retrieval_threshold=0.5,
-            crag_filter=CragFilter(passage_threshold=0.3),
+            # Equal thresholds collapse the Ambiguous zone -- a plain
+            # below/above cutoff, same as this test's own intent.
+            crag_filter=CragFilter(lower_threshold=0.3, upper_threshold=0.3),
             device="cpu",
         )
 
@@ -427,6 +429,43 @@ def test_crag_filter_applied_before_top1_gate() -> None:
     assert "zzzdrop2" not in decoded
 
 
+def test_crag_demotes_ambiguous_passage_behind_correct_one() -> None:
+    """An Ambiguous passage must be kept (not dropped) but demoted behind
+    a Correct one -- end-to-end proof that PromptBuilder's existing
+    right-side budget trim is what "demotion" actually relies on: with a
+    tight budget, the demoted passage is the one that gets cut."""
+    corpus = MagicMock()
+    corpus.query.return_value = [
+        # Ambiguous passage listed FIRST by the retriever...
+        QueryResult(multi_token=(), next_token=None, score=0.5, source=None, excerpt="zzzambiguous zzzambiguous zzzambiguous"),
+        # ...but the Correct one must still end up first after CragFilter,
+        # and therefore be the one that survives a tight token budget.
+        QueryResult(multi_token=(), next_token=None, score=0.9, source=None, excerpt="zzzcorrect zzzcorrect zzzcorrect"),
+    ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt, tok = _save_artifacts(tmp)
+        engine = InferenceEngine(
+            checkpoint_path=ckpt, tokenizer_path=tok, corpus=corpus,
+            max_context_tokens=20,  # tight budget: only one excerpt's tokens fit
+            crag_filter=CragFilter(lower_threshold=0.3, upper_threshold=0.7),
+            device="cpu",
+        )
+
+        captured: dict[str, list[int]] = {}
+
+        def _fake_generate(model, prompt_ids, config=None, device="cpu", **_kwargs):
+            captured["prompt_ids"] = prompt_ids
+            return []
+
+        with patch("grimoire_ai.llm.inference.engine.generate", _fake_generate):
+            engine.respond("query", top_k_corpus=2)
+
+    decoded = engine.tokenizer.decode(captured["prompt_ids"])
+    assert "zzzcorrect" in decoded
+    assert "zzzambiguous" not in decoded
+
+
 def test_crag_empties_to_pure_chat_fallback() -> None:
     """When CRAG drops every passage, the engine must fall back to the
     pure-chat prompt shape (no SEP context block) -- even though the top-1
@@ -442,7 +481,7 @@ def test_crag_empties_to_pure_chat_fallback() -> None:
         engine = InferenceEngine(
             checkpoint_path=ckpt, tokenizer_path=tok, corpus=corpus,
             retrieval_threshold=0.5,               # top-1 (0.6) alone would pass
-            crag_filter=CragFilter(passage_threshold=0.9),  # but both fail this
+            crag_filter=CragFilter(lower_threshold=0.9, upper_threshold=0.9),  # but both fail this
             device="cpu",
         )
 
@@ -474,7 +513,7 @@ def test_crag_reads_reranked_score_when_reranker_present() -> None:
         engine = InferenceEngine(
             checkpoint_path=ckpt, tokenizer_path=tok, corpus=corpus,
             reranker=Reranker(_reverse_score_fn), rerank_candidates=2,
-            crag_filter=CragFilter(passage_threshold=0.5),
+            crag_filter=CragFilter(lower_threshold=0.5, upper_threshold=0.5),
             device="cpu",
         )
         results = engine._retrieve("anything", top_k=2)

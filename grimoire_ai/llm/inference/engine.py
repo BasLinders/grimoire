@@ -161,13 +161,15 @@ class InferenceEngine:
                 promote a passage the first-stage retriever ranked outside
                 the final ``top_k``, not just reorder an already-truncated set.
             crag_filter: Optional ``CragFilter`` (see ``crag.py``) — when
-                set, ``_retrieve()`` drops individually low-scoring
-                passages from the retrieved set (after reranking, if a
-                reranker is also attached) before applying
-                ``retrieval_threshold``'s top-1 gate. Layers on top of that
-                gate rather than replacing it — a per-passage filter, not a
-                single all-or-nothing check. ``None`` (default) leaves
-                every retrieved passage in place.
+                set, ``_retrieve()`` classifies every retrieved passage as
+                Correct/Ambiguous/Incorrect (after reranking, if a reranker
+                is also attached), drops Incorrect ones, and demotes
+                Ambiguous ones (kept, but reordered after every Correct
+                passage) before applying ``retrieval_threshold``'s top-1
+                gate. Layers on top of that gate rather than replacing it —
+                a per-passage classification, not a single all-or-nothing
+                check. ``None`` (default) leaves every retrieved passage in
+                place, unclassified.
         """
         self.device = select_device(device)
         device = self.device
@@ -291,10 +293,11 @@ class InferenceEngine:
            retriever ranked outside the final cut if it's actually given a
            wider pool to work with).
         2. Reranking (``self.reranker``, if set) — rescores and reorders.
-        3. CRAG per-passage filter (``self.crag_filter``, if set) — drops
-           individually low-scoring passages from whatever's left. Reads
-           the post-rerank score when step 2 ran, the raw first-stage score
-           otherwise.
+        3. CRAG per-passage classification (``self.crag_filter``, if set) —
+           drops "Incorrect" passages and demotes "Ambiguous" ones (kept,
+           reordered after every "Correct" passage) from whatever's left.
+           Reads the post-rerank score when step 2 ran, the raw first-stage
+           score otherwise.
         4. The existing top-1 ``retrieval_threshold`` gate, on whatever
            survived step 3 — a single all-or-nothing check, distinct from
            step 3's per-passage filtering. Only ever indexes ``results[0]``
