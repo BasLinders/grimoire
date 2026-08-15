@@ -21,6 +21,16 @@ impractical volume, hallucination risk, model-collapse risk). Matches the
 existing derived-adventure pilot's practice of only ever including
 mechanically-verified facts (docs/expansion_PLAN.md).
 
+Open5e's endpoints mix multiple documents under one resource type --
+/spells/ alone blends the official "wotc-srd" (5e Core Rules) with
+unrelated third-party rulesets like "a5e" (Level Up Advanced 5e, a
+different game) and "kp" (Kobold Press homebrew, some of which leaks an
+unstripped source tag straight into its desc field, e.g. "Deep Magic:
+hieroglyph ..."). ~43% of a raw /spells/ pull turned out to be duplicate
+spell names across documents once this was checked against the live API.
+Every fetch here defaults to --document-slug wotc-srd so pairs are only
+ever built from the one document this project treats as canonical.
+
 Reuses scrape_open5e.py's pagination helper (_fetch_all) the same way
 generate_open5e_qa.py does, via the sys.path.insert(0, ...) trick since
 scripts/ isn't a package.
@@ -48,6 +58,7 @@ Usage
     python scripts/generate_open5e_entigraph.py
     python scripts/generate_open5e_entigraph.py --categories monster_condition class_spell
     python scripts/generate_open5e_entigraph.py --max-pairs-per-category 200 --seed 1
+    python scripts/generate_open5e_entigraph.py --document-slug ""  # every Open5e document, unfiltered
 
 Requirements
 ------------
@@ -164,7 +175,9 @@ _CATEGORIES = {
 }
 
 
-def _fetch_endpoint_cached(endpoint: str, delay: float, cache: dict[str, list[dict]]) -> list[dict]:
+def _fetch_endpoint_cached(
+    endpoint: str, delay: float, cache: dict[str, list[dict]], document_slug: Optional[str]
+) -> list[dict]:
     """Fetch an Open5e endpoint's full item list, once per endpoint per run.
 
     Several categories share an endpoint -- both class_weapon and
@@ -173,7 +186,7 @@ def _fetch_endpoint_cached(endpoint: str, delay: float, cache: dict[str, list[di
     """
     if endpoint not in cache:
         print(f"Fetching {endpoint}...")
-        cache[endpoint] = _fetch_all(endpoint, delay=delay)
+        cache[endpoint] = _fetch_all(endpoint, delay=delay, document_slug=document_slug)
     return cache[endpoint]
 
 
@@ -183,10 +196,11 @@ def _generate_category(
     max_pairs: Optional[int],
     rng: random.Random,
     fetch_cache: dict[str, list[dict]],
+    document_slug: Optional[str],
 ) -> list[str]:
     (endpoint_a, endpoint_b), passage_fn, _ = _CATEGORIES[category]
-    items_a = _fetch_endpoint_cached(endpoint_a, delay, fetch_cache)
-    items_b = _fetch_endpoint_cached(endpoint_b, delay, fetch_cache)
+    items_a = _fetch_endpoint_cached(endpoint_a, delay, fetch_cache, document_slug)
+    items_b = _fetch_endpoint_cached(endpoint_b, delay, fetch_cache, document_slug)
 
     passages: list[str] = []
     for a in items_a:
@@ -211,6 +225,7 @@ def generate(
     delay: float,
     max_pairs_per_category: Optional[int],
     seed: int,
+    document_slug: Optional[str],
 ) -> None:
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -219,7 +234,7 @@ def generate(
 
     for category in categories:
         _, _, filename = _CATEGORIES[category]
-        passages = _generate_category(category, delay, max_pairs_per_category, rng, fetch_cache)
+        passages = _generate_category(category, delay, max_pairs_per_category, rng, fetch_cache, document_slug)
         if not passages:
             print(f"  No passages generated for {category}, skipping.")
             continue
@@ -259,7 +274,15 @@ if __name__ == "__main__":
         "--delay", type=float, default=0.25,
         help="Seconds between paginated API requests (default: 0.25).",
     )
+    parser.add_argument(
+        "--document-slug", default="wotc-srd", metavar="SLUG",
+        help="Restrict every fetched entity to this Open5e document "
+             "(default: wotc-srd, the official 5e SRD). Open5e mixes "
+             "unrelated third-party rulesets (e.g. 'a5e', 'kp') into the "
+             "same endpoints; pass an empty string to disable filtering "
+             "and pull from every document Open5e has.",
+    )
     args = parser.parse_args()
 
     max_pairs = None if args.max_pairs_per_category == 0 else args.max_pairs_per_category
-    generate(args.output_dir, args.categories, args.delay, max_pairs, args.seed)
+    generate(args.output_dir, args.categories, args.delay, max_pairs, args.seed, args.document_slug or None)

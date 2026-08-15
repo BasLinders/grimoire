@@ -142,7 +142,13 @@ def _format(endpoint: str, obj: dict) -> str:
 # Pagination helper
 # ---------------------------------------------------------------------------
 
-def _fetch_all(endpoint: str, delay: float, page_size: int = 100, max_retries: int = 3) -> list[dict]:
+def _fetch_all(
+    endpoint: str,
+    delay: float,
+    page_size: int = 100,
+    max_retries: int = 3,
+    document_slug: str | None = None,
+) -> list[dict]:
     """Fetch all pages from an Open5e list endpoint.
 
     Retries a timed-out/failed page up to *max_retries* times (with a
@@ -151,8 +157,20 @@ def _fetch_all(endpoint: str, delay: float, page_size: int = 100, max_retries: i
     whole endpoint, which any category caching that endpoint's fetch
     (e.g. generate_open5e_entigraph.py's class_weapon/class_spell, which
     both reuse a single "classes" fetch) would then also see as empty.
+
+    Open5e aggregates multiple rulebooks under one endpoint -- e.g.
+    /spells/ mixes the official "wotc-srd" document with unrelated
+    third-party ones like "a5e" (a different, incompatible ruleset) and
+    "kp" (Kobold Press homebrew); every item carries its source in
+    ``document__slug``. When *document_slug* is given, results are
+    filtered to that document only: as a server-side query param (fewer
+    pages to fetch/retry) and again client-side as a safety net in case
+    the API silently ignores an unrecognized filter param rather than
+    erroring on it.
     """
     url = f"{BASE_URL}/{endpoint}/?limit={page_size}&format=json"
+    if document_slug:
+        url += f"&document__slug={document_slug}"
     results = []
     page = 0
     while url:
@@ -173,6 +191,8 @@ def _fetch_all(endpoint: str, delay: float, page_size: int = 100, max_retries: i
         if data is None:
             break
         batch = data.get("results", [])
+        if document_slug:
+            batch = [item for item in batch if item.get("document__slug", document_slug) == document_slug]
         results.extend(batch)
         print(f"  {endpoint}: page {page} — {len(results)} items so far")
         url = data.get("next")
