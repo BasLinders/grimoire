@@ -159,7 +159,12 @@ def load_agent(
         if reranker != "None":
             from grimoire_ai.llm.inference.reranker import CROSS_ENCODER_MODELS, Reranker, make_cross_encoder_score_fn
             try:
-                score_fn = make_cross_encoder_score_fn(CROSS_ENCODER_MODELS[reranker])
+                # Pass the engine's own resolved device explicitly rather
+                # than letting the reranker auto-detect independently -- an
+                # explicit device the engine was pinned to (e.g. "cpu" for
+                # quantization) must not be silently overridden by the
+                # reranker picking CUDA/MPS on its own.
+                score_fn = make_cross_encoder_score_fn(CROSS_ENCODER_MODELS[reranker], device=engine._engine.device)
             except ImportError as exc:
                 return None, None, str(exc), "", ""
             engine._engine.reranker = Reranker(score_fn)
@@ -192,7 +197,10 @@ def load_agent(
     if reranker != "None":
         from grimoire_ai.llm.inference.reranker import CROSS_ENCODER_MODELS, Reranker, make_cross_encoder_score_fn
         try:
-            score_fn = make_cross_encoder_score_fn(CROSS_ENCODER_MODELS[reranker])
+            # Pin the reranker to the engine's own resolved device -- see
+            # the Auto-route branch above for why this can't be left to
+            # independent auto-detection.
+            score_fn = make_cross_encoder_score_fn(CROSS_ENCODER_MODELS[reranker], device=engine.device)
         except ImportError as exc:
             return None, None, str(exc), cfg.checkpoint, cfg.vocab
         engine.reranker = Reranker(score_fn)
@@ -356,7 +364,10 @@ def load_engine(
     if reranker != "None":
         from grimoire_ai.llm.inference.reranker import CROSS_ENCODER_MODELS, Reranker, make_cross_encoder_score_fn
         try:
-            score_fn = make_cross_encoder_score_fn(CROSS_ENCODER_MODELS[reranker])
+            # Pin the reranker to the engine's own resolved device -- see
+            # load_agent's Auto-route branch for why this can't be left to
+            # independent auto-detection.
+            score_fn = make_cross_encoder_score_fn(CROSS_ENCODER_MODELS[reranker], device=engine.device)
         except ImportError as exc:
             return None, None, str(exc), gr.update()
         engine.reranker = Reranker(score_fn)

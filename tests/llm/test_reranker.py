@@ -10,7 +10,7 @@ tests/llm/test_rag_index.py does for faiss).
 """
 
 import sys
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -107,3 +107,30 @@ def test_make_cross_encoder_score_fn_raises_importerror_when_missing() -> None:
     with patch.dict(sys.modules, {"sentence_transformers": None}):
         with pytest.raises(ImportError, match=r'pip install -e ".\[encoder\]"'):
             make_cross_encoder_score_fn("cross-encoder/ms-marco-TinyBERT-L-2-v2")
+
+
+def test_make_cross_encoder_score_fn_passes_device_through() -> None:
+    """The device kwarg must reach CrossEncoder's own constructor, not be
+    dropped -- callers (chat_app.py) pass the engine's already-resolved
+    device explicitly so the reranker never independently auto-detects a
+    different device than the rest of the engine is running on (e.g. when
+    the engine was explicitly pinned to CPU for int8 quantization)."""
+    mock_cross_encoder_cls = MagicMock()
+    with patch.dict(sys.modules, {"sentence_transformers": MagicMock(CrossEncoder=mock_cross_encoder_cls)}):
+        make_cross_encoder_score_fn("cross-encoder/ms-marco-TinyBERT-L-2-v2", device="cuda")
+
+    mock_cross_encoder_cls.assert_called_once_with(
+        "cross-encoder/ms-marco-TinyBERT-L-2-v2", device="cuda"
+    )
+
+
+def test_make_cross_encoder_score_fn_device_defaults_to_none() -> None:
+    """Omitting device must pass None through to CrossEncoder (its own
+    auto-detection), not silently default to "cpu"."""
+    mock_cross_encoder_cls = MagicMock()
+    with patch.dict(sys.modules, {"sentence_transformers": MagicMock(CrossEncoder=mock_cross_encoder_cls)}):
+        make_cross_encoder_score_fn("cross-encoder/ms-marco-TinyBERT-L-2-v2")
+
+    mock_cross_encoder_cls.assert_called_once_with(
+        "cross-encoder/ms-marco-TinyBERT-L-2-v2", device=None
+    )

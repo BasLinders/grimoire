@@ -21,7 +21,7 @@ Usage
     engine.rerank_candidates = 20  # widen the first-stage pool before rescoring
 """
 
-from typing import Callable
+from typing import Callable, Optional
 
 from grimoire_ai.corpus.corpus import QueryResult
 
@@ -39,7 +39,10 @@ CROSS_ENCODER_MODELS: dict[str, str] = {
 }
 
 
-def make_cross_encoder_score_fn(model_name: str) -> Callable[[str, list[str]], list[float]]:
+def make_cross_encoder_score_fn(
+    model_name: str,
+    device: Optional[str] = None,
+) -> Callable[[str, list[str]], list[float]]:
     """Return a ``score_fn`` backed by a sentence-transformers ``CrossEncoder``.
 
     The sentence-transformers model is downloaded on first call and cached
@@ -49,6 +52,19 @@ def make_cross_encoder_score_fn(model_name: str) -> Callable[[str, list[str]], l
     Args:
         model_name: A sentence-transformers cross-encoder model identifier,
             e.g. ``"cross-encoder/ms-marco-TinyBERT-L-2-v2"``.
+        device: Torch device to load the cross-encoder on (``"cuda"``,
+            ``"mps"``, ``"cpu"``, etc.). ``None`` (default) lets
+            sentence-transformers auto-detect via its own
+            ``get_device_name()`` — CUDA, then MPS, then CPU, the same
+            priority order ``grimoire_ai.llm.device.select_device`` uses.
+            Pass the engine's own resolved ``.device`` explicitly (as
+            ``chat_app.py``'s wiring does) so the reranker never drifts from
+            what the rest of the engine is running on — most importantly
+            when a caller has *explicitly* pinned the engine to CPU (e.g.
+            for int8 quantization, which is CPU-only), auto-detection here
+            would otherwise independently pick CUDA/MPS if available,
+            silently running the reranker on different hardware than the
+            model it's paired with.
 
     Returns:
         A callable ``(query, passages) -> list[float]`` returning one
@@ -68,7 +84,7 @@ def make_cross_encoder_score_fn(model_name: str) -> Callable[[str, list[str]], l
             "Install it with:  pip install -e \".[encoder]\""
         ) from exc
 
-    _model = CrossEncoder(model_name)
+    _model = CrossEncoder(model_name, device=device)
 
     def _score(query: str, passages: list[str]) -> list[float]:
         pairs = [[query, p] for p in passages]
