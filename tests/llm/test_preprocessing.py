@@ -97,3 +97,30 @@ def test_quality_report_not_written_when_nothing_dropped(tmp_path) -> None:
     )
 
     assert not report_path.exists()
+
+
+def test_input_path_accepts_a_list_of_directories(tmp_path) -> None:
+    """input_path may be a list of directories -- lets a caller combine
+    sibling corpus directories (e.g. a base scrape plus a derived/synthetic
+    directory kept separate on disk) into one build without merging them."""
+    base_dir = tmp_path / "base"
+    base_dir.mkdir()
+    (base_dir / "a.txt").write_text(_CLEAN_TEXT, encoding="utf-8")
+
+    derived_dir = tmp_path / "derived"
+    derived_dir.mkdir()
+    (derived_dir / "b.txt").write_text(_CLEAN_TEXT, encoding="utf-8")
+
+    output_path = tmp_path / "corpus.bin"
+    vocab_path = tmp_path / "bpe.json"
+
+    preprocess(
+        input_path=[str(base_dir), str(derived_dir)],
+        output_path=str(output_path),
+        vocab_path=str(vocab_path),
+        vocab_size=300,
+    )
+
+    ids = np.fromfile(str(output_path), dtype=np.int32)
+    n_docs = int((ids == EOS_ID).sum())
+    assert n_docs == 2, "Both directories' documents must be tokenised."

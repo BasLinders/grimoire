@@ -26,9 +26,19 @@ If ``--vocab`` points to a file that does not yet exist, the BPE encoder
 is trained on the input files first and saved to that path automatically.
 If the file already exists it is loaded directly (training is skipped).
 
+Combine multiple corpus directories into one build (e.g. a base scrape
+plus a derived/synthetic directory kept separate on disk) by repeating
+``--input``:
+
+    python -m grimoire.llm.data.preprocessing \\
+        --input data/corpus/saga/ --input data/corpus/saga_derived/ \\
+        --output data/processed/corpus.bin \\
+        --vocab  data/tokenizer/bpe.json
+
 Arguments
 ---------
 --input      Path to a directory of .txt files, or a single .txt file.
+             Repeatable to combine multiple directories into one build.
 --output     Destination path for the .bin token array.
 --vocab      Path to the BPE vocabulary JSON (read or write).
 --vocab-size  Target BPE vocabulary size (used only when training anew).
@@ -66,30 +76,41 @@ def _write_quality_report(path: str, reports: list[QualityReport]) -> None:
                 }) + "\n")
 
 
-def _collect_text_files(input_path: Path) -> list[Path]:
-    """Collect all .txt files under a directory (or return a single file).
+def _collect_text_files(input_paths: list[Path]) -> list[Path]:
+    """Collect all .txt files under one or more directories (or files).
+
+    Each path is collected independently and results are concatenated in
+    the order given -- lets a caller combine sibling corpus directories
+    (e.g. ``data/corpus/saga/`` and ``data/corpus/saga_derived/``) into
+    one build without merging them on disk or pulling in unrelated
+    siblings the way pointing at their shared parent directory would.
 
     Args:
-        input_path: A directory or a single ``.txt`` file.
+        input_paths: Directories and/or single ``.txt`` files.
 
     Returns:
-        A sorted list of ``.txt`` file paths found under ``input_path``.
+        A list of ``.txt`` file paths, sorted within each input path and
+        concatenated in ``input_paths`` order.
 
     Raises:
-        ValueError: If no ``.txt`` files are found.
+        ValueError: If any given path yields no ``.txt`` files.
     """
-    if input_path.is_file():
-        return [input_path]
-    # Force the OS to flush its directory cache before globbing.
-    # On Windows, a long-running process may not see files added after startup
-    # without explicitly re-reading the directory via os.scandir.
-    import os
-    for dirpath, _, _ in os.walk(input_path):
-        with os.scandir(dirpath):
-            pass
-    files = sorted(input_path.rglob("*.txt"))
-    if not files:
-        raise ValueError(f"No .txt files found under {input_path}")
+    files: list[Path] = []
+    for input_path in input_paths:
+        if input_path.is_file():
+            files.append(input_path)
+            continue
+        # Force the OS to flush its directory cache before globbing.
+        # On Windows, a long-running process may not see files added after
+        # startup without explicitly re-reading the directory via os.scandir.
+        import os
+        for dirpath, _, _ in os.walk(input_path):
+            with os.scandir(dirpath):
+                pass
+        found = sorted(input_path.rglob("*.txt"))
+        if not found:
+            raise ValueError(f"No .txt files found under {input_path}")
+        files.extend(found)
     return files
 
 
@@ -141,7 +162,7 @@ def _resolve_weight(path: Path, weight_rules: list[tuple[str, float]]) -> float:
 
 
 def preprocess(
-    input_path: str,
+    input_path: "str | list[str]",
     output_path: str,
     vocab_path: str,
     vocab_size: int = 16384,
@@ -170,7 +191,13 @@ def preprocess(
     3. Write the int32 array directly to the output file
 
     Args:
-        input_path: Path to a directory of ``.txt`` files or a single file.
+        input_path: Path to a directory of ``.txt`` files or a single file --
+            or a list of such paths to combine multiple corpus directories
+            into one build (e.g. ``["data/corpus/saga/",
+            "data/corpus/saga_derived/"]``) without merging them on disk.
+            Files are collected in the order the paths are given; weight
+            matching (see ``weight_rules``) is by filename regardless of
+            which directory a file came from.
         output_path: Destination path for the ``.bin`` output file.
         vocab_path: Path to the BPE vocabulary JSON.  Trained and saved here
             if it does not exist; loaded from here otherwise.
@@ -246,19 +273,21 @@ def preprocess(
         else:
             print(msg)
 
-    input_p  = Path(input_path)
+    input_paths = [input_path] if isinstance(input_path, str) else list(input_path)
+    input_ps = [Path(p) for p in input_paths]
     output_p = Path(output_path)
     vocab_p  = Path(vocab_path)
 
     if bpe_sample_size is not None and bpe_sample_size <= 0:
         bpe_sample_size = None
 
-    if not input_p.exists():
-        raise FileNotFoundError(f"Input path not found: {input_path}")
+    for p, raw in zip(input_ps, input_paths):
+        if not p.exists():
+            raise FileNotFoundError(f"Input path not found: {raw}")
 
     # --- Collect source files -------------------------------------------
-    _emit(f"[1/3] Collecting text files from {input_p} ...")
-    files = _collect_text_files(input_p)
+    _emit(f"[1/3] Collecting text files from {', '.join(str(p) for p in input_ps)} ...")
+    files = _collect_text_files(input_ps)
     _emit(f"      Found {len(files)} file(s).")
 
     # --- Optional quality filtering + near-duplicate removal ------------
@@ -399,8 +428,11 @@ def main() -> None:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "--input", required=True,
-        help="Directory of .txt files or a single .txt file.",
+        "--input", action="append", required=True, metavar="PATH",
+        help="Directory of .txt files or a single .txt file. Repeatable to "
+             "combine multiple corpus directories into one build without "
+             "merging them on disk, e.g. --input data/corpus/saga/ --input "
+             "data/corpus/saga_derived/.",
     )
     parser.add_argument(
         "--output", default="data/processed/corpus.bin",

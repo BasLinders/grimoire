@@ -183,8 +183,21 @@ def _parse_weight_patterns(text: str) -> Optional[list[tuple[str, float]]]:
     return rules or None
 
 
+def _parse_input_dirs(text: str) -> list[str]:
+    """Parse a "one directory (or file) per line" textbox into input_path.
+
+    Lets the Preprocess tab combine sibling corpus directories -- e.g. a
+    base scrape plus a derived/synthetic directory kept separate on disk
+    -- into one build the same way the CLI's repeatable --input does.
+    """
+    paths = [line.strip() for line in text.splitlines() if line.strip()]
+    if not paths:
+        raise ValueError("At least one input directory is required.")
+    return paths
+
+
 def run_preprocess(
-    input_dir: str,
+    input_dirs: str,
     output_path: str,
     vocab_path: str,
     vocab_size: int,
@@ -201,7 +214,7 @@ def run_preprocess(
     def _task(on_progress):
         weight_rules = _parse_weight_patterns(weight_patterns)
         preprocess(
-            input_path=input_dir.strip(),
+            input_path=_parse_input_dirs(input_dirs),
             output_path=output_path.strip(),
             vocab_path=vocab_path.strip(),
             vocab_size=int(vocab_size),
@@ -1418,8 +1431,12 @@ def build_train_app() -> gr.Blocks:
             )
             with gr.Row():
                 pp_input = gr.Textbox(
-                    label="Input directory (.txt files)",
+                    label="Input directories (.txt files, one per line)",
                     value="data/corpus/saga/",
+                    lines=2,
+                    info="Combine sibling corpus directories into one build "
+                         "without merging them on disk -- e.g. add "
+                         "data/corpus/saga_derived/ on its own line.",
                 )
                 pp_output = gr.Textbox(
                     label="Output corpus binary (.bin)",
