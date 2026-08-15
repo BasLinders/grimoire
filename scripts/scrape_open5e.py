@@ -9,6 +9,15 @@ Usage
     python scripts/scrape_open5e.py
     python scripts/scrape_open5e.py --output data/corpus/saga/ --delay 0.3
 
+    Targeted re-scrape of just the endpoints known to blend Open5e
+    documents (see generate_open5e_entigraph.py's module docstring --
+    open5e_spells.txt/open5e_monsters.txt were found to be 43%/48%
+    duplicate-name entries across unrelated rulesets), restricted to the
+    official SRD -- cheaper than a full re-scrape since it hits 2 of 11
+    endpoints, each filtered server-side to roughly half its unfiltered
+    page count:
+    python scripts/scrape_open5e.py --endpoints spells monsters --document-slug wotc-srd
+
 Requirements
 ------------
     pip install requests  (already in grimoire-ai[scraper])
@@ -205,13 +214,21 @@ def _fetch_all(
 # Main
 # ---------------------------------------------------------------------------
 
-def scrape(output_dir: str, delay: float) -> None:
+def scrape(
+    output_dir: str,
+    delay: float,
+    endpoints: list[str] | None = None,
+    document_slug: str | None = None,
+) -> None:
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    for endpoint, filename in ENDPOINTS:
+    selected = ENDPOINTS if endpoints is None else [
+        (endpoint, filename) for endpoint, filename in ENDPOINTS if endpoint in endpoints
+    ]
+    for endpoint, filename in selected:
         print(f"\nFetching {endpoint}...")
-        items = _fetch_all(endpoint, delay=delay)
+        items = _fetch_all(endpoint, delay=delay, document_slug=document_slug)
         if not items:
             print(f"  No data returned for {endpoint}, skipping.")
             continue
@@ -239,5 +256,18 @@ if __name__ == "__main__":
         "--delay", type=float, default=0.25,
         help="Seconds between paginated requests (default: 0.25)",
     )
+    parser.add_argument(
+        "--endpoints", nargs="+", default=None, metavar="ENDPOINT",
+        choices=[endpoint for endpoint, _ in ENDPOINTS],
+        help="Only (re-)scrape these endpoints instead of all of them, e.g. "
+             "--endpoints spells monsters. Default: every endpoint.",
+    )
+    parser.add_argument(
+        "--document-slug", default=None, metavar="SLUG",
+        help="Restrict to one Open5e document, e.g. wotc-srd (the official "
+             "5e SRD). Open5e mixes unrelated third-party rulesets into the "
+             "same endpoints; unset by default to keep this script's output "
+             "unchanged from before this flag existed.",
+    )
     args = parser.parse_args()
-    scrape(args.output, args.delay)
+    scrape(args.output, args.delay, args.endpoints, args.document_slug)
