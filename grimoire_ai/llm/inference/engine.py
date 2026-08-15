@@ -48,6 +48,7 @@ from grimoire_ai.llm.training.checkpoint import load_checkpoint
 
 if TYPE_CHECKING:
     from grimoire_ai.llm.inference.constrained_decoding import StatBlockConstraint
+    from grimoire_ai.llm.inference.crag import CragFilter
     from grimoire_ai.llm.inference.reranker import Reranker
     from grimoire_ai.tools.math_tool import MathTool
 
@@ -106,6 +107,7 @@ class InferenceEngine:
         stat_block_constraint: Optional["StatBlockConstraint"] = None,
         reranker: Optional["Reranker"] = None,
         rerank_candidates: int = 20,
+        crag_filter: Optional["CragFilter"] = None,
     ) -> None:
         """Load model and tokenizer from disk and prepare the engine.
 
@@ -158,6 +160,16 @@ class InferenceEngine:
                 is set — widening the pool is what lets reranking actually
                 promote a passage the first-stage retriever ranked outside
                 the final ``top_k``, not just reorder an already-truncated set.
+            crag_filter: Optional ``CragFilter`` (see ``crag.py``) — when
+                set, ``_retrieve()`` classifies every retrieved passage as
+                Correct/Ambiguous/Incorrect (after reranking, if a reranker
+                is also attached), drops Incorrect ones, and demotes
+                Ambiguous ones (kept, but reordered after every Correct
+                passage) before applying ``retrieval_threshold``'s top-1
+                gate. Layers on top of that gate rather than replacing it —
+                a per-passage classification, not a single all-or-nothing
+                check. ``None`` (default) leaves every retrieved passage in
+                place, unclassified.
         """
         self.device = select_device(device)
         device = self.device
@@ -194,6 +206,7 @@ class InferenceEngine:
         self.stat_block_constraint = stat_block_constraint
         self.reranker = reranker
         self.rerank_candidates = rerank_candidates
+        self.crag_filter = crag_filter
 
     @property
     def checkpoint_path(self) -> str:
@@ -271,20 +284,32 @@ class InferenceEngine:
         self.model.eval()
 
     def _retrieve(self, query: str, top_k: int) -> list:
-        """Query the corpus, optionally rerank, and apply the retrieval threshold router.
+        """Query the corpus, optionally rerank/filter, and apply the retrieval threshold router.
 
-        When ``self.reranker`` is set, fetches ``self.rerank_candidates``
-        passages from the first-stage retriever (instead of just ``top_k``)
-        and rescores all of them before truncating to ``top_k`` — a
-        cross-encoder can only promote a passage the first-stage retriever
-        ranked outside the final cut if it's actually given a wider pool to
-        work with.
+        Pipeline, in order:
+        1. First-stage retrieval — ``self.rerank_candidates`` passages
+           instead of just ``top_k`` when a reranker is attached (a
+           cross-encoder can only promote a passage the first-stage
+           retriever ranked outside the final cut if it's actually given a
+           wider pool to work with).
+        2. Reranking (``self.reranker``, if set) — rescores and reorders.
+        3. CRAG per-passage classification (``self.crag_filter``, if set) —
+           drops "Incorrect" passages and demotes "Ambiguous" ones (kept,
+           reordered after every "Correct" passage) from whatever's left.
+           Reads the post-rerank score when step 2 ran, the raw first-stage
+           score otherwise.
+        4. The existing top-1 ``retrieval_threshold`` gate, on whatever
+           survived step 3 — a single all-or-nothing check, distinct from
+           step 3's per-passage filtering. Only ever indexes ``results[0]``
+           inside an ``if results`` guard, so a CRAG-emptied list is
+           handled the same way a naturally-empty ``corpus.query()`` result
+           is today.
+        5. Final ``top_k`` slice.
 
-        Returns an empty list when no corpus is attached, when the corpus
-        returns no results, or when the top (post-rerank, if reranking is
-        active) result's score falls below ``self.retrieval_threshold``. In
-        the last case the query is treated as pure-chat — context would not
-        improve the answer and would only consume prompt budget.
+        Returns an empty list when no corpus is attached, when nothing
+        survives steps 1-3, or when the top-1 gate (step 4) trips. In the
+        last two cases the query is treated as pure-chat — context would
+        not improve the answer and would only consume prompt budget.
 
         Args:
             query: Plain-text query string.
@@ -299,6 +324,8 @@ class InferenceEngine:
         results = self.corpus.query(query, top_k=query_k)
         if self.reranker is not None and results:
             results = self.reranker.rerank(query, results)
+        if self.crag_filter is not None and results:
+            results = self.crag_filter.filter(results)
         if (
             results
             and self.retrieval_threshold is not None

@@ -18,6 +18,7 @@ import pytest
 import torch
 
 from grimoire_ai.corpus.corpus import GrimoireCorpus, QueryResult
+from grimoire_ai.llm.inference.crag import CragFilter
 from grimoire_ai.llm.inference.engine import InferenceEngine
 from grimoire_ai.llm.inference.reranker import Reranker
 from grimoire_ai.llm.inference.sampler import GenerationConfig
@@ -384,6 +385,145 @@ def test_retrieval_threshold_uses_reranked_score() -> None:
     # be dropped -- if the gate were still reading the pre-rerank score
     # (0.0 for both), this would incorrectly return [].
     assert len(results) == 2
+
+
+# ---------------------------------------------------------------------------
+# CRAG per-passage filter wiring (docs/architecture_optimization.md item #8)
+# ---------------------------------------------------------------------------
+
+def test_crag_filter_applied_before_top1_gate() -> None:
+    """CRAG must drop individually low-scoring passages even when the top-1
+    result alone would pass the existing retrieval_threshold gate -- proving
+    per-passage filtering actually happens, not just the all-or-nothing
+    top-1 check."""
+    corpus = MagicMock()
+    corpus.query.return_value = [
+        QueryResult(multi_token=(), next_token=None, score=0.9, source=None, excerpt="zzzkeep zzzkeep"),
+        QueryResult(multi_token=(), next_token=None, score=0.05, source=None, excerpt="zzzdrop1 zzzdrop1"),
+        QueryResult(multi_token=(), next_token=None, score=0.05, source=None, excerpt="zzzdrop2 zzzdrop2"),
+    ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt, tok = _save_artifacts(tmp)
+        engine = InferenceEngine(
+            checkpoint_path=ckpt, tokenizer_path=tok, corpus=corpus,
+            retrieval_threshold=0.5,
+            # Equal thresholds collapse the Ambiguous zone -- a plain
+            # below/above cutoff, same as this test's own intent.
+            crag_filter=CragFilter(lower_threshold=0.3, upper_threshold=0.3),
+            device="cpu",
+        )
+
+        captured: dict[str, list[int]] = {}
+
+        def _fake_generate(model, prompt_ids, config=None, device="cpu", **_kwargs):
+            captured["prompt_ids"] = prompt_ids
+            return []
+
+        with patch("grimoire_ai.llm.inference.engine.generate", _fake_generate):
+            engine.respond("query", top_k_corpus=3)
+
+    decoded = engine.tokenizer.decode(captured["prompt_ids"])
+    assert "zzzkeep" in decoded
+    assert "zzzdrop1" not in decoded
+    assert "zzzdrop2" not in decoded
+
+
+def test_crag_demotes_ambiguous_passage_behind_correct_one() -> None:
+    """An Ambiguous passage must be kept (not dropped) but demoted behind
+    a Correct one -- end-to-end proof that PromptBuilder's existing
+    right-side budget trim is what "demotion" actually relies on: with a
+    tight budget, the demoted passage is the one that gets cut."""
+    corpus = MagicMock()
+    corpus.query.return_value = [
+        # Ambiguous passage listed FIRST by the retriever...
+        QueryResult(multi_token=(), next_token=None, score=0.5, source=None, excerpt="zzzambiguous zzzambiguous zzzambiguous"),
+        # ...but the Correct one must still end up first after CragFilter,
+        # and therefore be the one that survives a tight token budget.
+        QueryResult(multi_token=(), next_token=None, score=0.9, source=None, excerpt="zzzcorrect zzzcorrect zzzcorrect"),
+    ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt, tok = _save_artifacts(tmp)
+        engine = InferenceEngine(
+            checkpoint_path=ckpt, tokenizer_path=tok, corpus=corpus,
+            max_context_tokens=20,  # tight budget: only one excerpt's tokens fit
+            crag_filter=CragFilter(lower_threshold=0.3, upper_threshold=0.7),
+            device="cpu",
+        )
+
+        captured: dict[str, list[int]] = {}
+
+        def _fake_generate(model, prompt_ids, config=None, device="cpu", **_kwargs):
+            captured["prompt_ids"] = prompt_ids
+            return []
+
+        with patch("grimoire_ai.llm.inference.engine.generate", _fake_generate):
+            engine.respond("query", top_k_corpus=2)
+
+    decoded = engine.tokenizer.decode(captured["prompt_ids"])
+    assert "zzzcorrect" in decoded
+    assert "zzzambiguous" not in decoded
+
+
+def test_crag_empties_to_pure_chat_fallback() -> None:
+    """When CRAG drops every passage, the engine must fall back to the
+    pure-chat prompt shape (no SEP context block) -- even though the top-1
+    score alone would have passed retrieval_threshold."""
+    corpus = MagicMock()
+    corpus.query.return_value = [
+        QueryResult(multi_token=(), next_token=None, score=0.6, source=None, excerpt="a"),
+        QueryResult(multi_token=(), next_token=None, score=0.55, source=None, excerpt="b"),
+    ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt, tok = _save_artifacts(tmp)
+        engine = InferenceEngine(
+            checkpoint_path=ckpt, tokenizer_path=tok, corpus=corpus,
+            retrieval_threshold=0.5,               # top-1 (0.6) alone would pass
+            crag_filter=CragFilter(lower_threshold=0.9, upper_threshold=0.9),  # but both fail this
+            device="cpu",
+        )
+
+        captured: dict[str, list[int]] = {}
+
+        def _fake_generate(model, prompt_ids, config=None, device="cpu", **_kwargs):
+            captured["prompt_ids"] = prompt_ids
+            return []
+
+        with patch("grimoire_ai.llm.inference.engine.generate", _fake_generate):
+            engine.respond("query", top_k_corpus=2)
+
+    assert SEP_ID not in captured["prompt_ids"], (
+        "CRAG emptying the retrieved set must fall back to the no-context prompt."
+    )
+
+
+def test_crag_reads_reranked_score_when_reranker_present() -> None:
+    """CragFilter must read the post-rerank score when a reranker is also
+    attached, not the first-stage retriever's original score."""
+    corpus = MagicMock()
+    corpus.query.return_value = [
+        QueryResult(multi_token=(), next_token=None, score=0.9, source=None, excerpt="first"),
+        QueryResult(multi_token=(), next_token=None, score=0.9, source=None, excerpt="second"),
+    ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt, tok = _save_artifacts(tmp)
+        engine = InferenceEngine(
+            checkpoint_path=ckpt, tokenizer_path=tok, corpus=corpus,
+            reranker=Reranker(_reverse_score_fn), rerank_candidates=2,
+            crag_filter=CragFilter(lower_threshold=0.5, upper_threshold=0.5),
+            device="cpu",
+        )
+        results = engine._retrieve("anything", top_k=2)
+
+    # _reverse_score_fn gives "first" a post-rerank score of 0.0 (dropped by
+    # the 0.5 CRAG threshold) and "second" a score of 1.0 (kept) -- if
+    # CragFilter were still reading the pre-rerank score (0.9 for both),
+    # both would survive instead.
+    assert len(results) == 1
+    assert results[0].excerpt == "second"
 
 
 def test_per_call_gen_config_override() -> None:

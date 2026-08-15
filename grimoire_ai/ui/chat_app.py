@@ -126,6 +126,9 @@ def load_agent(
     stat_block_constraint_enabled: bool = False,
     reranker: str = "None",
     rerank_candidates: int = 20,
+    crag_enabled: bool = False,
+    crag_lower_threshold: float = 0.3,
+    crag_upper_threshold: float = 0.7,
 ) -> tuple[object, object, str, str, str]:
     """Load an agent by display name, applying the chosen retrieval backend.
 
@@ -169,6 +172,9 @@ def load_agent(
                 return None, None, str(exc), "", ""
             engine._engine.reranker = Reranker(score_fn)
             engine._engine.rerank_candidates = rerank_candidates
+        if crag_enabled:
+            from grimoire_ai.llm.inference.crag import CragFilter
+            engine._engine.crag_filter = CragFilter(lower_threshold=crag_lower_threshold, upper_threshold=crag_upper_threshold)
         default_cfg = registry.get(registry.default_key)
         n_agents = len(registry.keys())
         return (
@@ -205,6 +211,9 @@ def load_agent(
             return None, None, str(exc), cfg.checkpoint, cfg.vocab
         engine.reranker = Reranker(score_fn)
         engine.rerank_candidates = rerank_candidates
+    if crag_enabled:
+        from grimoire_ai.llm.inference.crag import CragFilter
+        engine.crag_filter = CragFilter(lower_threshold=crag_lower_threshold, upper_threshold=crag_upper_threshold)
 
     if not use_lexical and engine.corpus is not None:
         # Resolve via the registry so paths are correct regardless of cwd.
@@ -290,6 +299,9 @@ def load_engine(
     stat_block_constraint_enabled: bool = False,
     reranker: str = "None",
     rerank_candidates: int = 20,
+    crag_enabled: bool = False,
+    crag_lower_threshold: float = 0.3,
+    crag_upper_threshold: float = 0.7,
 ) -> tuple[object, object, str]:
     """Load an ``InferenceEngine`` and a fresh ``ConversationState``.
 
@@ -372,6 +384,9 @@ def load_engine(
             return None, None, str(exc), gr.update()
         engine.reranker = Reranker(score_fn)
         engine.rerank_candidates = rerank_candidates
+    if crag_enabled:
+        from grimoire_ai.llm.inference.crag import CragFilter
+        engine.crag_filter = CragFilter(lower_threshold=crag_lower_threshold, upper_threshold=crag_upper_threshold)
 
     if lora_path:
         try:
@@ -747,6 +762,30 @@ def build_chat_app() -> gr.Blocks:
                          "reranker rescores and keeps the top results. Only used when a "
                          "reranker is selected above.",
                 )
+                chat_crag_enabled = gr.Checkbox(
+                    label="Enable per-passage CRAG filter",
+                    value=False,
+                    info="Classify each retrieved passage as Correct/Ambiguous/Incorrect "
+                         "and act on it individually, independent of the 'Retrieval "
+                         "threshold' above (which only looks at the single best result). "
+                         "Reads the reranked score when a reranker is also selected.",
+                )
+                chat_crag_lower_threshold = gr.Slider(
+                    minimum=-1.0, maximum=1.0, value=0.3, step=0.05,
+                    label="CRAG lower threshold (drop below this)",
+                    info="A passage scoring below this is 'Incorrect' and dropped entirely. "
+                         "Only used when the checkbox above is enabled. These defaults suit "
+                         "a similarity score on a roughly [0, 1]/[-1, 1] scale (the model's "
+                         "own embeddings, MiniLM/MPNet, or Lexical) -- not a reranker's raw, "
+                         "unnormalised logits, which need their own thresholds.",
+                )
+                chat_crag_upper_threshold = gr.Slider(
+                    minimum=-1.0, maximum=1.0, value=0.7, step=0.05,
+                    label="CRAG upper threshold (confident above this)",
+                    info="A passage scoring at or above this is 'Correct' and kept ahead of "
+                         "any 'Ambiguous' passage (scoring between the two thresholds, kept "
+                         "but demoted). Only used when the checkbox above is enabled.",
+                )
 
             # ---- Agent selector -----------------------------------------
             _agent_names = _load_agent_names()
@@ -961,12 +1000,12 @@ def build_chat_app() -> gr.Blocks:
 
         agent_load_btn.click(
             fn=load_agent,
-            inputs=[agent_dropdown, chat_encoder, chat_threshold, chat_quantize, chat_math_tool, chat_routing_threshold, chat_stat_block_constraint, chat_reranker, chat_rerank_candidates],
+            inputs=[agent_dropdown, chat_encoder, chat_threshold, chat_quantize, chat_math_tool, chat_routing_threshold, chat_stat_block_constraint, chat_reranker, chat_rerank_candidates, chat_crag_enabled, chat_crag_lower_threshold, chat_crag_upper_threshold],
             outputs=[engine_state, conv_state, agent_status, chat_ckpt, chat_vocab],
         ).then(fn=lambda: [], outputs=[chatbot])
         load_btn.click(
             fn=load_engine,
-            inputs=[chat_ckpt, chat_vocab, chat_corpus_dir, chat_encoder, chat_threshold, chat_quantize, chat_lora, chat_math_tool, chat_stat_block_constraint, chat_reranker, chat_rerank_candidates],
+            inputs=[chat_ckpt, chat_vocab, chat_corpus_dir, chat_encoder, chat_threshold, chat_quantize, chat_lora, chat_math_tool, chat_stat_block_constraint, chat_reranker, chat_rerank_candidates, chat_crag_enabled, chat_crag_lower_threshold, chat_crag_upper_threshold],
             outputs=[engine_state, conv_state, load_status, chat_quantize],
         ).then(fn=lambda: [], outputs=[chatbot])
 
