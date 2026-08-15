@@ -142,20 +142,36 @@ def _format(endpoint: str, obj: dict) -> str:
 # Pagination helper
 # ---------------------------------------------------------------------------
 
-def _fetch_all(endpoint: str, delay: float, page_size: int = 100) -> list[dict]:
-    """Fetch all pages from an Open5e list endpoint."""
+def _fetch_all(endpoint: str, delay: float, page_size: int = 100, max_retries: int = 3) -> list[dict]:
+    """Fetch all pages from an Open5e list endpoint.
+
+    Retries a timed-out/failed page up to *max_retries* times (with a
+    short backoff) before giving up on it -- a single transient read
+    timeout on page 1 used to silently return an empty list for the
+    whole endpoint, which any category caching that endpoint's fetch
+    (e.g. generate_open5e_entigraph.py's class_weapon/class_spell, which
+    both reuse a single "classes" fetch) would then also see as empty.
+    """
     url = f"{BASE_URL}/{endpoint}/?limit={page_size}&format=json"
     results = []
     page = 0
     while url:
         page += 1
-        try:
-            resp = requests.get(url, timeout=30)
-            resp.raise_for_status()
-        except requests.RequestException as exc:
-            print(f"  ✘ {endpoint} page {page}: {exc}")
+        data = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                resp = requests.get(url, timeout=30)
+                resp.raise_for_status()
+                data = resp.json()
+                break
+            except requests.RequestException as exc:
+                if attempt == max_retries:
+                    print(f"  ✘ {endpoint} page {page}: {exc} (gave up after {max_retries} attempts)")
+                else:
+                    print(f"  ✘ {endpoint} page {page}: {exc} (retry {attempt}/{max_retries - 1})")
+                    time.sleep(delay * attempt * 2)
+        if data is None:
             break
-        data = resp.json()
         batch = data.get("results", [])
         results.extend(batch)
         print(f"  {endpoint}: page {page} — {len(results)} items so far")
