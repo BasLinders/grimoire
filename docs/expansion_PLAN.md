@@ -600,12 +600,43 @@ match-wins (`grimoire_ai/llm/data/preprocessing.py`'s `_resolve_weight`).
       Ronin homebrew presented as core D&D content — the opposite of what
       this corpus's weight-pattern scheme assumes for this tier (currently
       the *highest*-weighted, `*:1.75`).
-- [ ] **Re-scrape the 6 contaminated endpoints**, filtered:
-      `python scripts/scrape_open5e.py --endpoints armor backgrounds feats
-      magic_items races weapons --document-slug wotc-srd` — not run yet.
-      Expect `magic_items`/`backgrounds`/`feats` to shrink drastically;
-      that's correct, not a bug, given the shares above. Needs another
-      preprocess+retrain pass afterward, same as the spells/monsters fix
-      did for `weighted_clean_v2`.
-- [ ] Curate more Q&A pairs for fine-tuning `weighted_clean_v2`, the way
+- [x] **Re-scraped the 6 contaminated endpoints**, filtered to `wotc-srd`
+      (2026-08-15): `armor` 23→18, `weapons` 68→37, `races` 20→9,
+      `magic_items` 1,618→237 (28.2% duplicate-name rate before, 0% after),
+      `backgrounds` 42→1 (just Acolyte — the real 5e SRD's only licensed
+      background), `feats` 74→1 (just Grappler). Confirmed correct against
+      known 5e SRD licensing scope, not a scraper bug — both single-entry
+      files were spot-checked and are legitimate, complete, clean SRD text.
+      Zero `document__url` leaks remained in any of the six afterward.
+- [x] **Pretrained `weighted_clean_v3`** (`small-25M`, 15,259 steps,
+      `--val-stratified`, 2026-08-15) on the corpus after the endpoint
+      re-scrape above — 124,412,387 tokens (down ~439K from `v2`, consistent
+      with the six files shrinking), same 21 quality-filter drops as `v2`
+      (identical indices/reasons — none of the re-scraped files were among
+      them). 20,272.8s wall-clock, essentially identical to `v2`'s 20,198.1s
+      (expected: runtime tracks step count, not corpus size). Checkpoint:
+      `checkpoints/pretrain/weighted_clean_v3/step_0015259.pt`. Config:
+      `train_config_weighted_clean_v3.json`.
+- [x] **Per-tier validation loss on `weighted_clean_v3`** vs. `v2`: `0.5`
+      3.5468→3.5462, `1.0` 3.2673→3.2667, `1.75` 2.3677→2.3739 — every
+      delta within run-to-run noise, monotonic tier ordering still holds.
+      Aggregate training-log val loss was ~0.005 nats higher than `v2` at
+      each matching step, which looked like a possible regression at first,
+      but the per-tier breakdown showed it wasn't real. Expected either
+      way: this fix was about *correctness* (removing memorized third-party
+      content and a URL leak), not volume or coverage, so it was never
+      going to show up as a loss improvement.
+- [x] **Qualitative completion check on `weighted_clean_v3`**
+      (2026-08-15) — confirms the `document__url` leak fix actually
+      worked: the `condition` prompt (which derailed into a verbatim
+      Kobold Press product URL on `v2`) no longer does so on `v3`. Still
+      factually wrong in the ordinary, expected way (says grappled
+      prevents actions/reactions, which is actually closer to
+      restrained/incapacitated) — a muddled-facts error, not a
+      memorization artifact. Overall quality matches `v2`: coherent, no
+      repetition loops, real terminology, a correct adventure-module
+      reference (`Lost Mine of Phandelver`). Same recurring "forum Q&A
+      register" drift on narrative prompts as `v2` — pre-existing,
+      unrelated to this fix, not a regression.
+- [ ] Curate more Q&A pairs for fine-tuning `weighted_clean_v3`, the way
       `weighted_clean` was fine-tuned into `saga-se-qa-weighted-clean-v2`.
