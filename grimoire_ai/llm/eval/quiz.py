@@ -194,6 +194,7 @@ def eval_quiz(
     pass_threshold: float = 0.5,
     on_progress: Optional[Callable[[str], None]] = None,
     stop_event: Optional[threading.Event] = None,
+    seed: Optional[int] = None,
 ) -> dict:
     """Run the model on each quiz question and score the responses.
 
@@ -202,13 +203,22 @@ def eval_quiz(
         examples: List of quiz dicts with ``user``, optionally ``assistant``
             (reference answer) and ``keywords``.
         gen_config: Generation config override.  Falls back to a capped
-            default (128 new tokens) to keep evaluation fast.
+            default (128 new tokens, greedy) to keep evaluation fast and
+            deterministic. Pass a config with ``temperature > 0`` to match
+            production sampling instead -- see ``seed``.
         pass_threshold: Minimum keyword_recall to count as a pass.
         on_progress: Optional callback for log lines.
         stop_event: When set, the question loop exits early and returns the
             results accumulated so far rather than running to completion.
             Checked between questions — generation for the current question
             still runs to completion since it's a single blocking call.
+        seed: When set, reset the RNG to ``seed + i`` before question ``i``
+            (mirroring ``scripts/compare_checkpoints.py``'s per-prompt reset).
+            Irrelevant under the default greedy config (no sampling occurs),
+            but required for a reproducible result once ``gen_config`` uses
+            ``temperature > 0`` -- an unseeded stochastic quiz run produced a
+            misleadingly collapsed-looking result once before (see
+            ``compare_checkpoints.py``'s docstring); don't repeat that here.
 
     Returns:
         Dict with aggregate metrics and per-question ``results`` list.
@@ -251,6 +261,9 @@ def eval_quiz(
         reference  = ex.get("assistant", "")
         keywords   = ex.get("keywords", [])
 
+        if seed is not None:
+            import torch
+            torch.manual_seed(seed + i)
         response = engine.respond(question, gen_config=gen_config)
 
         kw_recall = _keyword_recall(response, keywords)

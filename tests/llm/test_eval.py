@@ -379,6 +379,30 @@ class TestQuizEval:
         assert result["total"] == 0
         assert result["results"] == []
 
+    def test_seed_reproduces_stochastic_responses(self) -> None:
+        from grimoire_ai.llm.eval.quiz import eval_quiz
+
+        engine = self._make_engine(lambda q, gen_config=None: str(torch.rand(1).item()))
+        examples = [
+            {"user": "q1?", "keywords": []},
+            {"user": "q2?", "keywords": []},
+            {"user": "q3?", "keywords": []},
+        ]
+        result_a = eval_quiz(engine=engine, examples=examples, seed=0)
+        result_b = eval_quiz(engine=engine, examples=examples, seed=0)
+        responses_a = [r["response"] for r in result_a["results"]]
+        responses_b = [r["response"] for r in result_b["results"]]
+        assert responses_a == responses_b
+
+    def test_different_seeds_change_stochastic_responses(self) -> None:
+        from grimoire_ai.llm.eval.quiz import eval_quiz
+
+        engine = self._make_engine(lambda q, gen_config=None: str(torch.rand(1).item()))
+        examples = [{"user": "q1?", "keywords": []}]
+        result_seed0 = eval_quiz(engine=engine, examples=examples, seed=0)
+        result_seed1 = eval_quiz(engine=engine, examples=examples, seed=1)
+        assert result_seed0["results"][0]["response"] != result_seed1["results"][0]["response"]
+
     def test_load_quiz_file(self) -> None:
         from grimoire_ai.llm.eval.quiz import load_quiz
 
@@ -506,6 +530,63 @@ class TestHarness:
             )
 
         assert captured["gen_config"].repetition_penalty == 1.0
+
+    def test_harness_quiz_sampling_params_thread_through(self) -> None:
+        """quiz_temperature/top_k/top_p should reach engine.respond() via gen_config."""
+        from grimoire_ai.llm.eval.harness import run_eval
+
+        captured = {}
+
+        def _respond(question, gen_config=None):
+            captured["gen_config"] = gen_config
+            return "proficiency bonus is +3"
+
+        engine = self._make_engine()
+        engine.respond = _respond
+
+        with tempfile.TemporaryDirectory() as tmp:
+            quiz_path = Path(tmp) / "quiz.jsonl"
+            quiz_path.write_text(
+                '{"user": "What is proficiency?", "keywords": ["+3"]}\n',
+                encoding="utf-8",
+            )
+            run_eval(
+                engine=engine,
+                output_dir=tmp,
+                quiz_path=str(quiz_path),
+                quiz_temperature=0.8,
+                quiz_top_k=50,
+                quiz_top_p=0.9,
+            )
+
+        assert captured["gen_config"] is not None
+        assert captured["gen_config"].temperature == 0.8
+        assert captured["gen_config"].top_k == 50
+        assert captured["gen_config"].top_p == 0.9
+
+    def test_harness_quiz_seed_threads_through(self) -> None:
+        """quiz_seed should reset the RNG per-question via eval_quiz."""
+        from grimoire_ai.llm.eval.harness import run_eval
+
+        engine = self._make_engine()
+        engine.respond = lambda q, gen_config=None: str(torch.rand(1).item())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            quiz_path = Path(tmp) / "quiz.jsonl"
+            quiz_path.write_text(
+                '{"user": "q1?", "keywords": []}\n{"user": "q2?", "keywords": []}\n',
+                encoding="utf-8",
+            )
+            results_a = run_eval(
+                engine=engine, output_dir=tmp, quiz_path=str(quiz_path), quiz_seed=0,
+            )
+            results_b = run_eval(
+                engine=engine, output_dir=tmp, quiz_path=str(quiz_path), quiz_seed=0,
+            )
+
+        responses_a = [r["response"] for r in results_a["evals"]["quiz"]["results"]]
+        responses_b = [r["response"] for r in results_b["evals"]["quiz"]["results"]]
+        assert responses_a == responses_b
 
     def test_harness_no_engine_no_corpus_bin_raises(self) -> None:
         from grimoire_ai.llm.eval.harness import run_eval

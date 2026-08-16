@@ -122,6 +122,34 @@ def main() -> None:
              "(default: 4). Ignored if --quiz-loop-guard-max-repeats is 0.",
     )
     parser.add_argument(
+        "--quiz-temperature", type=float, default=0.0, metavar="X",
+        help="Sampling temperature for quiz generation (default: 0.0, "
+             "greedy). The quiz eval's own default is deterministic and "
+             "doesn't match a real deployment's gen_config -- set this to "
+             "match one (e.g. agents.json's 0.8) to see pass-rate/kw-recall/"
+             "token-F1 under the decoding users actually experience, not "
+             "just greedy's single trajectory.",
+    )
+    parser.add_argument(
+        "--quiz-top-k", type=int, default=1, metavar="N",
+        help="Top-k sampling cutoff for quiz generation (default: 1, "
+             "greedy). Set to match a real deployment's gen_config.",
+    )
+    parser.add_argument(
+        "--quiz-top-p", type=float, default=1.0, metavar="X",
+        help="Nucleus sampling cutoff for quiz generation (default: 1.0, "
+             "greedy). Set to match a real deployment's gen_config.",
+    )
+    parser.add_argument(
+        "--quiz-seed", type=int, default=0, metavar="N",
+        help="RNG seed for quiz generation, reset per-question as seed+i "
+             "(default: 0). Irrelevant under the greedy default, but "
+             "required for a reproducible result once --quiz-temperature "
+             "enables real sampling -- run a few different seeds before "
+             "trusting a single stochastic quiz result, same as "
+             "compare_checkpoints.py's convention.",
+    )
+    parser.add_argument(
         "--math-tool", action="store_true",
         help="Detect arithmetic/probability in quiz questions and inject the computed "
              "result as context, and resolve <TOOL:python> tags in responses.",
@@ -271,6 +299,10 @@ def main() -> None:
         quiz_repetition_penalty=args.quiz_repetition_penalty,
         quiz_loop_guard_max_repeats=args.quiz_loop_guard_max_repeats,
         quiz_loop_guard_max_period=args.quiz_loop_guard_max_period,
+        quiz_temperature=args.quiz_temperature,
+        quiz_top_k=args.quiz_top_k,
+        quiz_top_p=args.quiz_top_p,
+        quiz_seed=args.quiz_seed,
         on_progress=print,
     )
 

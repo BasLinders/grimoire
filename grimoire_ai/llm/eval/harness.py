@@ -46,6 +46,10 @@ def run_eval(
     quiz_repetition_penalty: float = 1.0,
     quiz_loop_guard_max_repeats: int = 0,
     quiz_loop_guard_max_period: int = 4,
+    quiz_temperature: float = 0.0,
+    quiz_top_k: int = 1,
+    quiz_top_p: float = 1.0,
+    quiz_seed: Optional[int] = 0,
     on_progress: Optional[Callable[[str], None]] = None,
     stop_event: Optional[threading.Event] = None,
 ) -> dict:
@@ -82,6 +86,24 @@ def run_eval(
         quiz_loop_guard_max_period: Longest repeating block length (tokens)
             checked for looping. Ignored if ``quiz_loop_guard_max_repeats``
             is ``0``.
+        quiz_temperature: Sampling temperature for quiz generation. ``0.0``
+            (default) matches the quiz's standalone greedy default. Set to
+            match a real deployment's ``gen_config`` (e.g. ``agents.json``'s
+            ``0.8``) to check pass-rate/kw-recall/F1 under the decoding
+            strategy users actually see, not just greedy's single
+            deterministic trajectory.
+        quiz_top_k: Top-k sampling cutoff for quiz generation. ``1``
+            (default) matches the quiz's standalone greedy default.
+        quiz_top_p: Nucleus sampling cutoff for quiz generation. ``1.0``
+            (default) matches the quiz's standalone greedy default.
+        quiz_seed: RNG seed passed to ``eval_quiz`` (``eval_quiz`` resets it
+            per-question as ``seed + i``, mirroring
+            ``compare_checkpoints.py``). Irrelevant under the greedy default
+            (no sampling occurs), but load-bearing once temperature/top_k/
+            top_p enable real sampling -- an unseeded stochastic run isn't
+            reproducible. Defaults to ``0``; pass a few different values
+            (matching ``compare_checkpoints.py``'s "run 5 seeds" convention)
+            before trusting a single stochastic quiz result.
         on_progress: Optional progress callback.
         stop_event: When set, each evaluator stops as soon as it notices
             (between batches/questions/queries) and any evaluator not yet
@@ -173,17 +195,19 @@ def run_eval(
             from grimoire_ai.llm.eval.quiz import eval_quiz, load_quiz
             examples = load_quiz(_quiz_path)
             quiz_gen_config = None
-            if quiz_repetition_penalty != 1.0 or quiz_loop_guard_max_repeats != 0:
+            if (quiz_repetition_penalty != 1.0 or quiz_loop_guard_max_repeats != 0
+                    or quiz_temperature != 0.0 or quiz_top_k != 1 or quiz_top_p != 1.0):
                 from grimoire_ai.llm.inference.sampler import GenerationConfig
                 quiz_gen_config = GenerationConfig(
-                    max_new_tokens=128, temperature=0.0, top_k=1, top_p=1.0,
+                    max_new_tokens=128,
+                    temperature=quiz_temperature, top_k=quiz_top_k, top_p=quiz_top_p,
                     repetition_penalty=quiz_repetition_penalty,
                     loop_guard_max_repeats=quiz_loop_guard_max_repeats,
                     loop_guard_max_period=quiz_loop_guard_max_period,
                 )
             quiz_result = eval_quiz(
                 engine=engine, examples=examples, gen_config=quiz_gen_config,
-                on_progress=on_progress, stop_event=stop_event,
+                on_progress=on_progress, stop_event=stop_event, seed=quiz_seed,
             )
             results["evals"]["quiz"] = quiz_result
         else:
