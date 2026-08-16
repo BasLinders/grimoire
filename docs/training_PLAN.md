@@ -163,48 +163,13 @@ Quiz: `saga-combined-v1` pass-rate 24.5%, kw-recall 13.61%, token-F1
 kw-recall 12.24%, token-F1 0.1961 — a mixed result, `combined-v1` ahead
 on two metrics, production ahead on F1.
 
-- [x] **Degenerate collapse, checked properly.** The first side-by-side
-      (`scripts/compare_checkpoints.py`, 6 prompts, no seed control) looked
-      like a clean win for `combined-v1` — production echoed a question
-      verbatim and hit a repetition loop on 4 of 6 prompts, `combined-v1`
-      showed neither. That result didn't hold up: the script had no RNG
-      seed, so every run sampled differently. Fixed (seed now resets before
-      every prompt, not just once) and reran across 5 seeds × 12 prompts
-      (120 responses total, counting only severe collapses — 5+ consecutive
-      repeated tokens, or total breakdown): **7/60 (11.7%) for each
-      checkpoint.** Exactly tied, and which checkpoint looked worse flipped
-      from seed to seed with no consistent pattern. Conclusion: no
-      difference between these two checkpoints on collapse frequency; the
-      single-run result was sampling variance, not a real property of
-      either one.
-- [x] **Token-F1 gap, explained.** Not a corpus/training quality
-      difference — a mechanical artifact of the metric interacting with a
-      real behavioral difference. `combined-v1` averages 60.4 response
-      tokens vs. production's 46.0 (both against ~15-token reference
-      answers); within-checkpoint, response length correlates negatively
-      with F1 (`combined-v1`: -0.545, production: -0.417) — SQuAD-style
-      token-F1's precision term is `correct_tokens / len(entire_response)`,
-      so a longer-but-equally-correct answer scores lower purely from
-      length. `combined-v1` also hit/neared the 128-token generation cap on
-      4/49 quiz questions; production hit it on 0/49 — `combined-v1` has a
-      real tendency to keep generating rather than concluding naturally.
-      keyword_recall (length-insensitive) favors `combined-v1` (13.61% vs
-      12.24%), consistent with it containing at least as much correct
-      content, just wrapped in more verbosity that token-F1 penalizes.
-- [ ] **Follow-up, not yet investigated: why doesn't `repetition_penalty`
-      fully suppress repetition loops?** Both checkpoints were run at
-      `repetition_penalty=1.3` throughout this evaluation and both still
-      produced multi-token hard loops (up to ~150 consecutive repeats) on
-      a real fraction of prompts. `--loop-guard`
-      (`RepetitionLoopGuard`, a hard structural ban rather than a soft
-      logit discount) exists in `grimoire_ai/llm/inference/constrained_decoding.py`
-      and is wired into `grimoire-chat`/the Chat tab, but wasn't used in
-      any of this session's evaluation scripts
-      (`compare_checkpoints.py`, `qualitative_check.py`, `evaluate.py`'s
-      quiz eval). Possibly connects to the same "won't stop generating"
-      tendency behind the token-F1 finding above -- worth checking
-      together, not as two separate investigations. Flagged here to pick
-      up next session, not investigated yet.
+Investigated both the degenerate-collapse rate and the token-F1 gap;
+neither turns out to distinguish these two checkpoints from each other
+— see [known_bugs.md](known_bugs.md) for the full writeups (repetition
+loops survive `repetition_penalty=1.3` at the same ~11.7% rate on
+*both* checkpoints; the F1 gap is a length-sensitivity artifact of the
+metric, not a quality difference). Repetition-loop root cause not yet
+investigated, queued next.
 
 ## Step 6 — Ship it
 
