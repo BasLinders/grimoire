@@ -77,6 +77,7 @@ def _load_prompts(path: str | None) -> list[str]:
 def _run_checkpoint(
     checkpoint: str, vocab: str, repetition_penalty: float, max_new_tokens: int,
     prompts: list[str], seed: int,
+    loop_guard_max_repeats: int = 0, loop_guard_max_period: int = 4,
 ) -> list[str]:
     import torch
 
@@ -91,6 +92,8 @@ def _run_checkpoint(
         top_k=50,
         top_p=0.9,
         repetition_penalty=repetition_penalty,
+        loop_guard_max_repeats=loop_guard_max_repeats,
+        loop_guard_max_period=loop_guard_max_period,
     )
 
     responses = []
@@ -126,17 +129,28 @@ def main() -> None:
                               "under identical randomness (default: 0). Sampling is one draw "
                               "from a distribution, not a certainty -- rerun with a few "
                               "different seeds before trusting a single run's pattern.")
+    parser.add_argument("--loop-guard-max-repeats", type=int, default=0, metavar="N",
+                         help="Hard-ban the token that would extend a loop past N consecutive "
+                              "repeats (0 = off, default). Unlike --repetition-penalty (a soft "
+                              "discount a confident model can still override), this makes the "
+                              "extending token literally unsampleable -- see docs/known_bugs.md's "
+                              "repetition-loop entry. Try 3.")
+    parser.add_argument("--loop-guard-max-period", type=int, default=4, metavar="N",
+                         help="Longest repeating block length (tokens) the loop guard checks "
+                              "for (default: 4). Ignored if --loop-guard-max-repeats is 0.")
     args = parser.parse_args()
     prompts = _load_prompts(args.prompts_file)
 
     print(f"Loading {args.label_a}: {args.checkpoint_a}")
     responses_a = _run_checkpoint(
         args.checkpoint_a, args.vocab, args.repetition_penalty, args.max_new_tokens, prompts, args.seed,
+        args.loop_guard_max_repeats, args.loop_guard_max_period,
     )
 
     print(f"Loading {args.label_b}: {args.checkpoint_b}")
     responses_b = _run_checkpoint(
         args.checkpoint_b, args.vocab, args.repetition_penalty, args.max_new_tokens, prompts, args.seed,
+        args.loop_guard_max_repeats, args.loop_guard_max_period,
     )
 
     for prompt, a, b in zip(prompts, responses_a, responses_b):
