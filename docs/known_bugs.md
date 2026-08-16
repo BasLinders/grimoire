@@ -8,6 +8,80 @@ to be reconstructed by reading through a session's worth of narrative
 each time. Move an entry out once it's fixed — record the fix in
 whichever plan doc is tracking that work, not here.
 
-Nothing outstanding right now — see `docs/corpus_index_scaling.md` for a
-scoped-but-not-yet-fixed architectural item (not a "bug" in the sense
-tracked here; it's a known scaling ceiling with a documented mitigation).
+See also `docs/corpus_index_scaling.md` for a scoped architectural item
+(not tracked here since it's a known scaling ceiling with a documented
+mitigation, not an active bug).
+
+## RepetitionLoopGuard doesn't catch templated (varying-content) loops
+
+**Status:** confirmed, reproducible, not fixed.
+
+`RepetitionLoopGuard` (deployed in `agents.json`'s `saga.gen_config`,
+`loop_guard_max_repeats: 3`) hard-bans the token that would extend an
+*exact* repeating token sequence past N consecutive copies. It was built
+and verified against literal repeats (`"to to to to..."`, `"does does
+does..."`) and confirmed effective there.
+
+Found via `scripts/compare_checkpoints.py` (5 seeds, temperature 0.8/
+top_k 50/top_p 0.9, `--loop-guard-max-repeats 3 --loop-guard-max-period 4`
+— i.e. the guard was active) 2026-08-16: both checkpoints produced a
+different, structurally-repeating pattern the guard never caught, because
+the *token sequence* never exactly repeats even though the *structure*
+clearly does — a different value gets substituted each cycle:
+
+- `saga-combined-v1`, seed 4, "armor class of a Goblin": `CR = 10 + Dex
+  bonus. CR = 14 + Str bonus. CR = 18 + Con bonus + Int bonus. CR = 15 +
+  Dex bonus...` — repeats the `CR = N + X bonus.` template roughly 15
+  times with a different `N`/`X` substituted each time.
+- production, seed 4, "difference between mean and median": `A means A -
+  B means A - B, C means A - B means A - B and C = A means A - B mean A
+  - B means A - B means B...` — same phenomenon, a template repeating
+  with a substituted letter each cycle.
+
+Both are clearly degenerate to a human reader, and both happened with
+the guard enabled and configured the same way that successfully
+eliminated the original exact-repeat collapse. This is a distinct
+failure mode from the one already fixed, not a regression of it.
+
+Practical implication: don't treat `loop_guard_max_repeats` as having
+solved "repetition loops" as a category — it solved the exact-repeat
+case specifically. A real fix needs some notion of structural/template
+repetition (e.g. detecting a repeating skeleton with token spans masked
+out), not just exact n-gram matching. No code changed yet.
+
+## Occasional malformed-UTF-8 replacement glyph in generated text
+
+**Status:** root cause understood, likely not code-fixable — a model
+calibration signal, not a decode bug. Documented for awareness, not
+necessarily actionable.
+
+`BPETokenizer.decode()` (`grimoire_ai/llm/tokenizer/bpe.py:499-539`)
+accumulates every predicted token's raw bytes into one buffer across the
+whole decode call, then decodes once with `bytes.decode("utf-8",
+errors="replace")` — the standard Python fallback for malformed UTF-8,
+which substitutes the U+FFFD replacement character. Bytes are fully
+accumulated before decoding (not decoded incrementally per-token), so
+this isn't a buffering bug splitting a multi-byte character across
+token boundaries — the fallback firing means the model itself predicted
+a byte-level token sequence that doesn't reconstruct valid UTF-8,
+almost certainly for multi-byte punctuation (curly quotes/apostrophes
+are 3 UTF-8 bytes each and easy to get one byte wrong on).
+
+Observed via `compare_checkpoints.py`'s 5-seed qualitative comparison
+(2026-08-16): the replacement glyph appears repeatedly in
+`saga-combined-v1`'s output (`aren[glyph]t`, `monster[glyph]s CR`,
+`creature[glyph]s turns`, several more) and occasionally in
+production's (`else[glyph]s movement`, `monster[glyph]s lair`). More
+frequent in `combined-v1`, plausibly because its fine-tune mix includes
+the general (non-D&D) StackExchange data, which likely uses curly-quote
+typography far more than the D&D-SRD-heavy corpus production trained
+on — more exposure to that byte pattern, more chances to get it wrong.
+
+Practical implication: `errors="replace"` is the correct, deliberate
+choice here (degrade gracefully instead of crashing on the model's own
+output) — this isn't a decode bug to fix. If it's worth mitigating at
+all, the lever is training-data normalization (e.g. normalizing curly
+quotes to ASCII equivalents during preprocessing so the model never
+needs to reproduce the 3-byte sequence exactly), not a tokenizer change.
+Low severity — cosmetic, not a crash or a correctness issue — flagged
+for awareness rather than as a must-fix.
