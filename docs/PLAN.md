@@ -99,6 +99,8 @@ Dynamic int8 quantization via `torch.quantization.quantize_dynamic` / `torchao`.
 - UI: **Auto-route** option prepended to agent selector; **Routing threshold** slider revealed on Auto-route selection and passed to `build_multi_agent_engine(threshold=)`; routing label in "Routed to" textbox preserved mid-stream via `gr.update()` no-op yields (was cleared to `""` on every token)
 - 18-test suite covering `AgentRouter`, `_RoutingStateWrapper`, `ConversationState.routing_log`, and `MultiAgentEngine` (`tests/agents/test_router.py`)
 
+Saga is the only agent actually built on this infrastructure so far — see [tools.md](tools.md) for the planned `tools/` directory of developer utilities meant to be reused across agents rather than re-written per agent.
+
 ### 7. Persistent RAG Index ✓ done
 
 **Why seventh:** Semantic embeddings are recomputed from scratch every session. As corpus grows toward 500M tokens this becomes a minutes-long blocking startup.
