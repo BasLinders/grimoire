@@ -15,6 +15,22 @@ history), so this is a single-turn Q&A comparison, matching the quiz
 eval's own shape and the qualitative checks documented in
 docs/expansion_PLAN.md -- not a multi-turn conversation test.
 
+The RNG seed is reset before *every* prompt (not just once at the
+start of the run), so both checkpoints sample each prompt under
+identical randomness -- resetting only once would desync after the
+first prompt, since the two models' token choices diverge immediately
+and consume the RNG stream differently from then on. Without this, two
+runs of this script can show completely different repetition/collapse
+behavior on the same prompts purely from sampling luck (found the hard
+way: an early run without seeding showed production collapsing on 4/6
+prompts; a rerun on the same 6 prompts showed none of those four
+issues recurring). Even seeded, sampling is one draw from a
+distribution, not a certainty -- for anything you're about to act on
+(e.g. a production checkpoint swap), run with a few different --seed
+values and look for a pattern across runs, the same way
+docs/expansion_PLAN.md's CR/XP-recall investigation used 5 seeds before
+trusting a single-sample finding.
+
 Usage
 -----
     python scripts/compare_checkpoints.py \\
@@ -59,8 +75,11 @@ def _load_prompts(path: str | None) -> list[str]:
 
 
 def _run_checkpoint(
-    checkpoint: str, vocab: str, repetition_penalty: float, max_new_tokens: int, prompts: list[str],
+    checkpoint: str, vocab: str, repetition_penalty: float, max_new_tokens: int,
+    prompts: list[str], seed: int,
 ) -> list[str]:
+    import torch
+
     from grimoire_ai.llm.inference.engine import InferenceEngine
     from grimoire_ai.llm.inference.sampler import GenerationConfig
     from grimoire_ai.state.conversation import ConversationState
@@ -75,7 +94,12 @@ def _run_checkpoint(
     )
 
     responses = []
-    for prompt in prompts:
+    for i, prompt in enumerate(prompts):
+        # Reset before every prompt (not just once) so both checkpoints see
+        # identical sampling randomness on each one -- a single reset at the
+        # start would desync after prompt 1, since the two models' diverging
+        # token choices consume the RNG stream differently from then on.
+        torch.manual_seed(seed + i)
         state = ConversationState()  # fresh per prompt -- no cross-prompt history
         responses.append(engine.chat(prompt, state, gen_config=gen_config))
     return responses
@@ -97,14 +121,23 @@ def main() -> None:
                          help="One prompt per line. Defaults to a built-in 12-prompt list "
                               "covering D&D mechanics, narrative, stat-block facts, and a "
                               "general (non-D&D) question.")
+    parser.add_argument("--seed", type=int, default=0,
+                         help="RNG seed, reset before every prompt so both checkpoints sample "
+                              "under identical randomness (default: 0). Sampling is one draw "
+                              "from a distribution, not a certainty -- rerun with a few "
+                              "different seeds before trusting a single run's pattern.")
     args = parser.parse_args()
     prompts = _load_prompts(args.prompts_file)
 
     print(f"Loading {args.label_a}: {args.checkpoint_a}")
-    responses_a = _run_checkpoint(args.checkpoint_a, args.vocab, args.repetition_penalty, args.max_new_tokens, prompts)
+    responses_a = _run_checkpoint(
+        args.checkpoint_a, args.vocab, args.repetition_penalty, args.max_new_tokens, prompts, args.seed,
+    )
 
     print(f"Loading {args.label_b}: {args.checkpoint_b}")
-    responses_b = _run_checkpoint(args.checkpoint_b, args.vocab, args.repetition_penalty, args.max_new_tokens, prompts)
+    responses_b = _run_checkpoint(
+        args.checkpoint_b, args.vocab, args.repetition_penalty, args.max_new_tokens, prompts, args.seed,
+    )
 
     for prompt, a, b in zip(prompts, responses_a, responses_b):
         print(f"\n=== {prompt} ===")
