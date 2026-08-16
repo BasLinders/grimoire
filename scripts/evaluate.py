@@ -234,8 +234,14 @@ def main() -> None:
             else:
                 from grimoire_ai.corpus.corpus import GrimoireCorpus
                 corpus = GrimoireCorpus()
-                for text, source in documents:
+                # Indexing is single-threaded, pure-Python dict/set work with
+                # no other output -- on a large corpus (1000+ files) that can
+                # take minutes, and silently, which is indistinguishable from
+                # a hang without progress output.
+                for i, (text, source) in enumerate(documents):
                     corpus.add_text(text, source=source)
+                    if i == 0 or (i + 1) % 100 == 0 or i == len(documents) - 1:
+                        print(f"  indexing {i+1}/{len(documents)} …")
                 engine.corpus = corpus
                 print(f"Lexical corpus loaded: {len(documents)} file(s).")
 
