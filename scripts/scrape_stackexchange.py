@@ -6,6 +6,13 @@ Same dump format (quarterly, CC BY-SA 4.0, published on the Internet
 Archive), same Posts.xml schema, same Q&A-pair extraction and output format
 -- only the site slug and output filename prefix differ.
 
+If archive.org isn't reachable (some networks silently drop the connection
+-- confirmed not a DNS or general-connectivity issue), use
+``scrape_huggingface_stackexchange.py`` instead: same site slugs, same
+output shape, sourced from a Hugging Face Parquet mirror instead. Shared
+formatting/writing logic lives in ``_stackexchange_common.py`` so both
+paths produce byte-identical output.
+
 Why this exists
 ----------------
 The rpg.stackexchange.com corpus already prioritizes D&D-specific content for
@@ -68,70 +75,25 @@ Requirements
 from __future__ import annotations
 
 import argparse
-import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import py7zr
 import requests
-from bs4 import BeautifulSoup
+
+from _stackexchange_common import (
+    USER_AGENT,
+    _download_file,
+    _format_qa,
+    _parse_tags,
+    _write_chunks,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 DUMP_URL_TEMPLATE = "https://archive.org/download/stackexchange/{site}.stackexchange.com.7z"
-USER_AGENT = (
-    "grimoire-corpus-scraper/1.0 (academic/research use; "
-    "github.com/BasLinders/grimoire)"
-)
-
-# ---------------------------------------------------------------------------
-# HTML -> plain text
-# ---------------------------------------------------------------------------
-
-# Collapse 3+ blank lines to 2.
-_BLANK_RUNS = re.compile(r"\n{3,}")
-
-
-def _html_to_text(html: str) -> str:
-    """Strip HTML tags, decode entities, normalise whitespace."""
-    if not html:
-        return ""
-    text = BeautifulSoup(html, "html.parser").get_text(separator="\n")
-    text = _BLANK_RUNS.sub("\n\n", text)
-    return text.strip()
-
-
-def _parse_tags(raw: str) -> str:
-    """Convert '<tag1><tag2>' to 'tag1 tag2'."""
-    return " ".join(re.findall(r"<([^>]+)>", raw))
-
-
-# ---------------------------------------------------------------------------
-# Download helpers
-# ---------------------------------------------------------------------------
-
-def _download_dump(url: str, dest: Path, session: requests.Session) -> None:
-    """Stream the .7z dump to *dest*, showing progress."""
-    print(f"Downloading dump from {url}")
-    print(f"  -> {dest}")
-    with session.get(url, stream=True, timeout=120) as resp:
-        resp.raise_for_status()
-        total = int(resp.headers.get("content-length", 0))
-        downloaded = 0
-        with dest.open("wb") as fh:
-            for chunk in resp.iter_content(chunk_size=65_536):
-                fh.write(chunk)
-                downloaded += len(chunk)
-                if total:
-                    print(
-                        f"\r  {downloaded / 1_048_576:.1f} / "
-                        f"{total / 1_048_576:.1f} MB",
-                        end="",
-                        flush=True,
-                    )
-    print(f"\r  Download complete ({downloaded / 1_048_576:.1f} MB)")
 
 
 def _extract_posts_xml(archive_path: Path, xml_dest: Path) -> None:
@@ -196,90 +158,6 @@ def _parse_posts(xml_path: Path, min_score: int):
 
 
 # ---------------------------------------------------------------------------
-# Formatting
-# ---------------------------------------------------------------------------
-
-def _format_qa(q: dict, ans_list: list[dict], max_answers: int) -> str:
-    """Format one question + its top answers as plain text."""
-    parts: list[str] = []
-
-    title = q["title"].strip()
-    tags = q["tags"]
-    parts.append(f"# {title}")
-    if tags:
-        parts.append(f"Tags: {tags}")
-    parts.append(f"Score: {q['score']}")
-    parts.append("")
-    parts.append(_html_to_text(q["body"]))
-
-    accepted_id = q.get("accepted_id")
-    sorted_ans = sorted(
-        ans_list,
-        key=lambda a: (a["id"] != accepted_id, -a["score"]),
-    )
-
-    for ans in sorted_ans[:max_answers]:
-        if ans["score"] < 0:
-            continue  # skip heavily downvoted answers
-        label = "Answer (accepted)" if ans["id"] == accepted_id else "Answer"
-        parts.append(f"\n## {label}  (score: {ans['score']})")
-        parts.append("")
-        parts.append(_html_to_text(ans["body"]))
-
-    parts.append("\n---")
-    return "\n".join(parts)
-
-
-# ---------------------------------------------------------------------------
-# Writer
-# ---------------------------------------------------------------------------
-
-def _write_chunks(
-    questions: dict,
-    answers: dict,
-    out_dir: Path,
-    prefix: str,
-    chunk_size: int,
-    max_answers: int,
-    min_answer_score: int,
-) -> None:
-    """Render Q&A pairs and write them in chunks of *chunk_size* per file."""
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    chunk_idx = 0
-    pair_count = 0
-    buffer: list[str] = []
-
-    def _flush() -> None:
-        nonlocal chunk_idx
-        if not buffer:
-            return
-        path = out_dir / f"{prefix}{chunk_idx:04d}.txt"
-        path.write_text("\n\n".join(buffer), encoding="utf-8")
-        print(f"  [saved] {path.name}  ({len(buffer)} Q&A pairs)")
-        chunk_idx += 1
-        buffer.clear()
-
-    for qid, q in questions.items():
-        ans_list = [
-            a for a in answers.get(qid, [])
-            if a["score"] >= min_answer_score
-        ]
-        if not ans_list:
-            continue  # skip unanswered or all-downvoted
-
-        formatted = _format_qa(q, ans_list, max_answers)
-        buffer.append(formatted)
-        pair_count += 1
-
-        if len(buffer) >= chunk_size:
-            _flush()
-
-    _flush()  # remainder
-    print(f"\nWrote {pair_count:,} Q&A pairs across {chunk_idx} file(s) -> {out_dir}")
-
-
-# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -322,7 +200,7 @@ def main() -> None:
     if archive_path.exists():
         print(f"Using cached dump: {archive_path}")
     else:
-        _download_dump(dump_url, archive_path, session)
+        _download_file(dump_url, archive_path, session)
 
     # -- Extract ---------------------------------------------------------
     if xml_path.exists():
