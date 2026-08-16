@@ -163,13 +163,36 @@ Quiz: `saga-combined-v1` pass-rate 24.5%, kw-recall 13.61%, token-F1
 kw-recall 12.24%, token-F1 0.1961 — a mixed result, `combined-v1` ahead
 on two metrics, production ahead on F1.
 
-Investigated both the degenerate-collapse rate and the token-F1 gap;
-neither turns out to distinguish these two checkpoints from each other
-— see [known_bugs.md](known_bugs.md) for the full writeups (repetition
-loops survive `repetition_penalty=1.3` at the same ~11.7% rate on
-*both* checkpoints; the F1 gap is a length-sensitivity artifact of the
-metric, not a quality difference). Repetition-loop root cause not yet
-investigated, queued next.
+Investigated both the degenerate-collapse rate and the token-F1 gap.
+
+**Token-F1 gap**: a length-sensitivity artifact of the metric, not a
+quality difference between the checkpoints — see
+[known_bugs.md](known_bugs.md), still open.
+
+**Degenerate collapse**: root cause found and fixed. `repetition_penalty`
+is a flat, non-escalating discount (standard CTRL-style penalty) that a
+confident-enough model can override indefinitely — inherent to the
+penalty type, not a bug. `RepetitionLoopGuard` (a hard structural ban,
+already implemented, already wired into `grimoire-chat`/the Chat tab)
+fixes it: quantified before/after on `combined-v1` at
+`repetition_penalty=1.3`, 5 seeds × 12 prompts, showed severe collapses
+drop from 6/60 (10%) to 0/60 (0%) with `loop_guard_max_repeats=3`, no
+speed cost. **Deployed**: added `loop_guard_max_repeats: 3` /
+`loop_guard_max_period: 4` to `agents.json`'s `saga.gen_config`
+(2026-08-16) — no code change needed, the config-loading path already
+passed these through. Re-verified via the actual quiz eval
+(`scripts/evaluate.py --quiz-loop-guard-max-repeats 3`, now supported):
+pass-rate and kw-recall unchanged for both checkpoints (quiz uses greedy
+decoding, which loops far less often than the stochastic sampling used
+in the 5-seed test), but the guard still fired on 7/49 questions for
+`combined-v1` and 1/49 for production — every triggered case was a
+genuine severe collapse (`"to to to to..."`, `"own own own..."`,
+`"prevent prevent..."`) successfully broken, confirmed by diffing
+responses before/after. This is also a real, reproducible (non-seed-
+dependent) difference favoring production's stability under greedy
+decoding specifically — 7/49 vs. 1/49 — worth keeping in mind
+alongside the earlier tied stochastic-sampling result, not a
+contradiction of it (different decoding strategy, different question).
 
 ## Step 6 — Ship it
 
