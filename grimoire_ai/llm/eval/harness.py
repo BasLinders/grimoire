@@ -44,6 +44,8 @@ def run_eval(
     max_perplexity_batches: int = 50,
     perplexity_batch_size: int = 4,
     quiz_repetition_penalty: float = 1.0,
+    quiz_loop_guard_max_repeats: int = 0,
+    quiz_loop_guard_max_period: int = 4,
     on_progress: Optional[Callable[[str], None]] = None,
     stop_event: Optional[threading.Event] = None,
 ) -> dict:
@@ -70,6 +72,16 @@ def run_eval(
             the model from repeating itself — useful for isolating how much
             of a repetition-loop pattern is a decoding-time effect versus
             something that needs more training to fix.
+        quiz_loop_guard_max_repeats: Hard-ban the token that would extend a
+            repeating loop past this many consecutive copies during quiz
+            generation (``0`` disables it, matching ``GenerationConfig``'s
+            default). Unlike ``quiz_repetition_penalty`` (a soft discount a
+            confident model can override), this makes the extending token
+            literally unsampleable — see ``RepetitionLoopGuard`` and
+            ``docs/known_bugs.md``'s repetition-loop entry.
+        quiz_loop_guard_max_period: Longest repeating block length (tokens)
+            checked for looping. Ignored if ``quiz_loop_guard_max_repeats``
+            is ``0``.
         on_progress: Optional progress callback.
         stop_event: When set, each evaluator stops as soon as it notices
             (between batches/questions/queries) and any evaluator not yet
@@ -161,11 +173,13 @@ def run_eval(
             from grimoire_ai.llm.eval.quiz import eval_quiz, load_quiz
             examples = load_quiz(_quiz_path)
             quiz_gen_config = None
-            if quiz_repetition_penalty != 1.0:
+            if quiz_repetition_penalty != 1.0 or quiz_loop_guard_max_repeats != 0:
                 from grimoire_ai.llm.inference.sampler import GenerationConfig
                 quiz_gen_config = GenerationConfig(
                     max_new_tokens=128, temperature=0.0, top_k=1, top_p=1.0,
                     repetition_penalty=quiz_repetition_penalty,
+                    loop_guard_max_repeats=quiz_loop_guard_max_repeats,
+                    loop_guard_max_period=quiz_loop_guard_max_period,
                 )
             quiz_result = eval_quiz(
                 engine=engine, examples=examples, gen_config=quiz_gen_config,

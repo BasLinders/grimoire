@@ -99,6 +99,18 @@ def main() -> None:
              "generation, to discourage repetition loops. 1.0 (default) disables it.",
     )
     parser.add_argument(
+        "--quiz-loop-guard-max-repeats", type=int, default=0, metavar="N",
+        help="Hard-ban the token that would extend a loop past N consecutive repeats "
+             "during quiz generation (0 = off, default). Unlike --quiz-repetition-penalty "
+             "(a soft discount), this makes the extending token literally unsampleable -- "
+             "see docs/known_bugs.md's repetition-loop entry. Try 3.",
+    )
+    parser.add_argument(
+        "--quiz-loop-guard-max-period", type=int, default=4, metavar="N",
+        help="Longest repeating block length (tokens) checked for looping "
+             "(default: 4). Ignored if --quiz-loop-guard-max-repeats is 0.",
+    )
+    parser.add_argument(
         "--math-tool", action="store_true",
         help="Detect arithmetic/probability in quiz questions and inject the computed "
              "result as context, and resolve <TOOL:python> tags in responses.",
@@ -234,6 +246,8 @@ def main() -> None:
         output_dir=args.output_dir,
         max_perplexity_batches=args.max_ppl_batches,
         quiz_repetition_penalty=args.quiz_repetition_penalty,
+        quiz_loop_guard_max_repeats=args.quiz_loop_guard_max_repeats,
+        quiz_loop_guard_max_period=args.quiz_loop_guard_max_period,
         on_progress=print,
     )
 
