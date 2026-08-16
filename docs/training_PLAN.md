@@ -30,6 +30,15 @@ from stackexchange.com/sites works except Stack Overflow itself (split
 dump). Add or swap sites here if a different conversational register seems
 more valuable once the first batch is evaluated (step 4).
 
+`generate_open5e_qa.py` now defaults to `--document-slug wotc-srd` (the
+official 5e SRD) — added after a real run of the command above produced
+23,210 examples, 46% of which belonged to a question asked more than once
+with directly contradictory answers (e.g. "What is the challenge rating of
+the Aboleth?" answered as both CR 11 and CR 10), because Open5e blends the
+official document with unrelated third-party rulesets under the same
+endpoints and the script had no filter. If `data/finetune/open5e_qa.jsonl`
+on disk predates this fix, regenerate it before step 2.
+
 ## Step 2 — Build and combine fine-tune JSONL
 
 ```bash
