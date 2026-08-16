@@ -117,11 +117,20 @@ def _fmt_spell(s: dict) -> str:
 
 
 def _fmt_generic(obj: dict) -> str:
-    """Fallback formatter: write name + all text fields."""
+    """Fallback formatter: write name + all text fields.
+
+    Excludes every ``document__*`` field (not just ``slug``/``title``) --
+    Open5e's response includes ``document__url`` and
+    ``document__license_url`` too, and only excluding the first two let a
+    raw third-party URL (e.g. a Kobold Press store product page) leak
+    straight into corpus text as "Document  url: https://...". Found by
+    generating a completion from a trained checkpoint and seeing that
+    exact URL verbatim in the output.
+    """
     name = obj.get("name", obj.get("slug", "Unknown"))
     lines = [f"# {name}"]
     for key, val in obj.items():
-        if key in ("name", "slug", "document__slug", "document__title"):
+        if key in ("name", "slug") or key.startswith("document__"):
             continue
         if isinstance(val, str) and val.strip():
             lines.append(f"{key.replace('_', ' ').capitalize()}: {val.strip()}")
