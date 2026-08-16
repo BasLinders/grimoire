@@ -404,6 +404,31 @@ python -m grimoire_ai.ui
 
 Open `http://localhost:7860`, go to the **Pre-train** tab, fill in the corpus path and hyperparameters, then click **Start pre-training**. Loss updates stream live.
 
+### Verify a pretrain checkpoint before fine-tuning
+
+A single aggregate validation loss can't tell you whether weighting is actually working, and it isn't comparable across runs that used different validation-split methods (contiguous-tail vs. scattered-block vs. `--val-stratified`) — see "Source-based sample weighting" above. Two scripts cover this gap for a *raw*, not-yet-fine-tuned checkpoint:
+
+**Per-tier validation loss** (`scripts/eval_per_tier.py`) — requires the corpus to have `--weight-pattern` sidecars and the checkpoint to have trained with `--val-stratified` (reproduces that exact held-out split, just reported per tier instead of merged into one number):
+
+```bash
+python scripts/eval_per_tier.py \
+    --checkpoint checkpoints/pretrain/<run>/step_XXXXXXX.pt \
+    --corpus data/processed/corpus.bin \
+    --val-split 0.01
+```
+
+Look for the loss ordering to match your intended weight prioritization (down-weighted tiers worst, up-weighted tiers best) — that's the real signal, not the absolute numbers.
+
+**Qualitative completion check** (`scripts/qualitative_check.py`) — a raw pretrain checkpoint hasn't learned to follow a chat/instruction format yet, so `grimoire-chat`'s conversational template (and its missing `--repetition-penalty` support) isn't the right tool here. This generates fixed-prompt text completions instead, with full sampling control:
+
+```bash
+python scripts/qualitative_check.py \
+    --checkpoint checkpoints/pretrain/<run>/step_XXXXXXX.pt \
+    --vocab data/tokenizer/bpe.json
+```
+
+Eyeball the completions for coherence, on-topic terminology, and the absence of repetition loops (`does does does...`) or question-echoing — the same checks this project's prior ad-hoc qualitative reviews (`docs/expansion_PLAN.md`) looked for by hand.
+
 ---
 
 ## 4 — Fine-tune (instruction tuning)

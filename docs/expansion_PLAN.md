@@ -507,36 +507,62 @@ match-wins (`grimoire_ai/llm/data/preprocessing.py`'s `_resolve_weight`).
 
 ## Open decisions for next session
 
-- [ ] Once corpus token count is known post-expansion, decide target model
+- [x] Once corpus token count is known post-expansion, decide target model
       size using the 20:1 ratio rather than jumping straight to `medium-85M`.
+      **Stayed at `small-25M`.** Post-expansion corpus is 124,851,189 tokens
+      — barely different from the ~129M this reminder was originally written
+      against (the session's changes were about *quality*, not volume; the
+      quality filter and the `wotc-srd` re-scrape net *removed* more
+      duplicate/junk content than EntiGraph added). At the real 20:1 ratio,
+      124.85M/500M (~25%) against `small-25M`'s optimum is still better than
+      124.85M/1.7B (~7.3%) against `medium-85M`'s.
 - [ ] Re-measure the MiniLM retrieval baseline at
       `--quiz-repetition-penalty 1.3` (currently only measured at 1.0 — not a
       fair comparison against everything else in this session's results).
 - [ ] Phase 5 (pre-existing gap, unrelated to this plan): wire semantic/LoRA
       retrieval into the live UI — it currently only supports lexical search
       via `corpus_dirs`.
-- [ ] EntiGraph-generated passages (`scripts/generate_open5e_entigraph.py`,
-      output in `data/corpus/saga_derived/entigraph_*.txt`) still need a
-      real preprocess+retrain pass to actually reach the model.
-      `corpus_dirs` in `agents.json` was found to only control retrieval at
-      chat time, not what's in the trained corpus — `grimoire-preprocess
-      --input` (now repeatable, e.g. `--input data/corpus/saga/ --input
-      data/corpus/saga_derived/`) is the actual wiring point. Recommended
-      weight: `entigraph_*:1`, same baseline as `synth_*` above — it's
-      grounded/verified content like the rest of the corpus (once
-      generated with `--document-slug wotc-srd`, the default, to avoid the
-      Open5e third-party-document mixing found while building this), just
-      template- rather than prose-generated, and capped/small by design so
-      the dilution concern that justified downweighting `gutenberg_*`/
-      `wp_fantasy_*` doesn't apply. Insert before the trailing `*:1.75`
-      catch-all.
-- [ ] `open5e_spells.txt`/`open5e_monsters.txt` in the existing corpus are
+- [x] EntiGraph-generated passages (`scripts/generate_open5e_entigraph.py`,
+      output in `data/corpus/saga_derived/entigraph_*.txt`) needed a real
+      preprocess+retrain pass to actually reach the model. Wired via
+      repeatable `grimoire-preprocess --input`, weighted `entigraph_*:1`,
+      included in the `weighted_clean_v2` pretrain run below.
+- [x] `open5e_spells.txt`/`open5e_monsters.txt` in the existing corpus were
       43%/48% duplicate-name entries blending Open5e's official `wotc-srd`
       document with unrelated third-party rulesets (`a5e`, `kp`), yet both
-      currently sit in the corpus's highest weight tier (`*:1.75` catch-all)
-      as if uniformly official. `scripts/scrape_open5e.py --endpoints
-      spells monsters --document-slug wotc-srd` now exists to re-scrape
-      just those two files, filtered — cheaper than a full re-scrape (2 of
-      11 endpoints, each filtered server-side to roughly half its
-      unfiltered page count) — but not run yet; needs a re-preprocess
-      afterward too.
+      sat in the corpus's highest weight tier (`*:1.75` catch-all) as if
+      uniformly official. Re-scraped via `scripts/scrape_open5e.py
+      --endpoints spells monsters --document-slug wotc-srd` (322/319 records,
+      down from 3207/1435, zero duplicates, zero third-party leakage
+      afterward) and folded into the `weighted_clean_v2` preprocess+retrain
+      pass below.
+- [x] **Pretrained `weighted_clean_v2`** (`small-25M`, 15,259 steps,
+      `--val-stratified`, 2026-08-15) — first run on the corpus after the
+      quality filter, the `wotc-srd` re-scrape, and the EntiGraph additions
+      above. 124,851,189 tokens (1512 input files, 21 dropped by
+      `--quality-filter` — 2 genuine junk documents, 1 known/deferred
+      `mean_word_length` false positive on `Monster Manual (2025).txt`, 18
+      MathML-noise-heavy `wp_math_*` pages). 20,198.1s wall-clock (faster
+      than the July 3 `weighted_clean` run's 24,143.5s for the same step
+      count). Checkpoint: `checkpoints/pretrain/weighted_clean_v2/step_0015259.pt`.
+      Config: `train_config_weighted_clean_v2.json`.
+- [x] **Per-tier validation loss on `weighted_clean_v2`** (new reusable tool:
+      `scripts/eval_per_tier.py`, reproduces `train.py`'s own
+      `--val-stratified` split so results are directly comparable to what
+      training itself held out): `0.5` (down-weighted) 3.5468, `1.0`
+      (baseline) 3.2673, `1.75` (up-weighted) 2.3677 — monotonic ordering
+      exactly matching the intended prioritization, same as the July 3
+      finding. Notably *more* trustworthy than that earlier result: July
+      3's up-weighted number (2.1863) was a train-inclusive estimate
+      because the old scattered-block validation split happened to miss
+      that tier entirely by chance, while this run's `--val-stratified`
+      split guarantees proportional coverage (189/18,871 windows, ~1% as
+      intended) — and the gap to baseline held up under this stricter,
+      genuinely held-out measurement (0.8996 nats vs. July 3's 0.83-nat
+      train-inclusive gap).
+- [ ] Qualitative completion check on `weighted_clean_v2` (new reusable
+      tool: `scripts/qualitative_check.py`, since neither `grimoire-chat`
+      nor the Chat tab fit a raw not-yet-fine-tuned checkpoint — see
+      `docs/setup-training.md` §3) — not run yet.
+- [ ] Curate more Q&A pairs for fine-tuning `weighted_clean_v2`, the way
+      `weighted_clean` was fine-tuned into `saga-se-qa-weighted-clean-v2`.
