@@ -215,6 +215,56 @@ This is a **minimal seed**, not the corpus actually used in production — that 
 
 See [expansion_PLAN.md](expansion_PLAN.md) for the current source list, scale, and the reasoning behind the weighting scheme in use.
 
+#### The current full recipe (preprocess → weight → train)
+
+Once your corpus directories are in place — `data/corpus/saga/` plus any derived/synthetic directories kept separate on disk (e.g. `data/corpus/saga_derived/`; see "Corpus updates after training" §8 for why they're kept apart rather than merged in) — this is the actual sequence used for every pretrain run against the Saga corpus:
+
+**1. Preprocess.** Combines every corpus directory into one build, drops obvious junk documents, and tags every file with its training weight:
+
+```bash
+python -m grimoire_ai.llm.data.preprocessing \
+    --input data/corpus/saga/ \
+    --input data/corpus/saga_derived/ \
+    --output data/processed/corpus.bin \
+    --vocab data/tokenizer/bpe.json \
+    --quality-filter \
+    --quality-report data/processed/quality_report.jsonl \
+    --weight-pattern "gutenberg_*:0.5" \
+    --weight-pattern "wp_fantasy_*:0.5" \
+    --weight-pattern "wp_math_*:1" \
+    --weight-pattern "wp_dnd_*:1" \
+    --weight-pattern "rpg_se_*:1" \
+    --weight-pattern "fr_wiki_*:1" \
+    --weight-pattern "dragon_*:1" \
+    --weight-pattern "dnd_*:1" \
+    --weight-pattern "synth_*:1" \
+    --weight-pattern "entigraph_*:1" \
+    --weight-pattern "*:1.75"
+```
+
+Check `quality_report.jsonl` for anything unexpected before moving on — see "Pre-process corpus for training" above for what `--quality-filter` catches. Weight values and categories are project decisions, not framework defaults — see [expansion_PLAN.md](expansion_PLAN.md) for the reasoning behind this exact list and its history of fixes (e.g. the `wotc-srd`-only re-scrapes some of these globs assume), and check there before assuming it's still current.
+
+**2. Build sample weights.** Must be rebuilt any time the corpus, the `--weight-pattern` rules, `val_split`, or `val_stratified` change — a mismatch here silently produces the wrong window count at training time:
+
+```bash
+python scripts/build_source_weights.py \
+    --corpus data/processed/corpus.bin \
+    --seq-len 1024 --stride 512 \
+    --val-split 0.01 \
+    --val-stratified \
+    --output data/processed/sample_weights.npy
+```
+
+**3. Train.** Fresh run (no `--resume`) whenever the corpus content changed materially rather than just grew (§8 covers when that applies). Point your config's `checkpoint_dir` at a new, unused directory each time instead of overwriting the previous run, so you can still compare against it:
+
+```bash
+python -m grimoire_ai.llm.training.train --config your_config.json --val-stratified
+```
+
+`total_steps` and the fields derived from it are Chinchilla-scaled from model size and batch/accum/seq_len (see `docs/PARAM_OPT.md`), not from the corpus's own token count — a corpus content change alone doesn't require recomputing them, only a change to model size or batch config does.
+
+**4. Verify.** See "Verify a pretrain checkpoint before fine-tuning" under §3 below.
+
 ### Option B — Ingest your own sources
 
 **Via the Ingest tab (UI):**
