@@ -12,6 +12,18 @@ and agents.json's description of Saga as a D&D *and* data-science assistant
 -- conversational fluency and D&D knowledge are separable, and only the
 knowledge half needs D&D-topical source data).
 
+"No hallucination risk" holds per-example (each answer is read from a real
+field) but not in aggregate without --document-slug: Open5e mixes the
+official wotc-srd document with unrelated third-party rulesets under the
+same endpoints, so the same monster/spell name can have several entries
+with different field values across documents (e.g. two different CRs for
+"Aboleth") -- without filtering, that produces the exact same question
+with directly contradictory "correct" answers in the output, which is
+worse for fine-tuning than an individually-wrong answer would be. Defaults
+to --document-slug wotc-srd for this reason (see
+generate_open5e_entigraph.py's module docstring for the same issue found
+and fixed there first).
+
 Reuses scrape_open5e.py's pagination (_fetch_all) and formatters
 (_fmt_monster, _fmt_spell) so the ``context`` field here is byte-identical to
 what that script writes into data/corpus/saga/open5e_*.txt -- i.e. the same
@@ -37,6 +49,7 @@ Usage
     python scripts/generate_open5e_qa.py
     python scripts/generate_open5e_qa.py --types monsters --output data/finetune/open5e_monster_qa.jsonl
     python scripts/generate_open5e_qa.py --delay 0.3
+    python scripts/generate_open5e_qa.py --document-slug ""  # every Open5e document, unfiltered
 
 Then fine-tune the same way as the StackExchange-derived data (see
 scripts/finetune_saga.py) -- concatenate this file with any other .jsonl
@@ -205,19 +218,19 @@ def _spell_examples(s: dict) -> list[str]:
 # Main
 # ---------------------------------------------------------------------------
 
-def generate(output: str, types: list[str], delay: float) -> None:
+def generate(output: str, types: list[str], delay: float, document_slug: str | None) -> None:
     lines: list[str] = []
 
     if "monsters" in types:
         print("Fetching monsters...")
-        for m in _fetch_all("monsters", delay=delay):
+        for m in _fetch_all("monsters", delay=delay, document_slug=document_slug):
             lines.extend(_monster_examples(m))
         print(f"  {len(lines)} example(s) so far")
 
     if "spells" in types:
         before = len(lines)
         print("Fetching spells...")
-        for s in _fetch_all("spells", delay=delay):
+        for s in _fetch_all("spells", delay=delay, document_slug=document_slug):
             lines.extend(_spell_examples(s))
         print(f"  {len(lines) - before} spell example(s)")
 
@@ -239,5 +252,16 @@ if __name__ == "__main__":
                          help="Which Open5e resource types to generate from (default: both)")
     parser.add_argument("--delay", type=float, default=0.25,
                          help="Seconds between paginated API requests (default: 0.25)")
+    parser.add_argument(
+        "--document-slug", default="wotc-srd", metavar="SLUG",
+        help="Restrict to one Open5e document (default: wotc-srd, the "
+             "official 5e SRD). Open5e mixes unrelated third-party rulesets "
+             "into the same endpoints -- without this filter, the same "
+             "monster/spell name can appear multiple times from different "
+             "documents with contradictory field values (e.g. two different "
+             "CRs for 'Aboleth'), producing the same question with directly "
+             "conflicting answers in the output. Pass an empty string to "
+             "disable filtering and pull from every document Open5e has.",
+    )
     args = parser.parse_args()
-    generate(args.output, args.types, args.delay)
+    generate(args.output, args.types, args.delay, args.document_slug or None)
