@@ -165,9 +165,42 @@ on two metrics, production ahead on F1.
 
 Investigated both the degenerate-collapse rate and the token-F1 gap.
 
-**Token-F1 gap**: a length-sensitivity artifact of the metric, not a
-quality difference between the checkpoints — see
-[known_bugs.md](known_bugs.md), still open.
+**Token-F1 gap**: root cause found and fixed. Plain unigram F1 assumes the
+prediction is already a short extracted span (the standard SQuAD
+assumption); this quiz scores full free-form generations against it
+instead, producing three symptoms — precision penalized response length
+regardless of correctness, punctuation-stripping collapsed `"+3"`/`"-3"`
+and fragmented `"1/4"` into `"1"`+`"4"`, and restating the question's own
+wording bought free overlap credit. Replaced with best-matching-window
+F1: search all contiguous windows of the response for the best-scoring
+span against the reference instead of scoring the whole response,
+exclude vocabulary shared with the question from the overlap count on
+both sides, and keep signs/fractions/decimals/possessives intact in the
+tokenizer (`grimoire_ai/llm/eval/quiz.py`, 2026-08-16). Fully
+agent-agnostic — no D&D-specific logic anywhere in the fix, so it applies
+to any future agent's quiz eval, not just Saga's.
+
+**Re-verified against the real quiz eval, twice, under different
+retrieval conditions** — before the fix, token-F1 and keyword-recall
+*disagreed* on which checkpoint was better (F1 favored production,
+kw-recall favored `combined-v1`, the numbers quoted above). After the
+fix:
+- No `--corpus-dir`: `combined-v1` pass-rate 26.5%, kw-recall 13.95%,
+  F1 0.1033; production pass-rate 20.4%, kw-recall 11.22%, F1 0.1005 —
+  both metrics now agree, favoring `combined-v1`.
+- `--corpus-limit 200` (same 200 sampled files for both checkpoints,
+  fixed seed): `combined-v1` pass-rate 6.1%, kw-recall 3.06%, F1 0.1463;
+  production pass-rate 10.2%, kw-recall 5.10%, F1 0.1606 — both metrics
+  again agree, this time favoring production. (Pass-rate/kw-recall are
+  much lower in this run for both checkpoints — a random 200/1469-file
+  sample gives poor retrieval hit-rate, 10-15%, not a checkpoint
+  regression; see `docs/corpus_index_scaling.md` for why `--corpus-limit`
+  exists at all.)
+
+Which checkpoint "wins" flips between the two post-fix conditions — that
+reflects the checkpoints' differing sensitivity to retrieval context, a
+separate question from whether the metric agrees with itself, which it
+now consistently does. Moved out of `known_bugs.md` (2026-08-16).
 
 **Degenerate collapse**: root cause found and fixed. `repetition_penalty`
 is a flat, non-escalating discount (standard CTRL-style penalty) that a
