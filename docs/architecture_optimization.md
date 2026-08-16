@@ -18,6 +18,7 @@ tracked below since that's no longer true.
 | 7 | Cross-encoder reranking | ✓ shipped — [PR #198](https://github.com/BasLinders/grimoire/pull/198) |
 | 8 | Adaptive/corrective retrieval (CRAG / Self-RAG) | CRAG half ✓ shipped — [PR #199](https://github.com/BasLinders/grimoire/pull/199); Self-RAG parked with #6 (needs fine-tune data) |
 | 9 | Data-centric: curation & synthetic augmentation | curation ✓ shipped — [PR #200](https://github.com/BasLinders/grimoire/pull/200); EntiGraph entity recombination ✓ shipped — [PR #201](https://github.com/BasLinders/grimoire/pull/201); synthetic augmentation via rephrasing dropped — out of scope (see `expansion_PLAN.md`'s reasoning against bulk LLM-generated content) |
+| 10 | Corpus index memory scaling (`CorpusIndex` unbounded in-RAM growth) | not started — scoped in [`docs/corpus_index_scaling.md`](corpus_index_scaling.md) |
 
 ## Known limitations in shipped items
 

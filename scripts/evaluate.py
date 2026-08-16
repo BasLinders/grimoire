@@ -27,6 +27,7 @@ python scripts/evaluate.py \\
 """
 
 import argparse
+import random
 import sys
 from pathlib import Path
 
@@ -56,6 +57,16 @@ def main() -> None:
     parser.add_argument(
         "--corpus-dir", metavar="DIR", default="",
         help="Directory of .txt corpus files (for retrieval eval).",
+    )
+    parser.add_argument(
+        "--corpus-limit", type=int, default=0, metavar="N",
+        help="Cap --corpus-dir to N files, sampled with a fixed seed for "
+             "reproducibility (0 = no limit, default). The lexical/semantic "
+             "index built from --corpus-dir holds its entire contents in "
+             "memory with no ceiling (see docs/corpus_index_scaling.md) -- "
+             "a corpus of ~1000+ files can exhaust RAM. Eval only needs "
+             "*some* retrieval-grounding context, not full corpus coverage, "
+             "so sampling down is a safe way to avoid that.",
     )
     parser.add_argument(
         "--corpus-bin", metavar="PATH", default="",
@@ -172,9 +183,15 @@ def main() -> None:
         engine.load_lora(args.gen_lora)
 
     if corpus_dir and Path(corpus_dir).is_dir():
-        documents: list[tuple[str, str]] = []
-        for txt in sorted(Path(corpus_dir).glob("*.txt")):
-            documents.append((txt.read_text(encoding="utf-8"), txt.stem))
+        txt_paths = sorted(Path(corpus_dir).glob("*.txt"))
+        if args.corpus_limit and len(txt_paths) > args.corpus_limit:
+            total = len(txt_paths)
+            txt_paths = random.Random(0).sample(txt_paths, args.corpus_limit)
+            print(f"Corpus limited: sampled {args.corpus_limit} of {total} "
+                  f"file(s) (--corpus-limit).")
+        documents: list[tuple[str, str]] = [
+            (txt.read_text(encoding="utf-8"), txt.stem) for txt in txt_paths
+        ]
         if documents:
             if args.encoder == "model":
                 print(f"Building semantic corpus from {len(documents)} file(s) …")
