@@ -560,9 +560,52 @@ match-wins (`grimoire_ai/llm/data/preprocessing.py`'s `_resolve_weight`).
       intended) — and the gap to baseline held up under this stricter,
       genuinely held-out measurement (0.8996 nats vs. July 3's 0.83-nat
       train-inclusive gap).
-- [ ] Qualitative completion check on `weighted_clean_v2` (new reusable
-      tool: `scripts/qualitative_check.py`, since neither `grimoire-chat`
-      nor the Chat tab fit a raw not-yet-fine-tuned checkpoint — see
-      `docs/setup-training.md` §3) — not run yet.
+- [x] **Qualitative completion check on `weighted_clean_v2`**
+      (`scripts/qualitative_check.py`, 2026-08-15). Coherent grammar, real
+      D&D terminology, no repetition loops or degenerate collapse on any
+      of the 6 prompts — matches the quality bar of prior checks at this
+      training stage (facts sometimes wrong/muddled, expected at ~25% of
+      Chinchilla-optimal). One finding: the `condition` prompt derailed
+      mid-generation into a **verbatim, memorized third-party product URL**
+      (`Rarity: rare` / `Document  url: https://koboldpress.com/kpstore/
+      product/vault-of-magic-for-5th-edition/`) — traced to a real bug, not
+      just topic drift (see below).
+- [x] **Found and fixed `_fmt_generic`'s `document__url` leak** (surfaced by
+      the finding above). `_fmt_generic` (the fallback formatter for every
+      Open5e endpoint except monsters/spells, which have dedicated
+      formatters) excluded `document__slug`/`document__title` but not
+      `document__url`/`document__license_url`, so every entry in those
+      other endpoints printed a raw source URL into corpus text. Checked
+      the actual corpus: **100% of entries leak this** in
+      `armor`/`backgrounds`/`conditions`/`feats`/`magic_items`/`races`/
+      `weapons`, 45/52 in `sections`. Fixed by excluding the whole
+      `document__*` prefix.
+- [x] **Checked the same document-blending problem (found in
+      `open5e_spells.txt`/`open5e_monsters.txt`, see above) across the rest
+      of the `open5e_*` files**, via the URLs the leak above incidentally
+      exposed (no API access needed — the leaked URL names each entry's
+      source document directly). `conditions`/`sections` are already 100%
+      `wotc-srd`, no action needed. The rest are contaminated, `magic_items`
+      and `backgrounds`/`feats` severely so:
+      | File | wotc-srd share |
+      |---|---|
+      | `armor` | 18/23 (78%) |
+      | `weapons` | 37/68 (54%) |
+      | `races` | 9/20 (45%) |
+      | `magic_items` | 237/1,618 (15%) |
+      | `backgrounds` | 1/42 (2%) |
+      | `feats` | 1/74 (1%) |
+
+      `backgrounds` and `feats` are almost entirely Kobold Press/A5E/Green
+      Ronin homebrew presented as core D&D content — the opposite of what
+      this corpus's weight-pattern scheme assumes for this tier (currently
+      the *highest*-weighted, `*:1.75`).
+- [ ] **Re-scrape the 6 contaminated endpoints**, filtered:
+      `python scripts/scrape_open5e.py --endpoints armor backgrounds feats
+      magic_items races weapons --document-slug wotc-srd` — not run yet.
+      Expect `magic_items`/`backgrounds`/`feats` to shrink drastically;
+      that's correct, not a bug, given the shares above. Needs another
+      preprocess+retrain pass afterward, same as the spells/monsters fix
+      did for `weighted_clean_v2`.
 - [ ] Curate more Q&A pairs for fine-tuning `weighted_clean_v2`, the way
       `weighted_clean` was fine-tuned into `saga-se-qa-weighted-clean-v2`.
