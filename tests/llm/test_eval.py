@@ -277,14 +277,71 @@ class TestQuizEval:
     def test_token_f1_perfect(self) -> None:
         from grimoire_ai.llm.eval.quiz import eval_quiz, _token_f1
 
-        f1 = _token_f1("speed reduced to zero", "speed reduced to zero")
+        f1 = _token_f1("speed reduced to zero", "speed reduced to zero", "")
         assert f1 == pytest.approx(1.0)
 
     def test_token_f1_zero(self) -> None:
         from grimoire_ai.llm.eval.quiz import _token_f1
 
-        f1 = _token_f1("apples and oranges", "speed reduced zero")
+        f1 = _token_f1("apples and oranges", "speed reduced zero", "")
         assert f1 == pytest.approx(0.0)
+
+    def test_token_f1_preserves_sign(self) -> None:
+        from grimoire_ai.llm.eval.quiz import _token_f1
+
+        question = "what is the bonus?"
+        matching = _token_f1("the bonus is +3", "the bonus is +3", question)
+        mismatched = _token_f1("the bonus is -3", "the bonus is +3", question)
+        assert matching > mismatched
+
+    def test_token_f1_preserves_fraction(self) -> None:
+        from grimoire_ai.llm.eval.quiz import _token_f1
+
+        f1 = _token_f1("the CR is 1/8", "the CR is 1/4", "what is the CR?")
+        assert f1 == pytest.approx(0.0)
+
+    def test_token_f1_question_echo_not_rewarded(self) -> None:
+        from grimoire_ai.llm.eval.quiz import _token_f1
+
+        question = "What is the proficiency bonus at level 7?"
+        reference = "At level 7 the proficiency bonus is +3."
+        echoing_wrong = _token_f1(
+            "The proficiency bonus at level 7 is unknown to me.", reference, question,
+        )
+        not_echoing_wrong = _token_f1(
+            "I have no idea about that particular rule.", reference, question,
+        )
+        assert echoing_wrong == pytest.approx(not_echoing_wrong) == pytest.approx(0.0)
+
+    def test_token_f1_length_insensitive(self) -> None:
+        from grimoire_ai.llm.eval.quiz import _token_f1
+
+        question = "What is the bonus?"
+        reference = "The bonus is +3."
+        terse = _token_f1("The bonus is +3.", reference, question)
+        padded = _token_f1(
+            "Well, let me think about this for a moment. After some "
+            "consideration, I believe the bonus is +3. Hope that helps "
+            "with your character sheet and future rolls!",
+            reference,
+            question,
+        )
+        assert padded == pytest.approx(terse)
+
+    def test_token_f1_padding_does_not_help_wrong_answer(self) -> None:
+        from grimoire_ai.llm.eval.quiz import _token_f1
+
+        question = "What is the bonus?"
+        reference = "The bonus is +3."
+        terse_wrong = _token_f1("The bonus is -3.", reference, question)
+        padded_wrong = _token_f1(
+            "Well, let me think about this for a moment. After some "
+            "consideration, I believe the bonus is -3. Hope that helps "
+            "with your character sheet and future rolls!",
+            reference,
+            question,
+        )
+        assert padded_wrong == pytest.approx(terse_wrong)
 
     def test_empty_examples_returns_nan(self) -> None:
         from grimoire_ai.llm.eval.quiz import eval_quiz
