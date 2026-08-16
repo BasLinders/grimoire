@@ -640,3 +640,81 @@ match-wins (`grimoire_ai/llm/data/preprocessing.py`'s `_resolve_weight`).
       unrelated to this fix, not a regression.
 - [ ] Curate more Q&A pairs for fine-tuning `weighted_clean_v3`, the way
       `weighted_clean` was fine-tuned into `saga-se-qa-weighted-clean-v2`.
+
+## General-content expansion (scoped 2026-08-16, not yet started)
+
+D&D-specific source material is exhausted — official + available quality
+homebrew content is all in the corpus already. Going forward, D&D facts
+are meant to be supplied at inference time via semantic retrieval
+(`data/corpus/saga/` + `SemanticRetriever`), not baked into pretrain
+weights, so growing the corpus with *more D&D content* isn't the lever
+anymore. What's still bottlenecked is the base model's general
+conversational/coherence capability — a function of total pretrain
+volume and how conversational (vs. encyclopedic/narrative) that volume
+is. Current corpus (`weighted_clean_v3`) is 124.4M tokens, only ~25% of
+`small-25M`'s ~500M Chinchilla-optimal target — substantial headroom
+before the `medium-85M` question (see "Open decisions" above) becomes
+live again.
+
+**No new tooling needed** — every part of the pipeline (scraping,
+quality filtering, dedup, weighting, preprocessing) already supports
+arbitrary new general sources as a config/parameter change.
+
+- [ ] **Primary lever: more Stack Exchange sites.**
+      `scripts/scrape_stackexchange.py` already takes `--site` as an
+      open string, not a hardcoded list — proven by the existing
+      history/travel/skeptics scrape (91,296 raw QA examples for
+      `general_se_qa.jsonl`). SE Q&A is the best structural match in the
+      toolkit for "conversational capability": real dialogue, not
+      narrative prose or encyclopedia entries. Feeds both the pretrain
+      corpus (raw text) and the fine-tune mix (via
+      `scripts/build_finetune_data_from_qa.py`, already used this way).
+      Candidate sites, chosen for size/quality and topic diversity, with
+      a few picked because their Q&A style (rules explanation,
+      mechanics, worldbuilding) transfers to D&D-adjacent value without
+      being D&D-specific: `english.stackexchange.com` (usage/grammar),
+      `writing.stackexchange.com` (craft/prose),
+      `worldbuilding.stackexchange.com`, `gaming.stackexchange.com`
+      (video-game mechanics), `boardgames.stackexchange.com`,
+      `scifi.stackexchange.com`, `philosophy.stackexchange.com`,
+      `cooking.stackexchange.com`.
+      **Staged, not committed upfront**: scrape 2-3 sites first
+      (English, Writing, Worldbuilding), measure real token yield via
+      `scripts/score_corpus_quality.py`, then extrapolate how many more
+      are needed to meaningfully close the gap toward ~500M — rather
+      than assuming a fixed per-site yield before any real data exists.
+- [ ] **Secondary lever: broader Gutenberg coverage.**
+      `scripts/scrape_gutenberg_catalog.py` already supports bulk
+      keyword+language-filtered catalog scraping (currently a
+      fantasy/mythology keyword set, ~3,400 candidates, ~300
+      downloaded). Broadening the keyword list to general fiction/
+      nonfiction is a config change, not new tooling — cheapest way to
+      add raw Chinchilla-target volume, scaling what's already the
+      largest single prefix (`gutenberg_*`, 37.8% raw share). Secondary
+      because narrative prose doesn't teach conversational structure the
+      way SE Q&A does.
+- [ ] **Not recommended for this round**: `scrape_wikipedia.py`/
+      `scrape_wikibooks.py` (encyclopedic tone, weak fit for
+      "conversational") and `scrape_arxiv.py` (abstracts only, dense
+      academic register). Reusable later if wanted, lower priority given
+      the stated goal.
+- [ ] **New weight-pattern entries needed once real volumes are in.** New
+      general prefixes (e.g. `se_english_*`, `se_writing_*`,
+      `se_worldbuilding_*`) must get explicit `--weight-pattern` entries,
+      not fall into the existing `*:1.75` catch-all (currently reserved
+      for D&D official books) — that would over-weight new general
+      content by accident rather than by decision. Exact weights TBD
+      once step 1's real yield is known, following the same
+      renormalization approach used above.
+- [ ] Regenerate `general_se_qa.jsonl` from the new sites, re-derive the
+      downsample ratio against D&D content (don't reuse the old
+      91,296→40,000 figure blindly — that was sized for 3 sites).
+- [ ] Rerun `grimoire-preprocess` with the expanded `--input` list and
+      updated `--weight-pattern` once new content and weights are
+      decided — same recipe as `docs/setup-training.md`'s "current full
+      recipe," just wider inputs.
+
+Out of scope for this round: actually retraining on the expanded corpus,
+and the `small-25M` vs. `medium-85M` decision a much larger corpus might
+eventually reopen — both downstream of real yield numbers from the first
+pilot scrape, not pre-decided here.
