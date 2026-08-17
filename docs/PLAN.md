@@ -158,11 +158,13 @@ Full source list, current scale, and open decisions (target model size vs. actua
 
 ---
 
-## Phase 2.5 — Further Optimization (Planned)
+## Phase 2.5 — Further Optimization
 
 ### Context
 
-GGUF export covers one deployment path (llama.cpp), but it's an outlier in scope — a single export format rather than a general optimization. The items below are the remaining levers for compute, payload size, and training efficiency that Phase 2 didn't cover. None are started; this section is a reference for prioritizing future work, not a commitment.
+GGUF export covers one deployment path (llama.cpp), but it's an outlier in scope — a single export format rather than a general optimization. This section originally listed distillation, pruning, and speculative decoding as the remaining levers, and stated none were started.
+
+**That's now stale for everything except those three items.** A much larger wave of retrieval/architecture work — Multi-Head Latent Attention, Multi-Token Prediction, RETRO-style chunked cross-attention, cross-encoder reranking, CRAG corrective retrieval, heuristic data curation, and EntiGraph synthetic augmentation — was scoped and shipped under a separate tracking document, [architecture_optimization.md](architecture_optimization.md), without this section being updated to reflect it. **`architecture_optimization.md` is the current source of truth for that work**; treat it, not the items below, as Phase 2.5's actual status for anything retrieval- or architecture-related. Distillation, pruning, and speculative decoding — the three items this section was actually about — remain not started.
 
 ### Items
 
@@ -176,7 +178,7 @@ Zero out low-magnitude weights post-training to shrink the payload further than 
 
 #### 3. Speculative Decoding
 
-Use a small draft model to propose multiple tokens, verified in a single forward pass by the full model, to speed up autoregressive generation. Real wall-clock latency win at inference time, but adds a second model to build/maintain and only pays off if generation speed (not retrieval or model load time) is the actual bottleneck — not yet measured as one.
+Use a small draft model to propose multiple tokens, verified in a single forward pass by the full model, to speed up autoregressive generation. Real wall-clock latency win at inference time, but adds a second model to build/maintain and only pays off if generation speed (not retrieval or model load time) is the actual bottleneck — not yet measured as one. Partially de-risked by Multi-Token Prediction (see `architecture_optimization.md` item #2), which gives a natural path to *self*-speculative decoding without a separate draft model — worth revisiting this item through that lens before building a standalone draft model.
 
 ### Priority Table
 
@@ -184,4 +186,6 @@ Use a small draft model to propose multiple tokens, verified in a single forward
 |---|---|---|---|---|
 | 1 | Knowledge distillation | High | not started | Quality-per-parameter, if a teacher model is available |
 | 2 | Pruning / sparsity | Low | not started | Smaller payload beyond int8 quantization |
-| 3 | Speculative decoding | Medium | not started | Faster generation, if latency becomes the bottleneck |
+| 3 | Speculative decoding | Medium | not started | Faster generation, if latency becomes the bottleneck — reconsider via MTP-based self-speculation first |
+
+See [architecture_optimization.md](architecture_optimization.md) for the (mostly shipped) retrieval/architecture research track that grew alongside this section.
