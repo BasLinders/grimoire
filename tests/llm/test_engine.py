@@ -526,6 +526,135 @@ def test_crag_reads_reranked_score_when_reranker_present() -> None:
     assert results[0].excerpt == "second"
 
 
+# ---------------------------------------------------------------------------
+# corrective_retry -- the corrective "other half" of CRAG (item #8 in
+# docs/architecture_optimization.md): one widened local re-query when the
+# first attempt has no Correct-tier passage.
+# ---------------------------------------------------------------------------
+
+def test_corrective_retry_requires_crag_filter() -> None:
+    with pytest.raises(ValueError, match="corrective_retry"):
+        InferenceEngine(
+            checkpoint_path="unused", tokenizer_path="unused",
+            corrective_retry=True,  # crag_filter left at its None default
+        )
+
+
+def test_corrective_retry_fires_and_uses_improved_results() -> None:
+    """First attempt is all-Ambiguous (no Correct passage); the retry must
+    fire, and its Correct-tier result must replace the first attempt's."""
+    corpus = MagicMock()
+    corpus.query.side_effect = [
+        [QueryResult(multi_token=(), next_token=None, score=0.5, source=None, excerpt="zzzweak")],
+        [QueryResult(multi_token=(), next_token=None, score=0.9, source=None, excerpt="zzzstrong")],
+    ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt, tok = _save_artifacts(tmp)
+        engine = InferenceEngine(
+            checkpoint_path=ckpt, tokenizer_path=tok, corpus=corpus,
+            crag_filter=CragFilter(lower_threshold=0.3, upper_threshold=0.7),
+            corrective_retry=True,
+            device="cpu",
+        )
+        results = engine._retrieve("query", top_k=5)
+
+    assert corpus.query.call_count == 2
+    assert [r.excerpt for r in results] == ["zzzstrong"]
+
+
+def test_corrective_retry_widens_query_k_on_retry() -> None:
+    """The retry must ask for a wider candidate pool than the first
+    attempt, not just repeat the same query_k."""
+    corpus = MagicMock()
+    corpus.query.side_effect = [
+        [QueryResult(multi_token=(), next_token=None, score=0.5, source=None, excerpt="weak")],
+        [QueryResult(multi_token=(), next_token=None, score=0.9, source=None, excerpt="strong")],
+    ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt, tok = _save_artifacts(tmp)
+        engine = InferenceEngine(
+            checkpoint_path=ckpt, tokenizer_path=tok, corpus=corpus,
+            crag_filter=CragFilter(lower_threshold=0.3, upper_threshold=0.7),
+            corrective_retry=True,
+            device="cpu",
+        )
+        engine._retrieve("query", top_k=5)
+
+    first_call_k = corpus.query.call_args_list[0].kwargs["top_k"]
+    second_call_k = corpus.query.call_args_list[1].kwargs["top_k"]
+    assert second_call_k > first_call_k
+
+
+def test_corrective_retry_does_not_fire_when_first_attempt_already_confident() -> None:
+    """No retry -- and therefore only one corpus.query call -- when the
+    first attempt already has a Correct-tier passage."""
+    corpus = MagicMock()
+    corpus.query.return_value = [
+        QueryResult(multi_token=(), next_token=None, score=0.9, source=None, excerpt="zzzconfident"),
+    ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt, tok = _save_artifacts(tmp)
+        engine = InferenceEngine(
+            checkpoint_path=ckpt, tokenizer_path=tok, corpus=corpus,
+            crag_filter=CragFilter(lower_threshold=0.3, upper_threshold=0.7),
+            corrective_retry=True,
+            device="cpu",
+        )
+        results = engine._retrieve("query", top_k=5)
+
+    assert corpus.query.call_count == 1
+    assert [r.excerpt for r in results] == ["zzzconfident"]
+
+
+def test_corrective_retry_falls_back_to_original_when_retry_also_weak() -> None:
+    """If the retry doesn't clear the confidence bar either, the original
+    (first-attempt) results stand -- and there is still only one retry,
+    never a loop, even though neither attempt was confident."""
+    corpus = MagicMock()
+    corpus.query.side_effect = [
+        [QueryResult(multi_token=(), next_token=None, score=0.4, source=None, excerpt="zzzoriginal")],
+        [QueryResult(multi_token=(), next_token=None, score=0.5, source=None, excerpt="zzzstillweak")],
+    ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt, tok = _save_artifacts(tmp)
+        engine = InferenceEngine(
+            checkpoint_path=ckpt, tokenizer_path=tok, corpus=corpus,
+            crag_filter=CragFilter(lower_threshold=0.3, upper_threshold=0.7),
+            corrective_retry=True,
+            device="cpu",
+        )
+        results = engine._retrieve("query", top_k=5)
+
+    assert corpus.query.call_count == 2, "must retry exactly once, not loop"
+    assert [r.excerpt for r in results] == ["zzzoriginal"], (
+        "a still-weak retry must not replace the original results"
+    )
+
+
+def test_corrective_retry_disabled_by_default() -> None:
+    """corrective_retry=False (the default) must never retry, even with a
+    crag_filter attached and a low-confidence first attempt."""
+    corpus = MagicMock()
+    corpus.query.return_value = [
+        QueryResult(multi_token=(), next_token=None, score=0.4, source=None, excerpt="weak"),
+    ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt, tok = _save_artifacts(tmp)
+        engine = InferenceEngine(
+            checkpoint_path=ckpt, tokenizer_path=tok, corpus=corpus,
+            crag_filter=CragFilter(lower_threshold=0.3, upper_threshold=0.7),
+            device="cpu",
+        )
+        engine._retrieve("query", top_k=5)
+
+    assert corpus.query.call_count == 1
+
+
 def test_per_call_gen_config_override() -> None:
     """A per-call GenerationConfig should override the engine default."""
     with tempfile.TemporaryDirectory() as tmp:

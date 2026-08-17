@@ -121,3 +121,32 @@ class CragFilter:
         correct = [r for r in results if r.score >= self.upper_threshold]
         ambiguous = [r for r in results if self.lower_threshold <= r.score < self.upper_threshold]
         return correct + ambiguous
+
+
+def has_confident_result(results: list[QueryResult], crag_filter: CragFilter) -> bool:
+    """Whether *results* contains at least one "Correct"-tier passage.
+
+    A cheap, pre-generation proxy for "is the retrieved context strong
+    enough to trust" -- in a RAG system, weak retrieval is the dominant
+    cause of a wrong answer regardless of what specific words end up
+    generated, so this is checked *before* generation rather than trying
+    to judge the generated text after the fact (see
+    ``InferenceEngine``'s ``corrective_retry`` option in ``engine.py``,
+    which uses this to decide whether a widened re-query is worth
+    attempting).
+
+    Args:
+        results: Candidates to check -- typically already classified by
+            ``CragFilter.filter()``, though this only reads ``.score``
+            directly so an unfiltered list works too.
+        crag_filter: Supplies ``upper_threshold``, the same cutoff
+            ``filter()`` itself uses for "Correct" -- reusing it here
+            keeps this check consistent with whatever the caller
+            configured instead of hardcoding a second threshold that
+            could drift out of sync with it.
+
+    Returns:
+        ``True`` if any passage scores at or above
+        ``crag_filter.upper_threshold``; ``False`` for an empty list.
+    """
+    return any(r.score >= crag_filter.upper_threshold for r in results)

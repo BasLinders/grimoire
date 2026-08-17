@@ -13,7 +13,7 @@ Gate criteria:
 import pytest
 
 from grimoire_ai.corpus.corpus import QueryResult
-from grimoire_ai.llm.inference.crag import CragFilter
+from grimoire_ai.llm.inference.crag import CragFilter, has_confident_result
 
 
 def _make_result(score: float, excerpt: str = "text") -> QueryResult:
@@ -96,3 +96,29 @@ def test_equal_thresholds_collapse_ambiguous_zone() -> None:
 def test_lower_greater_than_upper_raises() -> None:
     with pytest.raises(ValueError, match="lower_threshold"):
         CragFilter(lower_threshold=0.8, upper_threshold=0.3)
+
+
+# ---------------------------------------------------------------------------
+# has_confident_result -- pre-generation proxy used by InferenceEngine's
+# corrective retry (engine.py's corrective_retry option).
+# ---------------------------------------------------------------------------
+
+def test_has_confident_result_true_when_any_passage_is_correct_tier() -> None:
+    results = [_make_result(0.2, "incorrect"), _make_result(0.9, "correct")]
+    assert has_confident_result(results, CragFilter(lower_threshold=0.3, upper_threshold=0.7)) is True
+
+
+def test_has_confident_result_false_when_only_ambiguous() -> None:
+    results = [_make_result(0.4), _make_result(0.5)]
+    assert has_confident_result(results, CragFilter(lower_threshold=0.3, upper_threshold=0.7)) is False
+
+
+def test_has_confident_result_false_when_empty() -> None:
+    assert has_confident_result([], CragFilter(lower_threshold=0.3, upper_threshold=0.7)) is False
+
+
+def test_has_confident_result_boundary_score_counts_as_confident() -> None:
+    """A score exactly equal to upper_threshold must count (>=, not >),
+    matching CragFilter.filter's own boundary handling."""
+    results = [_make_result(0.7)]
+    assert has_confident_result(results, CragFilter(lower_threshold=0.3, upper_threshold=0.7)) is True

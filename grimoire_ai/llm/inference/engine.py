@@ -37,6 +37,7 @@ import torch
 
 from grimoire_ai.corpus.corpus import GrimoireCorpus, QueryResult
 from grimoire_ai.llm.device import select_device
+from grimoire_ai.llm.inference.crag import has_confident_result
 from grimoire_ai.llm.inference.prompt import PromptBuilder
 from grimoire_ai.llm.inference.sampler import GenerationConfig, generate, generate_stream
 from grimoire_ai.llm.inference.semantic import SemanticRetriever
@@ -108,6 +109,7 @@ class InferenceEngine:
         reranker: Optional["Reranker"] = None,
         rerank_candidates: int = 20,
         crag_filter: Optional["CragFilter"] = None,
+        corrective_retry: bool = False,
     ) -> None:
         """Load model and tokenizer from disk and prepare the engine.
 
@@ -170,7 +172,29 @@ class InferenceEngine:
                 a per-passage classification, not a single all-or-nothing
                 check. ``None`` (default) leaves every retrieved passage in
                 place, unclassified.
+            corrective_retry: When ``True``, ``_retrieve()`` issues one
+                additional retrieval call with a widened candidate pool
+                whenever the first attempt has no "Correct"-tier passage
+                (see ``crag.py``'s ``has_confident_result``) — the
+                unimplemented "other half" of CRAG (item #8 in
+                ``docs/architecture_optimization.md``), using a local
+                widened re-query instead of the original paper's
+                web-search fallback. The retry's results are used only if
+                they clear the confidence bar the first attempt didn't;
+                otherwise the original results stand. At most one retry
+                per call, never a loop. Requires ``crag_filter`` to be
+                set — the confidence check is undefined without it.
+
+        Raises:
+            ValueError: If ``corrective_retry`` is ``True`` but
+                ``crag_filter`` is ``None``.
         """
+        if corrective_retry and crag_filter is None:
+            raise ValueError(
+                "corrective_retry=True requires crag_filter to be set -- "
+                "the confidence check it relies on has no meaning without one."
+            )
+
         self.device = select_device(device)
         device = self.device
 
@@ -207,6 +231,7 @@ class InferenceEngine:
         self.reranker = reranker
         self.rerank_candidates = rerank_candidates
         self.crag_filter = crag_filter
+        self.corrective_retry = corrective_retry
 
     @property
     def checkpoint_path(self) -> str:
@@ -283,8 +308,31 @@ class InferenceEngine:
         self.model.to(self.device)
         self.model.eval()
 
+    # Widening factor for the corrective retry's candidate pool, relative
+    # to the first attempt's own query_k -- wide enough to give CragFilter
+    # a meaningfully different pool to classify, not just a couple more
+    # candidates.
+    _CORRECTIVE_RETRY_MULTIPLIER = 3
+
+    def _retrieve_once(self, query: str, query_k: int) -> list:
+        """First-stage retrieval + optional rerank + optional CRAG filter.
+
+        Factored out of ``_retrieve()`` so the corrective retry (see
+        ``corrective_retry``) can run this same retrieve-rerank-filter
+        sequence a second time, at a wider ``query_k``, without
+        duplicating it. Does not apply the top-1 ``retrieval_threshold``
+        gate or the final ``top_k`` slice -- those only make sense once
+        ``_retrieve()`` has decided which attempt's results to use.
+        """
+        results = self.corpus.query(query, top_k=query_k)
+        if self.reranker is not None and results:
+            results = self.reranker.rerank(query, results)
+        if self.crag_filter is not None and results:
+            results = self.crag_filter.filter(results)
+        return results
+
     def _retrieve(self, query: str, top_k: int) -> list:
-        """Query the corpus, optionally rerank/filter, and apply the retrieval threshold router.
+        """Query the corpus, optionally rerank/filter/retry, and apply the retrieval threshold router.
 
         Pipeline, in order:
         1. First-stage retrieval — ``self.rerank_candidates`` passages
@@ -298,16 +346,24 @@ class InferenceEngine:
            reordered after every "Correct" passage) from whatever's left.
            Reads the post-rerank score when step 2 ran, the raw first-stage
            score otherwise.
-        4. The existing top-1 ``retrieval_threshold`` gate, on whatever
-           survived step 3 — a single all-or-nothing check, distinct from
-           step 3's per-passage filtering. Only ever indexes ``results[0]``
-           inside an ``if results`` guard, so a CRAG-emptied list is
-           handled the same way a naturally-empty ``corpus.query()`` result
-           is today.
-        5. Final ``top_k`` slice.
+        4. Corrective retry (``self.corrective_retry``, if set) — when
+           nothing from steps 1-3 reached "Correct" confidence (see
+           ``crag.py``'s ``has_confident_result``), repeats steps 1-3 once
+           more with a ``_CORRECTIVE_RETRY_MULTIPLIER``x wider candidate
+           pool. The retry's results replace the first attempt's only if
+           the retry itself reached "Correct" confidence; otherwise the
+           first attempt's results stand unchanged. At most one retry —
+           never a loop.
+        5. The existing top-1 ``retrieval_threshold`` gate, on whatever
+           survived steps 3-4 — a single all-or-nothing check, distinct
+           from step 3's per-passage filtering. Only ever indexes
+           ``results[0]`` inside an ``if results`` guard, so an
+           empty/CRAG-emptied list is handled the same way a naturally-
+           empty ``corpus.query()`` result is today.
+        6. Final ``top_k`` slice.
 
         Returns an empty list when no corpus is attached, when nothing
-        survives steps 1-3, or when the top-1 gate (step 4) trips. In the
+        survives steps 1-4, or when the top-1 gate (step 5) trips. In the
         last two cases the query is treated as pure-chat — context would
         not improve the answer and would only consume prompt budget.
 
@@ -321,11 +377,18 @@ class InferenceEngine:
         if self.corpus is None:
             return []
         query_k = max(top_k, self.rerank_candidates) if self.reranker is not None else top_k
-        results = self.corpus.query(query, top_k=query_k)
-        if self.reranker is not None and results:
-            results = self.reranker.rerank(query, results)
-        if self.crag_filter is not None and results:
-            results = self.crag_filter.filter(results)
+        results = self._retrieve_once(query, query_k)
+
+        if (
+            self.corrective_retry
+            and self.crag_filter is not None
+            and not has_confident_result(results, self.crag_filter)
+        ):
+            retry_k = query_k * self._CORRECTIVE_RETRY_MULTIPLIER
+            retry_results = self._retrieve_once(query, retry_k)
+            if has_confident_result(retry_results, self.crag_filter):
+                results = retry_results
+
         if (
             results
             and self.retrieval_threshold is not None
