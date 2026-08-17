@@ -22,7 +22,11 @@ project root).  Each entry describes everything needed to instantiate an
                 "temperature":    0.8,
                 "top_k":          50,
                 "top_p":          0.9
-            }
+            },
+            "crag": true,
+            "crag_lower_threshold": 0.3,
+            "crag_upper_threshold": 0.7,
+            "corrective_retry": true
         }
     }
 
@@ -31,6 +35,18 @@ All paths are resolved relative to the directory that contains the JSON file.
 a ``.lora`` file the adapter is applied automatically at engine-load time.
 For the multi-agent router all agents should share the same ``checkpoint``
 so LoRA adapters can be swapped without reloading the base model.
+
+``crag``/``crag_lower_threshold``/``crag_upper_threshold``/
+``corrective_retry`` are all optional and configure per-passage retrieval
+filtering (see ``grimoire_ai/llm/inference/crag.py``). ``crag: true``
+builds a ``CragFilter``, defaulting to its own ``lower_threshold=0.3``/
+``upper_threshold=0.7`` when the JSON doesn't override them -- meaningful
+defaults for a lexical (Jaccard) ``corpus_dirs``-backed corpus like
+Saga's, per ``crag.py``'s own score-semantics notes. ``corrective_retry:
+true`` requires ``crag: true`` (validated at load time, same as
+``InferenceEngine`` itself validates it at construction time) -- it
+retries retrieval once, with a wider candidate pool, when nothing from
+the first attempt reaches "Correct" confidence.
 """
 
 from __future__ import annotations
@@ -53,6 +69,10 @@ class AgentConfig:
     corpus_dirs: list[str] = field(default_factory=list)
     gen_config: dict = field(default_factory=dict)
     lora_path: str = ""
+    crag: bool = False
+    crag_lower_threshold: Optional[float] = None
+    crag_upper_threshold: Optional[float] = None
+    corrective_retry: bool = False
 
 
 class AgentRegistry:
@@ -139,12 +159,24 @@ class AgentRegistry:
 
         gen_config = GenerationConfig(**cfg.gen_config) if cfg.gen_config else None
 
+        crag_filter = None
+        if cfg.crag:
+            from grimoire_ai.llm.inference.crag import CragFilter
+            crag_kwargs = {}
+            if cfg.crag_lower_threshold is not None:
+                crag_kwargs["lower_threshold"] = cfg.crag_lower_threshold
+            if cfg.crag_upper_threshold is not None:
+                crag_kwargs["upper_threshold"] = cfg.crag_upper_threshold
+            crag_filter = CragFilter(**crag_kwargs)
+
         engine = InferenceEngine(
             checkpoint_path=str(ckpt_path),
             tokenizer_path=str(self._resolve(cfg.vocab)),
             corpus=corpus,
             gen_config=gen_config,
             quantize=quantize,
+            crag_filter=crag_filter,
+            corrective_retry=cfg.corrective_retry,
         )
 
         if cfg.lora_path:
@@ -313,6 +345,14 @@ class AgentRegistry:
                     raise ValueError(
                         f"Agent '{key}' is missing required field '{req}'."
                     )
+            corrective_retry = entry.get("corrective_retry", False)
+            crag = entry.get("crag", False)
+            if corrective_retry and not crag:
+                raise ValueError(
+                    f"Agent '{key}' has corrective_retry=true but crag is not "
+                    f"enabled -- corrective_retry requires \"crag\": true, since "
+                    f"it relies on CragFilter's confidence classification."
+                )
             self._agents[key] = AgentConfig(
                 key=key,
                 display_name=entry["display_name"],
@@ -322,4 +362,8 @@ class AgentRegistry:
                 corpus_dirs=entry.get("corpus_dirs", []),
                 gen_config=entry.get("gen_config", {}),
                 lora_path=entry.get("lora_path", ""),
+                crag=crag,
+                crag_lower_threshold=entry.get("crag_lower_threshold"),
+                crag_upper_threshold=entry.get("crag_upper_threshold"),
+                corrective_retry=corrective_retry,
             )
