@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from grimoire_ai.agents.registry import AgentConfig, AgentRegistry
@@ -171,3 +173,88 @@ def test_paths_are_resolved_relative_to_json_file(tmp_path):
     resolved = reg._resolve(cfg.checkpoint)
     assert resolved.is_absolute()
     assert str(tmp_path) in str(resolved)
+
+
+# ---------------------------------------------------------------------------
+# CRAG / corrective_retry config
+# ---------------------------------------------------------------------------
+
+def test_crag_fields_default_to_disabled(tmp_path):
+    path = _write_registry(tmp_path, MINIMAL)
+    cfg = AgentRegistry(path).get("saga")
+    assert cfg.crag is False
+    assert cfg.crag_lower_threshold is None
+    assert cfg.crag_upper_threshold is None
+    assert cfg.corrective_retry is False
+
+
+def test_crag_fields_load_when_present(tmp_path):
+    data = {
+        "saga": {
+            **MINIMAL["saga"],
+            "crag": True,
+            "crag_lower_threshold": 0.2,
+            "crag_upper_threshold": 0.6,
+            "corrective_retry": True,
+        }
+    }
+    path = _write_registry(tmp_path, data)
+    cfg = AgentRegistry(path).get("saga")
+    assert cfg.crag is True
+    assert cfg.crag_lower_threshold == 0.2
+    assert cfg.crag_upper_threshold == 0.6
+    assert cfg.corrective_retry is True
+
+
+def test_corrective_retry_without_crag_raises(tmp_path):
+    data = {"saga": {**MINIMAL["saga"], "corrective_retry": True}}  # crag left at default False
+    path = _write_registry(tmp_path, data)
+    with pytest.raises(ValueError, match="corrective_retry"):
+        AgentRegistry(path)
+
+
+def test_build_engine_passes_crag_filter_and_corrective_retry(tmp_path):
+    """build_engine() must construct a CragFilter from the config's
+    thresholds and pass it through to InferenceEngine, along with
+    corrective_retry -- the actual wiring point, not just config parsing."""
+    ckpt = tmp_path / "ckpt.pt"
+    ckpt.write_text("not a real checkpoint -- InferenceEngine is mocked below")
+    data = {
+        "saga": {
+            "display_name": "Saga",
+            "checkpoint": ckpt.name,
+            "vocab": "bpe.json",
+            "crag": True,
+            "crag_lower_threshold": 0.25,
+            "crag_upper_threshold": 0.65,
+            "corrective_retry": True,
+        }
+    }
+    path = _write_registry(tmp_path, data)
+    reg = AgentRegistry(path)
+
+    with patch("grimoire_ai.llm.inference.engine.InferenceEngine") as mock_engine_cls:
+        mock_engine_cls.return_value = MagicMock()
+        reg.build_engine("saga")
+
+    _, kwargs = mock_engine_cls.call_args
+    assert kwargs["corrective_retry"] is True
+    assert kwargs["crag_filter"] is not None
+    assert kwargs["crag_filter"].lower_threshold == 0.25
+    assert kwargs["crag_filter"].upper_threshold == 0.65
+
+
+def test_build_engine_crag_filter_none_when_crag_disabled(tmp_path):
+    ckpt = tmp_path / "ckpt.pt"
+    ckpt.write_text("not a real checkpoint -- InferenceEngine is mocked below")
+    data = {"saga": {"display_name": "Saga", "checkpoint": ckpt.name, "vocab": "bpe.json"}}
+    path = _write_registry(tmp_path, data)
+    reg = AgentRegistry(path)
+
+    with patch("grimoire_ai.llm.inference.engine.InferenceEngine") as mock_engine_cls:
+        mock_engine_cls.return_value = MagicMock()
+        reg.build_engine("saga")
+
+    _, kwargs = mock_engine_cls.call_args
+    assert kwargs["crag_filter"] is None
+    assert kwargs["corrective_retry"] is False
