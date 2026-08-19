@@ -240,3 +240,41 @@ session is extending) before moving on, the same way every prior checkpoint
 swap in `expansion_PLAN.md` is logged with its evaluation numbers — the
 checkpoint-swap history is only useful if every swap is traceable to the
 evidence that justified it.
+
+### `general-expansion-v1` ships, replaces production (2026-08-19)
+
+Full fine-tune (`checkpoints/finetune/general-expansion-v1/step_0013213.pt`,
+13,213 steps on `combined_v2.jsonl`, 140,945 examples) off the
+general-content-expansion pretrain checkpoint
+(`checkpoints/pretrain/general_expansion_v1/step_0015259.pt`, 324.2M
+tokens, ~65% of the small-25M Chinchilla target — see
+`expansion_PLAN.md`'s "General-content expansion" section). `agents.json`'s
+`saga.checkpoint` updated to point at it, replacing
+`saga-se-qa-weighted-clean-v2` (the long-standing production checkpoint).
+
+**Quiz eval, 5 seeds, production-matching sampling (temperature 0.8/top_k
+50/top_p 0.9)**: `general-expansion-v1` pass-rate 16.3%, kw-recall 10.7%,
+token-F1 0.175, vs. production's 15.1%/9.3%/0.174 and `combined-v1`'s
+17.6%/10.5%/0.161. Every pairwise difference is smaller than each
+checkpoint's own seed-to-seed noise (σ≈1-3pp on pass-rate/kw-recall) —
+statistically tied, not a clean numeric win. Expected: this quiz measures
+narrow D&D factual recall, which this session's strategy deliberately
+deprioritized in favor of general conversational capability, with
+retrieval (not pretrain memorization) carrying D&D precision instead.
+
+**Qualitative (`compare_checkpoints.py` vs. production, 5 seeds, 12
+prompts)**: the severe Stack-Exchange-answer register drift found in the
+pretrain-only qualitative check (near-universal — simulated forum
+threads, new questions posed mid-completion, personal anecdotes, even on
+narrative/definitional prompts that should've resisted it) is
+substantially fixed by fine-tuning. Not fully eliminated — a milder
+residual tic (self-referential "in this answer"/"I'm going to answer
+this by" framing) survives in ~4-5 of 50 completions; see
+`known_bugs.md`. Overall factual coherence is roughly on par with
+production — neither checkpoint reads as more reliable on this pass.
+
+**Decision**: shipped on this evidence — comparable-or-tied quantitative
+result plus a real, if partial, fix to the specific concern flagged after
+pretraining (the register drift) was judged sufficient, rather than
+chasing a clean numeric win that the quiz metric was never going to show
+given what this session optimized for.

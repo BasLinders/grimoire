@@ -2,7 +2,7 @@
     "saga": {
         "display_name": "Saga",
         "description": "D&D rules, encounter mathematics, and data-science assistant.",
-        "checkpoint":   "checkpoints/finetune/saga-se-qa-weighted-clean-v2/step_0007288.pt",
+        "checkpoint":   "checkpoints/finetune/general-expansion-v1/step_0013213.pt",
         "vocab":        "data/tokenizer/bpe.json",
         "corpus_dirs":  ["data/corpus/saga/"],
         "gen_config": {
