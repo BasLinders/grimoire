@@ -641,7 +641,7 @@ match-wins (`grimoire_ai/llm/data/preprocessing.py`'s `_resolve_weight`).
 - [ ] Curate more Q&A pairs for fine-tuning `weighted_clean_v3`, the way
       `weighted_clean` was fine-tuned into `saga-se-qa-weighted-clean-v2`.
 
-## General-content expansion (scoped 2026-08-16, not yet started)
+## General-content expansion (scoped 2026-08-16, first round shipped 2026-08-19)
 
 D&D-specific source material is exhausted — official + available quality
 homebrew content is all in the corpus already. Going forward, D&D facts
@@ -660,29 +660,47 @@ live again.
 quality filtering, dedup, weighting, preprocessing) already supports
 arbitrary new general sources as a config/parameter change.
 
-- [ ] **Primary lever: more Stack Exchange sites.**
-      `scripts/scrape_stackexchange.py` already takes `--site` as an
-      open string, not a hardcoded list — proven by the existing
-      history/travel/skeptics scrape (91,296 raw QA examples for
-      `general_se_qa.jsonl`). SE Q&A is the best structural match in the
-      toolkit for "conversational capability": real dialogue, not
-      narrative prose or encyclopedia entries. Feeds both the pretrain
-      corpus (raw text) and the fine-tune mix (via
-      `scripts/build_finetune_data_from_qa.py`, already used this way).
-      Candidate sites, chosen for size/quality and topic diversity, with
-      a few picked because their Q&A style (rules explanation,
-      mechanics, worldbuilding) transfers to D&D-adjacent value without
-      being D&D-specific: `english.stackexchange.com` (usage/grammar),
-      `writing.stackexchange.com` (craft/prose),
-      `worldbuilding.stackexchange.com`, `gaming.stackexchange.com`
-      (video-game mechanics), `boardgames.stackexchange.com`,
-      `scifi.stackexchange.com`, `philosophy.stackexchange.com`,
-      `cooking.stackexchange.com`.
-      **Staged, not committed upfront**: scrape 2-3 sites first
-      (English, Writing, Worldbuilding), measure real token yield via
-      `scripts/score_corpus_quality.py`, then extrapolate how many more
-      are needed to meaningfully close the gap toward ~500M — rather
-      than assuming a fixed per-site yield before any real data exists.
+- [x] **Primary lever: more Stack Exchange sites — first round done.**
+      `scripts/scrape_stackexchange.py` takes `--site` as an open string,
+      not a hardcoded list. Archive.org turned out to be unreachable from
+      this network (confirmed ISP-level block, not a DNS/outage issue —
+      see `scrape_huggingface_stackexchange.py`'s docstring), so the
+      Hugging Face Parquet-mirror fallback was used instead; output is
+      byte-identical in shape either way. Six sites scraped into
+      `data/corpus/general_qa/` (1203 files total): `history` (58),
+      `travel` (191), `skeptics` (44) — the original 3-site pilot — plus
+      `english` (374), `gaming` (376), `worldbuilding` (160). Not yet
+      scraped from the original candidate list: `philosophy`, `cooking`.
+      **Result**: fed into `general_expansion_v1`'s pretrain corpus
+      (`checkpoints/pretrain/general_expansion_v1/step_0015259.pt`,
+      324.2M tokens — up from this section's 124.4M baseline, ~65% of
+      the ~500M Chinchilla-optimal target, still ~35% short) and its
+      fine-tune (`general-expansion-v1`, `combined_v2.jsonl`, 140,945
+      examples). Shipped to production 2026-08-19 — see
+      `training_PLAN.md`'s Step 6 record. `known_bugs.md`'s residual
+      register-drift entry cites this corpus as "73.6%-of-weighted-
+      windows Q&A-dominated" post-expansion.
+      **Open issue, not resolved by this round**: the new `se_*` prefixes
+      were **not** given dedicated `--weight-pattern` entries as this
+      checklist originally called for (see the now-struck item below) —
+      they fell into the existing `*:1.75` catch-all, which was reserved
+      for D&D official books. That means the general Q&A content landed
+      in the *highest* weight tier by accident, not by decision, which
+      plausibly explains why the corpus ended up so heavily Q&A-dominated
+      (73.6%) and is a likely contributing cause of the residual
+      Stack-Exchange-answer register drift documented in `known_bugs.md`
+      — not confirmed by a controlled before/after (that would need a
+      re-weighted re-preprocess + re-pretrain to isolate), but a plausible
+      mechanism worth keeping in mind before assuming more scraping alone
+      fixes the register tic.
+      Second round scraped (2026-08-21), via the Hugging Face fallback:
+      `boardgames` (60 files), `scifi` (310 files, 61,928 QA pairs), and
+      `writing` (60 files, 11,942 QA pairs) — 9 sites total now in
+      `data/corpus/general_qa/`. None of this has been preprocessed or
+      retrained on yet — still raw `.txt` files on disk at this point;
+      still needs the weight-pattern decision above, `general_se_qa.jsonl`
+      regeneration, `grimoire-preprocess`, and a pretrain/fine-tune run
+      before it reaches a shipped checkpoint.
 - [ ] **Secondary lever: broader Gutenberg coverage.**
       `scripts/scrape_gutenberg_catalog.py` already supports bulk
       keyword+language-filtered catalog scraping (currently a
@@ -698,21 +716,25 @@ arbitrary new general sources as a config/parameter change.
       "conversational") and `scrape_arxiv.py` (abstracts only, dense
       academic register). Reusable later if wanted, lower priority given
       the stated goal.
-- [ ] **New weight-pattern entries needed once real volumes are in.** New
-      general prefixes (e.g. `se_english_*`, `se_writing_*`,
-      `se_worldbuilding_*`) must get explicit `--weight-pattern` entries,
-      not fall into the existing `*:1.75` catch-all (currently reserved
-      for D&D official books) — that would over-weight new general
-      content by accident rather than by decision. Exact weights TBD
-      once step 1's real yield is known, following the same
-      renormalization approach used above.
-- [ ] Regenerate `general_se_qa.jsonl` from the new sites, re-derive the
-      downsample ratio against D&D content (don't reuse the old
-      91,296→40,000 figure blindly — that was sized for 3 sites).
-- [ ] Rerun `grimoire-preprocess` with the expanded `--input` list and
-      updated `--weight-pattern` once new content and weights are
-      decided — same recipe as `docs/setup-training.md`'s "current full
-      recipe," just wider inputs.
+- [ ] **New weight-pattern entries needed — did not happen in round 1,
+      still open.** New general prefixes (`english_se_*`, `gaming_se_*`,
+      `worldbuilding_se_*`, etc.) were meant to get explicit
+      `--weight-pattern` entries, not fall into the existing `*:1.75`
+      catch-all (reserved for D&D official books) — that's exactly what
+      happened instead (see the finding recorded above). Before running
+      round 2's preprocess, decide real per-site weights (or one shared
+      `*_se_*`-style general-content tier distinct from the D&D-official
+      `1.75` tier) rather than repeating the same accident at larger
+      scale.
+- [x] Regenerated `general_se_qa.jsonl` from the 6-site scrape (91,296
+      raw QA examples cited in this checklist's original 3-site estimate
+      was superseded once english/gaming/worldbuilding were added; feeds
+      `combined_v2.jsonl`'s 140,945 fine-tune examples above).
+- [x] Reran `grimoire-preprocess` with the expanded `--input` list —
+      produced the `corpus.bin`/`sample_weights.npy` that
+      `general_expansion_v1` trained on (see weight-pattern caveat above:
+      the *inputs* were expanded as planned, but the *weights* used the
+      unchanged catch-all rather than new dedicated entries).
 
 Out of scope for this round: actually retraining on the expanded corpus,
 and the `small-25M` vs. `medium-85M` decision a much larger corpus might
