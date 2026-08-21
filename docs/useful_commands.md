@@ -65,6 +65,37 @@ positives); see `expansion_PLAN.md`'s derived-adventure pilot for a case
 that used a looser 0.2-0.25 threshold deliberately (shared vocabulary
 between adventures was expected, not a duplication signal).
 
+**Scale up EntiGraph synthetic passages** — code-verified "same facts,
+different wording" corpus text, template-assembled from real Open5e
+fields (a monster's actual condition immunities, a class's actual weapon
+proficiencies) rather than LLM rephrasing, so there's no hallucination
+risk the way there would be with generated prose. Reinforces existing
+D&D facts through varied phrasing rather than adding new (possibly
+unverified) content — the right lever when the goal is better recall of
+facts already in the corpus, not corpus *volume*:
+
+```bash
+python scripts/generate_open5e_entigraph.py \
+    --output-dir data/corpus/saga_derived/ \
+    --categories monster_condition class_weapon class_spell \
+    --max-pairs-per-category 500 \
+    --document-slug wotc-srd \
+    --timeout 90
+```
+
+`--max-pairs-per-category 500` is usually above the natural ceiling for
+`wotc-srd`-only data (the relevance filter only keeps pairs a real field
+actually links, e.g. a monster genuinely immune to that condition) — so
+this pulls in everything actually available per category rather than
+needing to sample down. `--timeout` defaults to 30s; raise it (as above)
+if a fetch keeps hitting `Read timed out` after all retries — that means
+the request is reaching `api.open5e.com` but the server isn't responding
+in time, not a connection/DNS/block issue, so a longer timeout can
+succeed where the default doesn't. Output overwrites the existing
+`entigraph_*.txt` files in `--output-dir`; rerun the corpus token-count
+command above afterward to see the yield, then `grimoire-preprocess`
+(already weighted `entigraph_*:1` per `setup-training.md`) to fold it in.
+
 ## Checkpoint comparison and verification
 
 **Multi-seed qualitative comparison.** A single seed's sampling output
