@@ -408,7 +408,7 @@ pytest                            # unit tests
 pytest tests/test_integration.py  # end-to-end integration tests
 ```
 
-See [docs/setup-training.md](docs/setup-training.md) and [docs/setup-inference.md](docs/setup-inference.md) for detailed setup guides.
+See [docs/setup-training.md](docs/setup-training.md) and [docs/setup-inference.md](docs/setup-inference.md) for detailed setup guides, and [docs/useful_commands.md](docs/useful_commands.md) for check/verify/loop commands that don't belong to a single pipeline stage (corpus token counts, multi-seed comparison loops, quality-filter previews, and the like).
 
 ## References
 
