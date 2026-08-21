@@ -103,6 +103,21 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "backstop stronger than the soft repetition_penalty discount. Uses "
              "RepetitionLoopGuard's defaults (max_repeats=3, max_period=4).",
     )
+    p.add_argument(
+        "--loop-guard-max-period", type=int, default=4, metavar="N",
+        help="Longest repeating block length (tokens) the loop guard checks "
+             "(default: 4). Raise this to catch whole repeating sentence "
+             "templates, not just short phrases. Ignored unless --loop-guard "
+             "is set.",
+    )
+    p.add_argument(
+        "--loop-guard-template-match-ratio", type=float, default=1.0, metavar="R",
+        help="Fraction of positions within a repeating block that must match "
+             "across cycles before the loop guard fires (default: 1.0, exact "
+             "repeats only). Lower it (e.g. 0.6) to also catch templated loops "
+             "where a value is substituted each cycle ('CR = 10 + Dex bonus. "
+             "CR = 14 + Str bonus...'). Ignored unless --loop-guard is set.",
+    )
     return p.parse_args(argv)
 
 
@@ -184,6 +199,8 @@ def main(argv: list[str] | None = None) -> None:
         top_k=args.top_k,
         top_p=args.top_p,
         loop_guard_max_repeats=3 if args.loop_guard else 0,
+        loop_guard_max_period=args.loop_guard_max_period,
+        loop_guard_template_match_ratio=args.loop_guard_template_match_ratio,
     )
     if args.loop_guard:
         print("Loop guard enabled — repeating token/phrase loops are hard-blocked.")

@@ -97,6 +97,74 @@ def test_loop_guard_mask_no_op_when_nothing_banned() -> None:
 
 
 # ---------------------------------------------------------------------------
+# RepetitionLoopGuard -- templated (varying-content) loops
+#
+# docs/known_bugs.md: RepetitionLoopGuard's exact-match check misses a
+# repeating *structure* with a substituted value each cycle (e.g. "CR = 10 +
+# Dex bonus. CR = 14 + Str bonus..."). template_match_ratio < 1.0 relaxes the
+# per-position check so a bounded fraction of positions may vary, as long as
+# the anchor position (the one that would open the next cycle) stays fixed.
+# ---------------------------------------------------------------------------
+
+def test_template_ratio_rejects_bad_value() -> None:
+    with pytest.raises(ValueError, match="template_match_ratio"):
+        RepetitionLoopGuard(template_match_ratio=0.0)
+    with pytest.raises(ValueError, match="template_match_ratio"):
+        RepetitionLoopGuard(template_match_ratio=1.5)
+
+
+def test_exact_repeat_still_bans_at_ratio_below_one() -> None:
+    """A ratio below 1.0 must still catch plain exact repeats (a stricter
+    match trivially satisfies a looser threshold)."""
+    guard = RepetitionLoopGuard(max_repeats=3, max_period=1, template_match_ratio=0.5)
+    assert guard.banned_token_ids([7, 7]) == {7}
+
+
+def test_default_ratio_ignores_templated_loop() -> None:
+    """Baseline: at the default ratio=1.0, a cycle that differs at even one
+    position (the varying "slot") is never flagged -- this is the exact
+    behaviour docs/known_bugs.md described as missing."""
+    guard = RepetitionLoopGuard(max_repeats=3, max_period=4)
+    # Two cycles of ["CR", "=", <value>, "."] with only the value (index 2)
+    # varying: ids 1="CR", 2="=", 3="10", 4="14", 5=".".
+    generated = [1, 2, 3, 5, 1, 2, 4, 5]
+    assert guard.banned_token_ids(generated) == set()
+
+
+def test_lowered_ratio_catches_templated_loop_anchor() -> None:
+    """With the anchor position ("CR") invariant across both prior cycles
+    and 3/4 positions matching, a ratio of 0.6 should ban the anchor token
+    from opening a third repeat of the template -- without banning anything
+    about the varying value itself."""
+    guard = RepetitionLoopGuard(max_repeats=3, max_period=4, template_match_ratio=0.6)
+    generated = [1, 2, 3, 5, 1, 2, 4, 5]
+    assert guard.banned_token_ids(generated) == {1}
+
+
+def test_lowered_ratio_does_not_fire_when_anchor_itself_varies() -> None:
+    """If the position that would open the next cycle is the one that
+    varies (not just some other slot), the guard must not fire there --
+    banning it would be guessing at a value, not blocking a stable anchor."""
+    guard = RepetitionLoopGuard(max_repeats=3, max_period=4, template_match_ratio=0.6)
+    # Same shape as above but the *first* position of each cycle varies
+    # instead of the third: ["10"/"14", "=", "CR", "."].
+    generated = [3, 2, 1, 5, 4, 2, 1, 5]
+    assert guard.banned_token_ids(generated) == set()
+
+
+def test_lowered_ratio_respects_threshold_not_just_anchor() -> None:
+    """Anchor being invariant alone isn't sufficient -- overall match_ratio
+    must also clear the configured threshold, or the guard would fire on
+    almost-entirely-different cycles that merely happen to share one
+    coincidentally-repeated token."""
+    guard = RepetitionLoopGuard(max_repeats=3, max_period=4, template_match_ratio=0.9)
+    # Anchor (index 0, id=1) invariant, but only 2/4 positions match overall
+    # -- below the 0.9 threshold.
+    generated = [1, 2, 3, 5, 1, 9, 4, 6]
+    assert guard.banned_token_ids(generated) == set()
+
+
+# ---------------------------------------------------------------------------
 # IntegerGrammar
 # ---------------------------------------------------------------------------
 

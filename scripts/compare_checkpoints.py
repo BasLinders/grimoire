@@ -78,6 +78,7 @@ def _run_checkpoint(
     checkpoint: str, vocab: str, repetition_penalty: float, max_new_tokens: int,
     prompts: list[str], seed: int,
     loop_guard_max_repeats: int = 0, loop_guard_max_period: int = 4,
+    loop_guard_template_match_ratio: float = 1.0,
 ) -> list[str]:
     import torch
 
@@ -94,6 +95,7 @@ def _run_checkpoint(
         repetition_penalty=repetition_penalty,
         loop_guard_max_repeats=loop_guard_max_repeats,
         loop_guard_max_period=loop_guard_max_period,
+        loop_guard_template_match_ratio=loop_guard_template_match_ratio,
     )
 
     responses = []
@@ -137,20 +139,29 @@ def main() -> None:
                               "repetition-loop entry. Try 3.")
     parser.add_argument("--loop-guard-max-period", type=int, default=4, metavar="N",
                          help="Longest repeating block length (tokens) the loop guard checks "
-                              "for (default: 4). Ignored if --loop-guard-max-repeats is 0.")
+                              "for (default: 4). Ignored if --loop-guard-max-repeats is 0. "
+                              "Raise this to catch whole repeating sentence templates -- "
+                              "see --loop-guard-template-match-ratio.")
+    parser.add_argument("--loop-guard-template-match-ratio", type=float, default=1.0, metavar="R",
+                         help="Fraction of positions within a repeating block that must match "
+                              "across cycles before the guard fires (default: 1.0, exact repeats "
+                              "only). Lower it (e.g. 0.6) to also catch templated loops where a "
+                              "value is substituted each cycle ('CR = 10 + Dex bonus. CR = 14 + "
+                              "Str bonus...', docs/known_bugs.md). Ignored if "
+                              "--loop-guard-max-repeats is 0.")
     args = parser.parse_args()
     prompts = _load_prompts(args.prompts_file)
 
     print(f"Loading {args.label_a}: {args.checkpoint_a}")
     responses_a = _run_checkpoint(
         args.checkpoint_a, args.vocab, args.repetition_penalty, args.max_new_tokens, prompts, args.seed,
-        args.loop_guard_max_repeats, args.loop_guard_max_period,
+        args.loop_guard_max_repeats, args.loop_guard_max_period, args.loop_guard_template_match_ratio,
     )
 
     print(f"Loading {args.label_b}: {args.checkpoint_b}")
     responses_b = _run_checkpoint(
         args.checkpoint_b, args.vocab, args.repetition_penalty, args.max_new_tokens, prompts, args.seed,
-        args.loop_guard_max_repeats, args.loop_guard_max_period,
+        args.loop_guard_max_repeats, args.loop_guard_max_period, args.loop_guard_template_match_ratio,
     )
 
     for prompt, a, b in zip(prompts, responses_a, responses_b):

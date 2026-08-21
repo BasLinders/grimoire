@@ -90,6 +90,15 @@ class GenerationConfig:
         loop_guard_max_period: Longest repeating block length (in tokens)
             the loop guard checks. Only consulted when
             ``loop_guard_max_repeats > 0``.
+        loop_guard_template_match_ratio: Fraction of positions within a
+            repeating block that must match across cycles before the loop
+            guard fires. ``1.0`` (default) requires an exact repeat.
+            Lower it to also catch *templated* loops — a repeating
+            structure with a substituted value each cycle (e.g. "CR = 10
+            + Dex bonus. CR = 14 + Str bonus...") — which the exact check
+            alone doesn't catch since the token sequence never exactly
+            repeats. Only consulted when ``loop_guard_max_repeats > 0``;
+            see ``RepetitionLoopGuard`` for the full mechanism.
     """
 
     max_new_tokens: int = 128
@@ -102,6 +111,7 @@ class GenerationConfig:
     adaptive_temp_ceiling: float = 1.3
     loop_guard_max_repeats: int = 0
     loop_guard_max_period: int = 4
+    loop_guard_template_match_ratio: float = 1.0
 
 
 def adaptive_temperature(
@@ -145,7 +155,11 @@ def _resolve_loop_guard(config: GenerationConfig) -> Optional[RepetitionLoopGuar
     """Build a ``RepetitionLoopGuard`` from config, or ``None`` if disabled."""
     if config.loop_guard_max_repeats <= 0:
         return None
-    return RepetitionLoopGuard(config.loop_guard_max_repeats, config.loop_guard_max_period)
+    return RepetitionLoopGuard(
+        config.loop_guard_max_repeats,
+        config.loop_guard_max_period,
+        config.loop_guard_template_match_ratio,
+    )
 
 
 def _apply_repetition_penalty(
