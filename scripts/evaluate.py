@@ -122,6 +122,14 @@ def main() -> None:
              "(default: 4). Ignored if --quiz-loop-guard-max-repeats is 0.",
     )
     parser.add_argument(
+        "--quiz-loop-guard-template-match-ratio", type=float, default=1.0, metavar="R",
+        help="Fraction of positions within a repeating block that must match across "
+             "cycles before the guard fires (default: 1.0, exact repeats only). Lower "
+             "it (e.g. 0.6) to also catch templated loops where a value is substituted "
+             "each cycle ('CR = 10 + Dex bonus. CR = 14 + Str bonus...', "
+             "docs/known_bugs.md). Ignored if --quiz-loop-guard-max-repeats is 0.",
+    )
+    parser.add_argument(
         "--quiz-temperature", type=float, default=0.0, metavar="X",
         help="Sampling temperature for quiz generation (default: 0.0, "
              "greedy). The quiz eval's own default is deterministic and "
@@ -299,6 +307,7 @@ def main() -> None:
         quiz_repetition_penalty=args.quiz_repetition_penalty,
         quiz_loop_guard_max_repeats=args.quiz_loop_guard_max_repeats,
         quiz_loop_guard_max_period=args.quiz_loop_guard_max_period,
+        quiz_loop_guard_template_match_ratio=args.quiz_loop_guard_template_match_ratio,
         quiz_temperature=args.quiz_temperature,
         quiz_top_k=args.quiz_top_k,
         quiz_top_p=args.quiz_top_p,

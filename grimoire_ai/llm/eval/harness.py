@@ -46,6 +46,7 @@ def run_eval(
     quiz_repetition_penalty: float = 1.0,
     quiz_loop_guard_max_repeats: int = 0,
     quiz_loop_guard_max_period: int = 4,
+    quiz_loop_guard_template_match_ratio: float = 1.0,
     quiz_temperature: float = 0.0,
     quiz_top_k: int = 1,
     quiz_top_p: float = 1.0,
@@ -86,6 +87,12 @@ def run_eval(
         quiz_loop_guard_max_period: Longest repeating block length (tokens)
             checked for looping. Ignored if ``quiz_loop_guard_max_repeats``
             is ``0``.
+        quiz_loop_guard_template_match_ratio: Fraction of positions within
+            a repeating block that must match across cycles before the
+            guard fires. ``1.0`` (default) requires an exact repeat; lower
+            it to also catch templated loops (a repeating structure with a
+            substituted value each cycle) during quiz generation. Ignored
+            if ``quiz_loop_guard_max_repeats`` is ``0``.
         quiz_temperature: Sampling temperature for quiz generation. ``0.0``
             (default) matches the quiz's standalone greedy default. Set to
             match a real deployment's ``gen_config`` (e.g. ``agents.json``'s
@@ -204,6 +211,7 @@ def run_eval(
                     repetition_penalty=quiz_repetition_penalty,
                     loop_guard_max_repeats=quiz_loop_guard_max_repeats,
                     loop_guard_max_period=quiz_loop_guard_max_period,
+                    loop_guard_template_match_ratio=quiz_loop_guard_template_match_ratio,
                 )
             quiz_result = eval_quiz(
                 engine=engine, examples=examples, gen_config=quiz_gen_config,

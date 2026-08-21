@@ -47,43 +47,81 @@ if TYPE_CHECKING:
 class RepetitionLoopGuard:
     """Hard-bans the token that would extend an already-established loop.
 
-    For each period ``p`` in ``1..max_period``, checks whether the most
-    recently generated ``(max_repeats - 1) * p`` tokens already consist of
-    ``max_repeats - 1`` back-to-back copies of the trailing ``p``-token
-    block. If so, the single token that would complete one more repeat of
-    that block (the first token of the block) is masked to ``-inf`` — it
-    becomes impossible to sample, not just less likely.
+    For each period ``p`` in ``1..max_period``, splits the most recently
+    generated ``(max_repeats - 1) * p`` tokens into ``max_repeats - 1``
+    back-to-back ``p``-token cycles and checks, position by position within
+    the cycle, how many of the ``p`` positions hold the same token across
+    every cycle ("invariant positions"). If the position that would open
+    the *next* cycle (the token ``p`` back from here) is itself invariant,
+    and the fraction of invariant positions overall meets
+    ``template_match_ratio``, the token that would repeat that position
+    (completing one more cycle) is masked to ``-inf`` — it becomes
+    impossible to sample, not just less likely.
 
+    At the default ``template_match_ratio=1.0`` every position must match
+    across cycles, which reduces to the original exact-repeat check:
     ``period=1`` catches single-token collapse ("does does does...");
     higher periods catch short-phrase loops ("is a monster is a
-    monster..."). This is deliberately a targeted structural guard, not a
+    monster..."). Lowering the ratio below 1.0 additionally catches
+    *templated* loops, where the surrounding structure repeats but a
+    substituted value changes each cycle (e.g. "CR = 10 + Dex bonus. CR =
+    14 + Str bonus...", found via 5-seed qualitative comparison on
+    `saga-combined-v1` — see docs/known_bugs.md). The varying positions
+    are simply not counted as invariant and nothing about them is banned;
+    only the recurring, non-varying anchor position that would otherwise
+    keep starting a new cycle gets blocked, so the model is forced off the
+    template rather than just off one exact word.
+
+    Either way this is deliberately a targeted structural guard, not a
     general n-gram blocking scheme: it only ever bans a token once a loop
-    has *already* run for ``max_repeats - 1`` cycles, so it never
-    interferes with ordinary repeated words (e.g. "the... the...") that
-    aren't actually looping.
+    (exact or templated) has *already* run for ``max_repeats - 1`` cycles,
+    so it never interferes with ordinary repeated words (e.g. "the...
+    the...") that aren't actually looping.
     """
 
-    def __init__(self, max_repeats: int = 3, max_period: int = 4) -> None:
+    def __init__(
+        self,
+        max_repeats: int = 3,
+        max_period: int = 4,
+        template_match_ratio: float = 1.0,
+    ) -> None:
         """Configure the guard.
 
         Args:
-            max_repeats: How many consecutive copies of a block are
+            max_repeats: How many consecutive cycles of a block are
                 tolerated before the next one is banned. Must be >= 2 (a
                 guard that fires on the very first repeat would ban
                 completely ordinary language).
             max_period: Longest block length (in tokens) checked for
                 looping. ``1`` alone catches single-token loops; higher
-                values also catch short repeating phrases.
+                values also catch short repeating phrases or, combined
+                with a lowered ``template_match_ratio``, whole repeating
+                sentence templates (sized to the actual template length in
+                tokens, typically well above the ``4``-token default meant
+                for short exact-repeat phrases).
+            template_match_ratio: Fraction of positions within a cycle
+                that must match across all ``max_repeats - 1`` prior
+                cycles before a loop is considered established. ``1.0``
+                (default) requires every position to match — the original
+                exact-repeat behaviour. Lower it (e.g. ``0.6``) to also
+                catch templated loops where some positions legitimately
+                vary cycle to cycle. Must be in ``(0.0, 1.0]``.
 
         Raises:
-            ValueError: If ``max_repeats < 2`` or ``max_period < 1``.
+            ValueError: If ``max_repeats < 2``, ``max_period < 1``, or
+                ``template_match_ratio`` is not in ``(0.0, 1.0]``.
         """
         if max_repeats < 2:
             raise ValueError(f"max_repeats ({max_repeats}) must be at least 2.")
         if max_period < 1:
             raise ValueError(f"max_period ({max_period}) must be at least 1.")
+        if not (0.0 < template_match_ratio <= 1.0):
+            raise ValueError(
+                f"template_match_ratio ({template_match_ratio}) must be in (0.0, 1.0]."
+            )
         self.max_repeats = max_repeats
         self.max_period = max_period
+        self.template_match_ratio = template_match_ratio
 
     def banned_token_ids(self, generated: list[int]) -> set[int]:
         """Return the token ids that would extend an existing loop right now.
@@ -97,15 +135,29 @@ class RepetitionLoopGuard:
             established for any checked period.
         """
         banned: set[int] = set()
+        n = len(generated)
+        reps_needed = self.max_repeats - 1
         for period in range(1, self.max_period + 1):
-            block = generated[-period:]
-            if len(block) < period:
+            window = period * reps_needed
+            if n < window:
                 continue  # not enough history for this period yet
-            span = period * (self.max_repeats - 1)
-            if len(generated) < span:
+            cycles = [
+                generated[n - window + k * period : n - window + (k + 1) * period]
+                for k in range(reps_needed)
+            ]
+            invariant_count = 0
+            anchor_invariant = False
+            for pos in range(period):
+                values = {cycle[pos] for cycle in cycles}
+                if len(values) == 1:
+                    invariant_count += 1
+                    if pos == 0:
+                        anchor_invariant = True
+            if not anchor_invariant:
+                continue  # the position about to repeat isn't stable -- don't ban it
+            if invariant_count / period < self.template_match_ratio:
                 continue
-            if generated[-span:] == block * (self.max_repeats - 1):
-                banned.add(block[0])
+            banned.add(cycles[-1][0])
         return banned
 
     def mask(self, logits: torch.Tensor, generated: list[int]) -> torch.Tensor:
