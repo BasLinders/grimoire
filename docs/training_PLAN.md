@@ -278,3 +278,53 @@ result plus a real, if partial, fix to the specific concern flagged after
 pretraining (the register drift) was judged sufficient, rather than
 chasing a clean numeric win that the quiz metric was never going to show
 given what this session optimized for.
+
+## Step 7 — RepetitionLoopGuard's templated-loop gap (fixed, 2026-08-21)
+
+`known_bugs.md` had flagged that `RepetitionLoopGuard`'s exact-repeat
+check (`max_repeats`/`max_period`) missed a *templated* loop — the
+surrounding structure repeats but a substituted value changes each cycle
+(e.g. `saga-combined-v1`, seed 4, "armor class of a Goblin": `CR = 10 +
+Dex bonus. CR = 14 + Str bonus. CR = 18 + Con bonus + Int bonus...`,
+continuing for ~20 cycles even with the exact guard active).
+
+**Fix**: `RepetitionLoopGuard` (`grimoire_ai/llm/inference/constrained_decoding.py`)
+gained a `template_match_ratio` parameter (default `1.0`). Instead of
+requiring a whole repeating block to match verbatim, it now checks
+*position by position* across the trailing cycles whether a slot holds
+the same token in every cycle ("invariant"). If the position that would
+open the next cycle (the recurring anchor — "CR" in the example above) is
+itself invariant, and the fraction of invariant positions overall meets
+`template_match_ratio`, that anchor token is banned from opening another
+cycle — the genuinely-varying slots (the substituted number/word) are
+never touched. At `template_match_ratio = 1.0` this is exactly the
+original exact-repeat check (all pre-existing `RepetitionLoopGuard` tests
+pass unchanged); lowering it (e.g. `0.6`) additionally catches templated
+loops. Threaded through `GenerationConfig`, `cli/chat.py`,
+`compare_checkpoints.py`, and the quiz eval harness/`evaluate.py` alongside
+the existing `loop_guard_max_repeats`/`loop_guard_max_period` flags.
+
+**Verified against the real bug, same checkpoint/prompt/seed that found
+it** (`saga-combined-v1`, `step_0011339.pt`, seed 4, "armor class of a
+Goblin", `compare_checkpoints.py`, both runs otherwise identical):
+
+- Old exact-only guard (`--loop-guard-max-repeats 3 --loop-guard-max-period 4`):
+  reproduced the original collapse verbatim — `CR = 10 + Dex bonus. CR =
+  14 + Str bonus. CR = 18 + Con bonus + Int bonus. CR = 15 + Dex
+  bonus...` continuing for 20 cycles to the `max_new_tokens` cutoff.
+- New guard (`--loop-guard-max-repeats 3 --loop-guard-max-period 16
+  --loop-guard-template-match-ratio 0.6`): stopped after exactly 2 cycles
+  — `CR = 10 + Dex bonus. CR = 14 + Str bonus` — then diverged into
+  unrelated text (`(if any) +1 (for the armor class description says
+  it...)`) instead of starting a 3rd repeat. The rest of the 12-prompt
+  set was byte-identical between the two runs, confirming the guard only
+  intervenes where it should.
+
+Landed via [PR #204](https://github.com/BasLinders/grimoire/pull/204).
+Moved out of `known_bugs.md`. `agents.json`'s production `gen_config`
+still uses the old defaults (`max_period: 4`, ratio unset ⇒ `1.0`) —
+raising `loop_guard_max_period` and lowering
+`loop_guard_template_match_ratio` there is a deliberate follow-up
+decision, not done automatically by this fix, since it changes production
+generation behavior and hasn't had the same before/after quiz-eval check
+the checkpoint swaps above got.
