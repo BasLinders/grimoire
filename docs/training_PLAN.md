@@ -321,10 +321,35 @@ Goblin", `compare_checkpoints.py`, both runs otherwise identical):
   intervenes where it should.
 
 Landed via [PR #204](https://github.com/BasLinders/grimoire/pull/204).
-Moved out of `known_bugs.md`. `agents.json`'s production `gen_config`
-still uses the old defaults (`max_period: 4`, ratio unset ⇒ `1.0`) —
-raising `loop_guard_max_period` and lowering
-`loop_guard_template_match_ratio` there is a deliberate follow-up
-decision, not done automatically by this fix, since it changes production
-generation behavior and hasn't had the same before/after quiz-eval check
-the checkpoint swaps above got.
+Moved out of `known_bugs.md`.
+
+**Shipped to production (2026-08-21)**: `agents.json`'s `saga.gen_config`
+updated to `loop_guard_max_period: 16` /
+`loop_guard_template_match_ratio: 0.6` (from `max_period: 4`, no ratio ⇒
+`1.0`). Checked for regressions with the same before/after quiz-eval
+methodology as the checkpoint swaps above, 5 seeds each, temperature 0.8/
+top_k 50/top_p 0.9/repetition_penalty 1.3 (matching `agents.json`):
+
+| Seed | Old (max_period=4) pass / kw-recall / F1 | New (max_period=16, ratio=0.6) pass / kw-recall / F1 |
+|---|---|---|
+| 0 | 18.4% / 10.54% / 0.2212 | 18.4% / 10.54% / 0.2212 |
+| 1 | 22.4% / 14.63% / 0.2163 | 22.4% / 14.63% / 0.2163 |
+| 2 | 24.5% / 14.97% / 0.2370 | 24.5% / 14.97% / 0.2370 |
+| 3 | 20.4% / 12.24% / 0.2191 | 20.4% / 12.24% / 0.2191 |
+| 4 | 28.6% / 16.33% / 0.2488 | 28.6% / 16.33% / 0.2488 |
+
+Every metric is identical to four decimal places, seed for seed — not
+just "close," but byte-identical generation output, which only happens if
+the loop guard's mask never actually fired in any of these 245
+generations (5 seeds × 49 questions) under either config. Expected, not a
+test artifact: the quiz eval caps responses at 128 tokens
+(`quiz_gen_config`'s `max_new_tokens=128` in `harness.py`) vs.
+`compare_checkpoints.py`'s 256-token default used to find and verify the
+bug above, and the `saga_quiz.jsonl` Q&A prompts don't match the shape of
+the free-form "describe X" prompt that produced the original collapse —
+there just wasn't room or occasion for this specific templated pattern to
+establish itself here. This confirms **no regression** on the standard
+quiz set from widening the period and lowering the ratio (no new false-
+positive bans creeping into otherwise-fine generations); it does not
+re-demonstrate the fix itself — that's the `compare_checkpoints.py`
+before/after against the real bug repro, already recorded above.
