@@ -176,7 +176,8 @@ _CATEGORIES = {
 
 
 def _fetch_endpoint_cached(
-    endpoint: str, delay: float, cache: dict[str, list[dict]], document_slug: Optional[str]
+    endpoint: str, delay: float, cache: dict[str, list[dict]], document_slug: Optional[str],
+    timeout: float = 30,
 ) -> list[dict]:
     """Fetch an Open5e endpoint's full item list, once per endpoint per run.
 
@@ -186,7 +187,7 @@ def _fetch_endpoint_cached(
     """
     if endpoint not in cache:
         print(f"Fetching {endpoint}...")
-        cache[endpoint] = _fetch_all(endpoint, delay=delay, document_slug=document_slug)
+        cache[endpoint] = _fetch_all(endpoint, delay=delay, document_slug=document_slug, timeout=timeout)
     return cache[endpoint]
 
 
@@ -197,10 +198,11 @@ def _generate_category(
     rng: random.Random,
     fetch_cache: dict[str, list[dict]],
     document_slug: Optional[str],
+    timeout: float = 30,
 ) -> list[str]:
     (endpoint_a, endpoint_b), passage_fn, _ = _CATEGORIES[category]
-    items_a = _fetch_endpoint_cached(endpoint_a, delay, fetch_cache, document_slug)
-    items_b = _fetch_endpoint_cached(endpoint_b, delay, fetch_cache, document_slug)
+    items_a = _fetch_endpoint_cached(endpoint_a, delay, fetch_cache, document_slug, timeout)
+    items_b = _fetch_endpoint_cached(endpoint_b, delay, fetch_cache, document_slug, timeout)
 
     passages: list[str] = []
     for a in items_a:
@@ -226,6 +228,7 @@ def generate(
     max_pairs_per_category: Optional[int],
     seed: int,
     document_slug: Optional[str],
+    timeout: float = 30,
 ) -> None:
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -234,7 +237,7 @@ def generate(
 
     for category in categories:
         _, _, filename = _CATEGORIES[category]
-        passages = _generate_category(category, delay, max_pairs_per_category, rng, fetch_cache, document_slug)
+        passages = _generate_category(category, delay, max_pairs_per_category, rng, fetch_cache, document_slug, timeout)
         if not passages:
             print(f"  No passages generated for {category}, skipping.")
             continue
@@ -282,7 +285,15 @@ if __name__ == "__main__":
              "same endpoints; pass an empty string to disable filtering "
              "and pull from every document Open5e has.",
     )
+    parser.add_argument(
+        "--timeout", type=float, default=30, metavar="SECONDS",
+        help="Per-request read timeout against api.open5e.com (default: 30). "
+             "Raise this if a fetch keeps hitting 'Read timed out' after all "
+             "retries -- that's the request reaching the API but the server "
+             "not responding in time, not a connection/DNS/block issue, so a "
+             "longer timeout (e.g. 60-90) can succeed where 30 doesn't.",
+    )
     args = parser.parse_args()
 
     max_pairs = None if args.max_pairs_per_category == 0 else args.max_pairs_per_category
-    generate(args.output_dir, args.categories, args.delay, max_pairs, args.seed, args.document_slug or None)
+    generate(args.output_dir, args.categories, args.delay, max_pairs, args.seed, args.document_slug or None, args.timeout)
