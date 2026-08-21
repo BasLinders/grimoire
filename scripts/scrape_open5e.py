@@ -166,6 +166,7 @@ def _fetch_all(
     page_size: int = 100,
     max_retries: int = 3,
     document_slug: str | None = None,
+    timeout: float = 30,
 ) -> list[dict]:
     """Fetch all pages from an Open5e list endpoint.
 
@@ -196,7 +197,7 @@ def _fetch_all(
         data = None
         for attempt in range(1, max_retries + 1):
             try:
-                resp = requests.get(url, timeout=30)
+                resp = requests.get(url, timeout=timeout)
                 resp.raise_for_status()
                 data = resp.json()
                 break
