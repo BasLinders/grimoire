@@ -545,7 +545,7 @@ match-wins (`grimoire_ai/llm/data/preprocessing.py`'s `_resolve_weight`).
       MathML-noise-heavy `wp_math_*` pages). 20,198.1s wall-clock (faster
       than the July 3 `weighted_clean` run's 24,143.5s for the same step
       count). Checkpoint: `checkpoints/pretrain/weighted_clean_v2/step_0015259.pt`.
-      Config: `train_config_weighted_clean_v2.json`.
+      Config: `configs/train_config_weighted_clean_v2.json`.
 - [x] **Per-tier validation loss on `weighted_clean_v2`** (new reusable tool:
       `scripts/eval_per_tier.py`, reproduces `train.py`'s own
       `--val-stratified` split so results are directly comparable to what
@@ -616,7 +616,7 @@ match-wins (`grimoire_ai/llm/data/preprocessing.py`'s `_resolve_weight`).
       them). 20,272.8s wall-clock, essentially identical to `v2`'s 20,198.1s
       (expected: runtime tracks step count, not corpus size). Checkpoint:
       `checkpoints/pretrain/weighted_clean_v3/step_0015259.pt`. Config:
-      `train_config_weighted_clean_v3.json`.
+      `configs/train_config_weighted_clean_v3.json`.
 - [x] **Per-tier validation loss on `weighted_clean_v3`** vs. `v2`: `0.5`
       3.5468→3.5462, `1.0` 3.2673→3.2667, `1.75` 2.3677→2.3739 — every
       delta within run-to-run noise, monotonic tier ordering still holds.
