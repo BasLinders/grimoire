@@ -97,7 +97,14 @@ def dehedge(text: str) -> str:
         return text
     if len(stripped) < _MIN_REMAINING_CHARS:
         return text
-    return stripped[0].upper() + stripped[1:] if stripped else text
+    if not stripped[0].isalnum():
+        # A parenthetical/appositive clause sat between the hedge and its
+        # "that" (e.g. "I'd say, from the emblem on the front, that X") --
+        # the regex only matched the hedge itself, leaving a dangling
+        # leading comma. Not a clean strip; leave the original untouched
+        # rather than emit broken punctuation.
+        return text
+    return stripped[0].upper() + stripped[1:]
 
 
 def main() -> None:
