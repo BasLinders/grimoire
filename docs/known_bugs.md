@@ -102,8 +102,26 @@ Diagnosis: the fine-tune data itself (`saga_se_qa.jsonl` + `open5e_qa.jsonl`
 learned most directly in this pipeline, so an all-Q&A fine-tune mix
 reintroduces forum-answer register regardless of how the pretrain corpus
 was weighted. **The lever this rules out: further pretrain
-`--weight-pattern` tuning alone.** The lever not yet tried: changing the
-*fine-tune* data's format itself — e.g. blending in non-Q&A-shaped
-conversational examples (closer to
-`scripts/finetune_data/general_conversations.jsonl`'s original 64-example
-set) rather than an entirely context→answer-formatted mix.
+`--weight-pattern` tuning alone.**
+
+**Update (2026-08-23): fine-tune-data dehedging tried, real but partial
+improvement — see `training_PLAN.md`'s Step 9.** `scripts/
+dehedge_finetune_data.py` (new) deterministically strips the recurring
+meta-commentary openers driving this tic ("I would say that...", "As
+you can see in this answer...") from fine-tune JSONL "assistant"
+fields, no LLM involved. Dehedging only the general-content Q&A subset
+(`general-expansion-v1-dehedged`, 0.6% of that subset changed) held
+quiz-eval parity with production (kw-recall identical, pass-rate/F1
+within seed-to-seed noise) while cutting hedge-phrase occurrences
+roughly in half across a 5-seed qualitative pass (~7-8 vs. ~12+ per 60
+completions) — a real, low-cost win, though not a full fix (the model
+generalizes the pattern beyond the specific rewritten examples).
+Extending the same pass to `saga_se_qa.jsonl` too
+(`general-expansion-v1-dehedged-v2`) made things *worse*, not better —
+a real quiz-score regression (pass-rate 18.0% vs. 22.9%) with no
+qualitative improvement over the general-only version, plausibly because
+that file is exactly the data driving D&D factual recall. **Keep the
+general-only dehedge, not the extended one** — not yet shipped to
+`agents.json`, since it hasn't been through the full evaluation harness
+(perplexity/retrieval/degenerate-collapse) a production swap normally
+gets, only quiz + qualitative.

@@ -458,3 +458,67 @@ closer to `scripts/finetune_data/general_conversations.jsonl`'s original
 corpus reweighting, which this round showed doesn't survive fine-tuning
 on an all-Q&A dataset. Not attempted this round; flagged for a future
 session.
+
+## Step 9 — Fine-tune-data dehedging: a real, low-cost win (2026-08-23)
+
+Direct follow-up to Step 8's diagnosis. Instead of touching the pretrain
+corpus again, this targets the fine-tune data's *format* directly: a
+large share of the SE-answer register tic is a handful of recurring
+meta-commentary openers ("I would say that...", "As you can see in this
+answer...", "You are correct that...") stapled onto the front of
+otherwise-fine answers. `scripts/dehedge_finetune_data.py` (new,
+[PR #211](https://github.com/BasLinders/grimoire/pull/211)) strips these
+deterministically via regex — no LLM call, no invented content, same
+philosophy as `clean_stackexchange_markup.py` and
+`generate_open5e_entigraph.py`. Deliberately conservative: only strips
+at the very start of a response, never mid-paragraph; leaves genuine
+epistemic hedges ("I'm not sure whether...") untouched since they carry
+real meaning; skips any example where stripping would leave a dangling
+leading comma (a parenthetical/appositive sat between the hedge and its
+`that`) or fewer than 20 characters remaining, rather than emit broken
+output. Both edge cases were caught via real `--dry-run` output before
+trusting the pattern list, not assumed correct from the regex alone.
+
+Both experiments fine-tuned off `general_expansion_v1`'s pretrain
+checkpoint (not `v3`) — isolating the fine-tune-data variable cleanly
+after Step 8 showed pretrain-level changes don't survive fine-tuning
+anyway, so bundling them again would have muddied attribution a second
+time.
+
+**`general-expansion-v1-dehedged`** (general-content Q&A dehedged only,
+342/60,000 examples changed — 0.6% — `saga_se_qa.jsonl`/`open5e_qa.jsonl`
+untouched): quiz eval (5 seeds) landed statistically tied with
+production — pass-rate 21.6% vs. 22.9%, kw-recall 13.74% vs. 13.74%
+(identical), token-F1 0.2231 vs. 0.2285, all within the ~3.5-4.7pp
+seed-to-seed noise band. **Qualitative** (5 seeds, 12 prompts): the
+targeted hedge phrases showed up meaningfully less often than production
+(~7-8 occurrences across 60 completions vs. ~12+, including production's
+own previously-documented exact phrasing — "As you can see in this
+answer, I would suggest..." — reappearing verbatim again on the same
+prompt) but not eliminated, since only 0.6% of the general-content
+subset was touched and the model generalizes the pattern beyond the
+specific rewritten examples. **Verdict: a real, if partial, win at
+effectively zero cost.**
+
+**`general-expansion-v1-dehedged-v2`** (extended the same pass to
+`saga_se_qa.jsonl` too, 469/77,740 examples changed — 0.6%, same rate):
+quiz eval dropped further below production — pass-rate 18.0%, kw-recall
+11.7%, token-F1 0.2293 — a real regression (5/5 seeds below every one of
+production's 5 seeds on pass-rate, not just noise), plausibly because
+`saga_se_qa.jsonl` is exactly the data driving D&D factual recall, which
+this quiz measures directly, so even a conservative rewrite there risked
+disturbing phrasing the model had anchored specific facts to.
+**Qualitative**: tic frequency was comparable to (not clearly better
+than) the general-only version — several targeted phrasings still slipped
+through ("I've been toying the spell out" vs. the pattern list's
+narrower "I've been to/in a similar situation"; "I've been in a similar
+situation" itself appeared twice across the 60 completions). **Verdict:
+net negative — real quiz-score cost, no corresponding qualitative gain
+to justify it.**
+
+**Decision: keep `general-expansion-v1-dehedged` as the best result of
+this session's register-drift work; discard `-v2`.** Not shipped to
+`agents.json` yet — this is one more real, low-cost improvement over
+production worth having in evaluation history, but not evaluated
+against the full harness (perplexity/retrieval/degenerate-collapse
+checks) the way a production swap has always gotten before shipping.
