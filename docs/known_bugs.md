@@ -82,7 +82,28 @@ from `general-expansion-v1`'s output — it's rarer and milder than
 pretrain-only, not eliminated. Shipped anyway (2026-08-19, see
 `training_PLAN.md`'s Step 6 record) since the severe form was the actual
 concern and that's fixed; this residual is minor enough not to block on.
-No further fix attempted yet — if it's worth pursuing, the lever is
-likely the same one flagged for the corpus-composition shift itself
-(e.g. further tuning the fine-tune data's general:D&D ratio), not a new
-mechanism.
+
+**Update (2026-08-23): pretrain-corpus reweighting tried, did not help
+— see `training_PLAN.md`'s Step 8.** `general_expansion_v3` retrained on
+a larger, more deliberately-weighted corpus (Q&A dominance pulled from
+~93% down to ~75.4% of effective sampling exposure) specifically to
+address this tic. The pretrain-only qualitative check showed the fix
+working cleanly (0/6 samples with forum voice, down from 6/6 pre-fix) —
+but after fine-tuning on the same Q&A-shaped fine-tune data `v1` used,
+the tic came back at a similar rate to production, including production's
+own exact previously-documented phrasing ("As you can see in this
+answer...") resurfacing verbatim in a fresh 5-seed comparison. `v3` also
+scored measurably worse on the D&D quiz eval (16.7% vs. 22.9% pass-rate)
+with no qualitative win to show for it, so it was not shipped.
+
+Diagnosis: the fine-tune data itself (`saga_se_qa.jsonl` + `open5e_qa.jsonl`
++ a general Q&A sample, unchanged in shape between `v1` and `v3`) is
+100% context→answer Q&A pairs — fine-tuning is where response *voice* is
+learned most directly in this pipeline, so an all-Q&A fine-tune mix
+reintroduces forum-answer register regardless of how the pretrain corpus
+was weighted. **The lever this rules out: further pretrain
+`--weight-pattern` tuning alone.** The lever not yet tried: changing the
+*fine-tune* data's format itself — e.g. blending in non-Q&A-shaped
+conversational examples (closer to
+`scripts/finetune_data/general_conversations.jsonl`'s original 64-example
+set) rather than an entirely context→answer-formatted mix.

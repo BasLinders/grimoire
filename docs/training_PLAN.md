@@ -353,3 +353,108 @@ quiz set from widening the period and lowering the ratio (no new false-
 positive bans creeping into otherwise-fine generations); it does not
 re-demonstrate the fix itself — that's the `compare_checkpoints.py`
 before/after against the real bug repro, already recorded above.
+
+## Step 8 — `general_expansion_v2`/`v3`: corpus rebalancing attempt, negative result (2026-08-21 to 2026-08-23)
+
+Follow-up to the round-2 general-content scrape (`expansion_PLAN.md`'s
+"General-content expansion" section, now at 9 Stack Exchange sites,
+470M tokens, ~94% of Chinchilla-optimal). Goal: retrain on the larger
+corpus with a deliberate `--weight-pattern` scheme instead of letting
+new content fall into the accidental `*:1.75` catch-all the way round 1
+did, and see whether that fixes `general-expansion-v1`'s residual
+Stack-Exchange-answer register-drift tic (`known_bugs.md`).
+
+**`general_expansion_v2` (first attempt, superseded, not shipped)**:
+pretrained on the round-2 corpus with a 4-tier weight scheme favoring
+D&D-adjacent conversational content (`rpg_se_*`/`worldbuilding_se_*`/
+`gaming_se_*`/`boardgames_se_*` at `1.75`, general-unrelated Q&A at
+`1.25`, D&D reference material at `1.25`, narrative bulk at `0.5`).
+Qualitative check on 6 raw pretrain prompts found **two problems**:
+
+1. A literal `## Answer (score: N)` markup leak — the new `general_qa/`
+   scrape (via the `scrape_huggingface_stackexchange.py` fallback, since
+   archive.org is blocked on this network) had never had
+   `clean_stackexchange_markup.py` applied, unlike the original
+   `rpg_se_*` data. Confirmed systemic: 2,092/2,092 files in
+   `general_qa/` still had the scaffolding.
+2. Every one of the 6 samples showed pervasive first-person forum-answer
+   voice ("I remember from experience...", "I'm not sure whether your
+   intent here is correct...") — worse than `general-expansion-v1`'s
+   documented ~4-5/50 residual. The weight scheme put general +
+   D&D-adjacent Q&A at ~93% of effective sampling exposure (computed
+   from `eval_per_tier.py`'s window counts), higher than round 1's.
+
+**Fix attempt → `general_expansion_v3`**: cleaned `general_qa/` for real
+(backed up to `general_qa_source/`), rebuilt `corpus.bin`, and revised
+the weight scheme twice to pull Q&A dominance down — first to `~86.3%`
+effective exposure (D&D-adjacent `1.75→1.5`, general-unrelated `1.25`
+unchanged), then more decisively to `~75.4%` (D&D-adjacent `1.5→1.0`,
+general-unrelated `1.25→0.75`, narrative bulk `0.5→0.75`, D&D reference
+`1.25→1.5`). Retrained (15,259 steps, same Chinchilla-derived step count
+as `v1`/`v2` — see `docs/PARAM_OPT.md`, `total_steps` depends on model
+size, not corpus size).
+
+**Pretrain-only qualitative check on `v3`**: a real, clean win — the
+`## Answer` leak was gone (markup fix confirmed), and the pervasive
+forum-voice tic was **gone from all 6 samples** (0/6, down from 6/6 on
+`v2`). New, milder issue observed instead: `mechanics`/`cantrip`
+completions started emitting raw stat-block/spell-block markdown syntax
+verbatim (`# Monster Revival`, `## Traits`, `Category: spell`, `School:
+... | Casting time: ...`) — the same *kind* of bug (literal source
+scaffolding reproduced instead of prose), now from `5etools_*`/
+`open5e_*` files since their weight went up. Noted but not blocking.
+
+**Fine-tuned `v3`** on the same recipe as `v1` (full fine-tune,
+`combined_v3.jsonl`, 140,945 examples — `general_se_qa.jsonl`
+regenerated from the cleaned 9-site corpus via
+`data/corpus/general_qa_source/` since the cleaned files are no longer
+parseable by `qa_pairs.py`, downsampled back to 60,000 to hold the
+established general:D&D fine-tune ratio steady; `saga_se_qa.jsonl`/
+`open5e_qa.jsonl` unchanged, D&D-specific data untouched by any of this
+round's changes).
+
+**Result: negative.** The pretrain-level fix did not survive fine-tuning:
+
+- **Quiz eval** (5 seeds, `agents.json`-matching sampling): `v3`
+  pass-rate 16.7% / kw-recall 10.1% / token-F1 0.219, vs. production
+  (`general-expansion-v1`) 22.9% / 13.7% / 0.229 — consistently worse
+  across all 5 seeds on all 3 metrics, more than the ~3.5-4.7pp
+  within-checkpoint seed spread would explain on its own.
+- **Qualitative comparison** (5 seeds, 12 prompts, `compare_checkpoints.py`
+  vs. production): the forum-answer-voice tic that was cleanly absent at
+  the pretrain-only stage **reappeared in both checkpoints at similar
+  density** after fine-tuning, including production's own previously-
+  documented exact phrasing ("As you can see in this answer, I would
+  suggest...", armor class prompt) resurfacing verbatim. No clear
+  coherence advantage for `v3` over production either way — both show
+  comparable rates of muddled facts and fabricated citations.
+
+**Diagnosis**: `v1` and `v3` share almost the same fine-tune data shape
+— `saga_se_qa.jsonl` (77,740), `open5e_qa.jsonl` (3,205), and a 60,000-
+example general sample, all 100% context→answer Q&A pairs regardless of
+which registers fed the *pretrain* corpus. Per this project's own stated
+model ("fine-tuning teaches conversation behaviour"), the fine-tune
+stage is where response voice is learned most directly — and if the
+entire fine-tune mix is Q&A-shaped, the model adopts that register
+regardless of how the pretrain corpus was weighted. The pretrain-level
+fix was real and independently confirmed; it just doesn't propagate
+through a fine-tune stage that reintroduces the same register from a
+different (fine-tune-data) angle.
+
+**Decision: did not ship `v3`.** Reverted to `general-expansion-v1` as
+production (`agents.json` unchanged throughout this experiment).
+`general_expansion_v2`'s checkpoints and the superseded pretrain
+lineage (`baseline`/`weighted`/`weighted_clean`/`weighted_clean_v2`/
+`weighted_clean_v3`) and fine-tune lineage (`saga-se-qa-clean-v2`,
+`saga-se-qa-weighted-clean`, `saga-se-qa-weighted-clean-v2`,
+`saga-combined-v1`, `base-294-9`) were deleted from local disk (~29.3GB
+freed) once `v3` was confirmed not worth keeping either.
+
+**Practical implication for next time**: if the register-drift tic is
+worth pursuing further, the lever is more likely the *fine-tune data's
+format* — e.g. blending in non-Q&A-shaped conversational examples,
+closer to `scripts/finetune_data/general_conversations.jsonl`'s original
+64-example set (`PLAN.md`'s LoRA item) — rather than further pretrain
+corpus reweighting, which this round showed doesn't survive fine-tuning
+on an all-Q&A dataset. Not attempted this round; flagged for a future
+session.
