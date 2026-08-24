@@ -545,7 +545,27 @@ BPC is the one genuinely new, uncontaminated signal here, and it favors
 drift away from the base language-modeling distribution; if anything
 slightly less than production's fine-tune did.
 
-**No red flags found.** Still not shipped to `agents.json` — this is one
-more real, low-cost improvement over production worth having in
-evaluation history, ready to be treated as a serious production
-candidate on the next actual swap decision, not yet acted on.
+**No red flags found.**
+
+### `general-expansion-v1-dehedged` ships, replaces `general-expansion-v1` (2026-08-24)
+
+`agents.json`'s `saga.checkpoint` updated to
+`checkpoints/finetune/general-expansion-v1-dehedged/step_0013213.pt`,
+replacing `general-expansion-v1`. `gen_config` unchanged — this swap is
+purely a fine-tune-data-format change (Step 9's dehedge pass), not a
+pretrain or decoding-parameter change, so nothing else needed touching.
+
+Shipped on the evidence above: quiz-eval parity (kw-recall identical,
+pass-rate/F1 within seed noise), a real reduction in the SE-answer-voice
+register-drift tic across a 5-seed qualitative pass, better perplexity/
+BPC on the shared pretrain corpus, and no regression anywhere in the
+full harness (perplexity/retrieval/quiz together). The lowest-risk
+production swap of this session — no pretrain change, a 0.6%-of-subset
+deterministic edit to existing fine-tune data, verified before/after on
+every axis this project checks before shipping.
+
+`general-expansion-v1` (fine-tune) and `general-expansion-v1-dehedged-v2`
+(the discarded extended-dehedge experiment) are now superseded;
+`general_expansion_v1`/`general_expansion_v3` (pretrain) stay, since
+`-dehedged`'s lineage traces back to `general_expansion_v1`'s pretrain
+checkpoint and `v3` is still the reference point for Step 8's finding.
