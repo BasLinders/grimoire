@@ -57,8 +57,10 @@ _LEAD_HEDGE_PATTERNS = [
     r"what i would like to add(?: to the answer)?(?: is)?(?: that)?\s*",
     r"i'?d like to add(?: that)?\s*",
     r"i'?ve been (?:to|in) a similar situation(?: in one of the previous answers)?,?\s*(?:but\s+)?",
+    r"i'?ve been toying[^,]{0,60},\s*(?:and\s+)?",
     r"i would (?:say|suggest|recommend|argue|note)(?: that)?\s*",
     r"i'?d (?:say|suggest|recommend|argue|note)(?: that)?\s*",
+    r"i'?d rule(?: that)?\s*",
     r"you (?:are|'?re) correct(?: that)?\s*",
     r"i think(?: that)?\s*",
     r"i believe(?: that)?\s*",
@@ -66,6 +68,13 @@ _LEAD_HEDGE_PATTERNS = [
     r"in my experience,?\s*",
     r"from what i understand,?\s*",
     r"to answer your question,?\s*",
+    r"i guess(?: that)?\s*",
+    r"i suppose(?: that)?\s*",
+    r"honestly,?\s*",
+    r"to be honest,?\s*",
+    r"if you ask me,?\s*",
+    r"my take is(?: that)?\s*",
+    r"it seems to me(?: that)?\s*",
 ]
 
 # Applied at the start of the (remaining) text only, case-insensitive.
