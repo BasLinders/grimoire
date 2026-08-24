@@ -569,3 +569,57 @@ every axis this project checks before shipping.
 `general_expansion_v1`/`general_expansion_v3` (pretrain) stay, since
 `-dehedged`'s lineage traces back to `general_expansion_v1`'s pretrain
 checkpoint and `v3` is still the reference point for Step 8's finding.
+
+## Step 10 — Widening the dehedge pattern list: diminishing returns (2026-08-25)
+
+Direct follow-up to Step 9, testing whether the shipped dehedge win could
+be extended further with no additional cost. Widened
+`dehedge_finetune_data.py`'s pattern list ([PR #213](https://github.com/BasLinders/grimoire/pull/213)):
+added coverage for hedge phrasings observed slipping through in Step 9's
+qualitative pass ("I've been toying X out", "I'd rule that") plus a
+batch of common generic hedge openers in the same pure-meta-commentary
+category as what's already covered ("I guess"/"I suppose", "honestly",
+"to be honest", "if you ask me", "my take is", "it seems to me").
+Verified against real transcript examples and negative controls before
+using it. Regenerated the general-content Q&A (388/60,000 examples
+changed, up from 342 — a modest 13% increase), re-fine-tuned off the
+same `general_expansion_v1` pretrain checkpoint
+(`general-expansion-v1-dehedged-v3`), and compared directly against the
+currently-shipped `general-expansion-v1-dehedged` (not raw production —
+that's the actual bar to beat now).
+
+**Quiz eval** (5 seeds): statistically tied with the shipped checkpoint
+— pass-rate 21.2% vs. 21.6%, kw-recall 13.1% vs. 13.7%, token-F1 0.222
+vs. 0.223, all within the established seed-to-seed noise band. No
+regression from the wider pattern list.
+
+**Qualitative** (5 seeds, 12 prompts): no clear improvement over the
+already-shipped checkpoint — hedge-phrase frequency was roughly
+comparable between the two (~5-7 occurrences per 60 completions in
+both), not a further reduction. Both still show "I would have to say",
+"I've been in a similar situation" (twice each), "I'd say", "You are
+correct that" at similar rates.
+
+**Diagnosis for why widening the list didn't help further**: this
+dehedge approach only strips response-*initial* clauses, by design
+(mid-paragraph stripping risks corrupting otherwise-fine content). Most
+of what's left in these transcripts is either (a) hedges embedded
+mid-sentence ("...at least, all others...", "if this ability says
+otherwise...") that this design deliberately never targets, or (b) the
+model generalizing the hedge *pattern* itself from the training examples
+that remain, rather than reproducing specific removed phrasings verbatim
+— so shrinking the literal-match surface has diminishing marginal
+effect once the obvious, common phrasings are already covered.
+
+**Decision: this approach has hit its practical ceiling.** Not shipped —
+tied quiz score, no qualitative win to justify a swap.
+`general-expansion-v1-dehedged` (Step 9's version) remains production.
+Further pattern-list expansion isn't worth pursuing further on its own;
+if the register-drift tic is worth chasing further, the more promising
+untried lever is pairing a cleaned/reweighted pretrain corpus (Step 8's
+`general_expansion_v3` scheme, whose pretrain-only qualitative check was
+a clean 0/6 before an all-Q&A fine-tune undid it) with this dehedged
+fine-tune data — a combination never tested, since Step 8 and Step 9
+each isolated one variable at a time. That pretrain checkpoint was
+deleted in this session's disk cleanup, so pursuing it means a full
+pretrain rerun, not a quick follow-up.
