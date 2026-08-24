@@ -517,8 +517,35 @@ net negative — real quiz-score cost, no corresponding qualitative gain
 to justify it.**
 
 **Decision: keep `general-expansion-v1-dehedged` as the best result of
-this session's register-drift work; discard `-v2`.** Not shipped to
-`agents.json` yet — this is one more real, low-cost improvement over
-production worth having in evaluation history, but not evaluated
-against the full harness (perplexity/retrieval/degenerate-collapse
-checks) the way a production swap has always gotten before shipping.
+this session's register-drift work; discard `-v2`.**
+
+**Full harness confirmation (2026-08-24)**: `scripts/evaluate.py` with
+perplexity + retrieval + quiz together (`--corpus-bin
+data/processed/corpus.bin`, `--corpus-dir data/corpus/saga/
+--corpus-limit 200`, seed 0) against both `general-expansion-v1-dehedged`
+and production:
+
+| | `dehedged` | production |
+|---|---|---|
+| Perplexity / BPC | 88.72 / 6.4711 | 99.69 / 6.6394 |
+| Retrieval hit-rate | 0.0% (0/20) | 0.0% (0/20) |
+| Quiz pass-rate / kw-recall | 8.2% / 4.76% | 6.1% / 4.42% |
+
+Retrieval hit-rate 0% for *both* is a known `--corpus-limit 200`
+sampling artifact already documented earlier in this file (a random
+200/1469-file sample rarely contains the right passage for a fixed
+20-query set) — tied at zero, no differential signal. The grounded quiz
+numbers are correspondingly depressed for both relative to the 5-seed
+ungrounded comparison above, for the same reason (irrelevant retrieved
+context sometimes actively hurting rather than helping); the ordering
+(`dehedged` ahead, 8.2% vs. 6.1%) is at least consistent with, not
+contradicting, the earlier tied-to-slightly-favoring result. Perplexity/
+BPC is the one genuinely new, uncontaminated signal here, and it favors
+`dehedged` — fine-tuning on the dehedged data didn't cause any extra
+drift away from the base language-modeling distribution; if anything
+slightly less than production's fine-tune did.
+
+**No red flags found.** Still not shipped to `agents.json` — this is one
+more real, low-cost improvement over production worth having in
+evaluation history, ready to be treated as a serious production
+candidate on the next actual swap decision, not yet acted on.
