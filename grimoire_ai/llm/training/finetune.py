@@ -106,6 +106,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Gradient accumulation steps.")
     p.add_argument("--log-every",      type=int,   default=25)
     p.add_argument("--save-every",     type=int,   default=100)
+    p.add_argument("--keep-last-n-checkpoints", type=int, default=3,
+                   help="Delete step checkpoints beyond the N most recent after every "
+                        "save (default: 3). --save-every's 100-step default means a "
+                        "full run can otherwise leave 100+ checkpoints on disk when "
+                        "only the final one ever actually gets used. Pass 0 to keep "
+                        "every checkpoint (the old behaviour).")
     p.add_argument("--val-split",      type=float, default=0.0,
                    help="Fraction of examples held out for validation loss (0 = disabled).")
     p.add_argument("--eval-every",     type=int,   default=0,
@@ -218,6 +224,7 @@ def main(argv: list[str] | None = None) -> None:
         device=device,
         on_save=on_save_lora,
         model_state_dict_fn=model.merged_state_dict if args.lora_rank > 0 else None,
+        keep_last_n_checkpoints=args.keep_last_n_checkpoints or None,
     )
 
     if lora_resume_optimizer_state is not None:

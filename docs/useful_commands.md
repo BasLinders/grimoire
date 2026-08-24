@@ -238,6 +238,21 @@ before combining — see `training_PLAN.md`'s Step 2 note on this.
 
 ## Training utilities
 
+**Fine-tune checkpoint pruning is on by default.** `scripts/finetune_saga.py`
+and `python -m grimoire_ai.llm.training.finetune` both save a checkpoint
+every 100 steps (`--save-every`) with no pruning historically — a full
+run can leave 100+ `step_*.pt` files (~290MB each) on disk when only the
+final one is ever actually used (found the hard way: one fine-tune run
+left 133 checkpoints, ~38GB). `--keep-last-n-checkpoints` now defaults to
+`3`, deleting older step checkpoints after every save; the true final
+checkpoint always survives regardless of `--save-every` alignment. Pass
+`--keep-last-n-checkpoints 0` to restore the old keep-everything
+behaviour (e.g. if you plan to `--resume` from a specific earlier step,
+raise this so that step survives). Pretraining (`train.py`) is
+unaffected — its own `save_every` is already sparse (e.g. 1526), and
+`Trainer`'s own default (`keep_last_n_checkpoints=None`) keeps every
+checkpoint unless a caller opts in.
+
 **Learning-rate range test** (Smith, 2015) — finds a good peak LR for a
 specific model/corpus combination rather than trusting the trainer's
 hard-coded default; builds a throwaway freshly-initialized model, never

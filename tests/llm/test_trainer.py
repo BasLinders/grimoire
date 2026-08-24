@@ -830,6 +830,74 @@ def test_final_checkpoint_not_duplicated_when_aligned() -> None:
         )
 
 
+def test_keep_last_n_checkpoints_prunes_older_saves() -> None:
+    """Only the N most recent step checkpoints should survive when set."""
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = _tiny_config()
+        model = GrimoireTransformer(cfg)
+        corpus_path = _write_corpus(500, cfg.vocab_size, tmp)
+        dataset = TokenizedDataset(corpus_path, seq_len=cfg.max_seq_len, stride=cfg.max_seq_len)
+        trainer = Trainer(
+            model=model,
+            train_dataset=dataset,
+            total_steps=9,
+            batch_size=2,
+            accumulate_steps=1,
+            log_every=999,
+            save_every=3,  # saves land on 3, 6, 9
+            checkpoint_dir=tmp,
+            device="cpu",
+            keep_last_n_checkpoints=2,
+        )
+        trainer.train()
+
+        ckpts = sorted(Path(tmp).glob("step_*.pt"))
+        assert [p.name for p in ckpts] == ["step_0000006.pt", "step_0000009.pt"], (
+            "Only the 2 most recent checkpoints should remain; step 3 should "
+            "have been pruned once step 9 was written."
+        )
+
+
+def test_keep_last_n_checkpoints_none_keeps_everything() -> None:
+    """The default (None) must reproduce the old unpruned behaviour exactly."""
+    with tempfile.TemporaryDirectory() as tmp:
+        trainer, _ = _make_trainer(tmp, total_steps=6)
+        trainer.save_every = 3
+        assert trainer._keep_last_n_checkpoints is None
+        trainer.train()
+
+        ckpts = sorted(Path(tmp).glob("step_*.pt"))
+        assert [p.name for p in ckpts] == ["step_0000003.pt", "step_0000006.pt"]
+
+
+def test_keep_last_n_checkpoints_preserves_final_step_off_boundary() -> None:
+    """Pruning must never delete the true final checkpoint, even off save_every."""
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = _tiny_config()
+        model = GrimoireTransformer(cfg)
+        corpus_path = _write_corpus(500, cfg.vocab_size, tmp)
+        dataset = TokenizedDataset(corpus_path, seq_len=cfg.max_seq_len, stride=cfg.max_seq_len)
+        trainer = Trainer(
+            model=model,
+            train_dataset=dataset,
+            total_steps=7,
+            batch_size=2,
+            accumulate_steps=1,
+            log_every=999,
+            save_every=3,  # periodic saves at 3, 6; final unaligned save at 7
+            checkpoint_dir=tmp,
+            device="cpu",
+            keep_last_n_checkpoints=1,
+        )
+        trainer.train()
+
+        ckpts = sorted(Path(tmp).glob("step_*.pt"))
+        assert [p.name for p in ckpts] == ["step_0000007.pt"], (
+            "keep_last_n_checkpoints=1 should still leave the true final "
+            "step's checkpoint on disk, not an earlier periodic one."
+        )
+
+
 def test_lr_schedule_warmup_and_decay() -> None:
     """LR should rise during warmup and then decrease after peak."""
     cfg = _tiny_config()
