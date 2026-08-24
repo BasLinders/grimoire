@@ -97,6 +97,17 @@ def main(argv: list[str] | None = None) -> None:
              "previous --save-every (restores model, optimizer, and LR-scheduler state). "
              "--total-steps is the absolute target, not an additional count.",
     )
+    parser.add_argument(
+        "--keep-last-n-checkpoints", type=int, default=3, metavar="N",
+        help="Delete step checkpoints beyond the N most recent after every save "
+             "(default: 3). --save-every's 100-step default means a full "
+             "--total-steps run can otherwise leave 100+ checkpoints "
+             "(~290MB each) on disk when only the final one ever actually "
+             "gets used -- found the hard way after one run left 133 "
+             "checkpoints (~38GB). Pass 0 to keep every checkpoint (the old "
+             "behaviour). If you plan to --resume from a specific earlier "
+             "step rather than the latest, raise this so that step survives.",
+    )
     args = parser.parse_args(argv)
 
     device = select_device()
@@ -139,6 +150,7 @@ def main(argv: list[str] | None = None) -> None:
         checkpoint_dir=args.output_dir,
         device=device,
         on_log=on_log,
+        keep_last_n_checkpoints=args.keep_last_n_checkpoints or None,
     ).train(resume_from=args.resume)
 
     print(f"\nFine-tuning complete. Checkpoints saved to: {args.output_dir}")

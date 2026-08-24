@@ -281,6 +281,7 @@ class Trainer:
         on_eval: Optional[Callable[[int, float, float], None]] = None,
         stop_event: Optional[threading.Event] = None,
         model_state_dict_fn: Optional[Callable[[], dict]] = None,
+        keep_last_n_checkpoints: Optional[int] = None,
     ) -> None:
         """Set up the trainer, optimizer, scheduler, and data loader.
 
@@ -333,6 +334,17 @@ class Trainer:
                 with ``(step: int, val_loss: float, elapsed: float)`` where
                 ``elapsed`` is total seconds since training started.  Used by
                 the training UI to plot a validation curve alongside train.
+            keep_last_n_checkpoints: If set, delete step checkpoints beyond
+                the ``N`` most recent after every save, so a run with a
+                small ``save_every`` (fine-tuning commonly uses 100, vs.
+                pretraining's much larger default) doesn't silently
+                accumulate hundreds of mostly-unused ``step_*.pt`` files —
+                found the hard way after a single fine-tune run left 133
+                checkpoints (~38GB) on disk when only the final one was
+                ever actually used. ``None`` (the default) keeps every
+                checkpoint, matching prior behaviour exactly. Only ever
+                deletes ``step_*.pt`` files in ``checkpoint_dir`` written by
+                this trainer — never ``swa.pt`` or anything else.
         """
         self.config = model.config
         self.peak_lr = peak_lr
@@ -344,6 +356,7 @@ class Trainer:
         self.log_every = log_every
         self.save_every = save_every
         self.checkpoint_dir = Path(checkpoint_dir)
+        self._keep_last_n_checkpoints = keep_last_n_checkpoints
         self._step = 0
         # Tracks the step a checkpoint was last written at, so train() can
         # guarantee a final save covering the true end state even when the
@@ -862,8 +875,27 @@ class Trainer:
         )
         self._last_saved_step = self._step
         print(f"  -> checkpoint saved: {ckpt_path}")
+        self._prune_old_checkpoints()
         if self._on_save is not None:
             self._on_save(self._step, elapsed_total)
+
+    def _prune_old_checkpoints(self) -> None:
+        """Delete step checkpoints beyond the last N, if keep_last_n_checkpoints is set.
+
+        ``step_{step:07d}.pt`` filenames are fixed-width zero-padded, so a
+        plain lexicographic sort of the glob already matches step order --
+        no need to parse the step number out. No-op when
+        keep_last_n_checkpoints is None (the default) or the count hasn't
+        exceeded it yet.
+        """
+        if self._keep_last_n_checkpoints is None:
+            return
+        step_ckpts = sorted(self.checkpoint_dir.glob("step_*.pt"))
+        excess = len(step_ckpts) - self._keep_last_n_checkpoints
+        if excess <= 0:
+            return
+        for old_ckpt in step_ckpts[:excess]:
+            old_ckpt.unlink()
 
     # ------------------------------------------------------------------
     # Stochastic Weight Averaging
