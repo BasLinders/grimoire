@@ -202,15 +202,15 @@ pip install -e ".[scraper-ocr]"     # + image OCR via Tesseract
 Download and process the CC-BY 4.0 D&D 5e SRD in one step:
 
 ```bash
-python scripts/build_saga_corpus.py
+python scripts/corpus/build_saga_corpus.py
 ```
 
 This downloads the SRD (~1.5 MB from GitHub), splits it into 24 rule sections, converts each to plain text, and copies four hand-authored probability and encounter-math reference files into `data/corpus/saga/`.
 
 This is a **minimal seed**, not the corpus actually used in production — that corpus has grown to over a thousand files across many sources (Gutenberg, Stack Exchange RPG Q&A, official rulebooks/adventures, Wikipedia/Wikibooks, and more), deduplicated and source-weighted. To reproduce it:
 
-1. Run whichever `scripts/scrape_*.py` scripts match the sources you want (e.g. `scrape_gutenberg_catalog.py` for bulk public-domain fiction, `scrape_stackexchange_rpg.py` for the official RPG Stack Exchange data dump).
-2. Run `scripts/dedup_corpus.py` (MinHash + LSH) to catch near-duplicates across everything you've added.
+1. Run whichever `scripts/scrape/scrape_*.py` scripts match the sources you want (e.g. `scrape_gutenberg_catalog.py` for bulk public-domain fiction, `scrape_stackexchange_rpg.py` for the official RPG Stack Exchange data dump).
+2. Run `scripts/corpus/dedup_corpus.py` (MinHash + LSH) to catch near-duplicates across everything you've added.
 3. Tag categories with `--weight-pattern GLOB:WEIGHT` during preprocessing (§2 below) so bulk/generic content doesn't dilute domain-specific content at training time.
 
 See [expansion_PLAN.md](expansion_PLAN.md) for the current source list, scale, and the reasoning behind the weighting scheme in use.
@@ -247,7 +247,7 @@ Check `quality_report.jsonl` for anything unexpected before moving on — see "P
 **2. Build sample weights.** Must be rebuilt any time the corpus, the `--weight-pattern` rules, `val_split`, or `val_stratified` change — a mismatch here silently produces the wrong window count at training time:
 
 ```bash
-python scripts/build_source_weights.py \
+python scripts/finetune/build_source_weights.py \
     --corpus data/processed/corpus.bin \
     --seq-len 1024 --stride 512 \
     --val-split 0.01 \
@@ -354,7 +354,7 @@ Rules are matched in order against each file's name (`fnmatch`), first match win
 Turn those into the per-window array training actually consumes:
 
 ```bash
-python scripts/build_source_weights.py \
+python scripts/finetune/build_source_weights.py \
     --corpus   data/processed/corpus.bin \
     --seq-len  1024 --stride 512 \
     --output   data/processed/source_weights.npy
@@ -363,7 +363,7 @@ python scripts/build_source_weights.py \
 If you're training with a validation split (`val_split` > 0 below), pass the **same** `--val-split` value here — the corpus is concatenated in alphabetically-sorted file order, so leaving this out (or mismatching it) silently scores the wrong region and eventually causes a window-count mismatch when `Trainer` tries to use it:
 
 ```bash
-python scripts/build_source_weights.py \
+python scripts/finetune/build_source_weights.py \
     --corpus     data/processed/corpus.bin \
     --seq-len    1024 --stride 512 \
     --val-split  0.01 \
@@ -377,7 +377,7 @@ Then point `sample_weights_path` at the resulting file in your training config (
 ```bash
 python -m grimoire_ai.llm.training.train --config your_config.json --val-stratified
 
-python scripts/build_source_weights.py \
+python scripts/finetune/build_source_weights.py \
     --corpus         data/processed/corpus.bin \
     --seq-len        1024 --stride 512 \
     --val-split      0.01 \
@@ -458,10 +458,10 @@ Open `http://localhost:7860`, go to the **Pre-train** tab, fill in the corpus pa
 
 A single aggregate validation loss can't tell you whether weighting is actually working, and it isn't comparable across runs that used different validation-split methods (contiguous-tail vs. scattered-block vs. `--val-stratified`) — see "Source-based sample weighting" above. Two scripts cover this gap for a *raw*, not-yet-fine-tuned checkpoint:
 
-**Per-tier validation loss** (`scripts/eval_per_tier.py`) — requires the corpus to have `--weight-pattern` sidecars and the checkpoint to have trained with `--val-stratified` (reproduces that exact held-out split, just reported per tier instead of merged into one number):
+**Per-tier validation loss** (`scripts/eval/eval_per_tier.py`) — requires the corpus to have `--weight-pattern` sidecars and the checkpoint to have trained with `--val-stratified` (reproduces that exact held-out split, just reported per tier instead of merged into one number):
 
 ```bash
-python scripts/eval_per_tier.py \
+python scripts/eval/eval_per_tier.py \
     --checkpoint checkpoints/pretrain/<run>/step_XXXXXXX.pt \
     --corpus data/processed/corpus.bin \
     --val-split 0.01
@@ -469,10 +469,10 @@ python scripts/eval_per_tier.py \
 
 Look for the loss ordering to match your intended weight prioritization (down-weighted tiers worst, up-weighted tiers best) — that's the real signal, not the absolute numbers.
 
-**Qualitative completion check** (`scripts/qualitative_check.py`) — a raw pretrain checkpoint hasn't learned to follow a chat/instruction format yet, so `grimoire-chat`'s conversational template (and its missing `--repetition-penalty` support) isn't the right tool here. This generates fixed-prompt text completions instead, with full sampling control:
+**Qualitative completion check** (`scripts/eval/qualitative_check.py`) — a raw pretrain checkpoint hasn't learned to follow a chat/instruction format yet, so `grimoire-chat`'s conversational template (and its missing `--repetition-penalty` support) isn't the right tool here. This generates fixed-prompt text completions instead, with full sampling control:
 
 ```bash
-python scripts/qualitative_check.py \
+python scripts/eval/qualitative_check.py \
     --checkpoint checkpoints/pretrain/<run>/step_XXXXXXX.pt \
     --vocab data/tokenizer/bpe.json
 ```
@@ -497,7 +497,7 @@ Each line must be a JSON object with `user` and `assistant` fields. The optional
 **Validate your dataset before training:**
 
 ```bash
-python scripts/validate_finetune_data.py \
+python scripts/finetune/validate_finetune_data.py \
     --data  data/finetune/examples.jsonl \
     --vocab data/tokenizer/bpe.json \
     --max-seq-len 512
@@ -507,12 +507,12 @@ This reports example count, token length statistics, and the proportion of examp
 
 ### Saga fine-tuning dataset
 
-`scripts/finetune_data/` has several ready-to-use JSONL sets, grown well past the original 30-example seed (`saga_v1.jsonl`): `saga_v2.jsonl` and `saga_dnd_math.jsonl` (D&D rules/encounter math, the latter rewritten to use `<TOOL:python>` tags instead of declining arithmetic — see the Math Tool item in [PLAN.md](PLAN.md)), `tool_call_examples.jsonl` (15 math-tool-call examples), and `general_conversations.jsonl` (64 pairs for base instruction fine-tuning, used by LoRA agent fine-tuning). The production checkpoint referenced in `agents.json` is fine-tuned on data built by `scripts/build_finetune_data_from_qa.py` from the cleaned Q&A corpus, not the seed dataset alone.
+`scripts/finetune/data/` has several ready-to-use JSONL sets, grown well past the original 30-example seed (`saga_v1.jsonl`): `saga_v2.jsonl` and `saga_dnd_math.jsonl` (D&D rules/encounter math, the latter rewritten to use `<TOOL:python>` tags instead of declining arithmetic — see the Math Tool item in [PLAN.md](PLAN.md)), `tool_call_examples.jsonl` (15 math-tool-call examples), and `general_conversations.jsonl` (64 pairs for base instruction fine-tuning, used by LoRA agent fine-tuning). The production checkpoint referenced in `agents.json` is fine-tuned on data built by `scripts/finetune/build_finetune_data_from_qa.py` from the cleaned Q&A corpus, not the seed dataset alone.
 
 For a quick end-to-end run on the seed dataset:
 
 ```bash
-python scripts/finetune_saga.py \
+python scripts/train/finetune_saga.py \
     --checkpoint checkpoints/pretrain/step_XXXXXXX.pt \
     --vocab      data/tokenizer/bpe.json \
     --output-dir checkpoints/saga/
@@ -563,7 +563,7 @@ The base and fine-tuned checkpoints are only ever trained with a
 next-token-prediction objective, which gives no pressure to place
 semantically similar passages near each other in embedding space. As a
 result, the model's *own* pooled embeddings under-perform dedicated sentence
-encoders for retrieval. `scripts/embed_tune.py` adds the missing signal with
+encoders for retrieval. `scripts/retrieval/embed_tune.py` adds the missing signal with
 a short, self-supervised **contrastive** training pass that produces a small
 LoRA adapter specialised for embeddings — no labels and no domain-specific
 setup, so the same recipe works on any corpus of `.txt` files.
@@ -583,7 +583,7 @@ despite a low training loss). `--batch-size` must be a multiple of
 ### Run it
 
 ```bash
-python scripts/embed_tune.py \
+python scripts/retrieval/embed_tune.py \
     --checkpoint checkpoints/finetune/step_XXXXXXX.pt \
     --vocab      data/tokenizer/bpe.json \
     --corpus-dir data/corpus/saga/ \
@@ -619,11 +619,11 @@ that generates chat responses, or generation output changes too. The
 evaluation harness handles this split for you:
 
 ```bash
-python scripts/evaluate.py \
+python scripts/eval/evaluate.py \
     --checkpoint checkpoints/finetune/step_XXXXXXX.pt \
     --vocab      data/tokenizer/bpe.json \
     --corpus-dir data/corpus/saga/ \
-    --quiz       scripts/eval_data/saga_quiz.jsonl \
+    --quiz       scripts/eval/data/saga_quiz.jsonl \
     --encoder lora --lora checkpoints/lora/embed-saga/embed.lora \
     --quiz-repetition-penalty 1.3
 ```

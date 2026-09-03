@@ -29,7 +29,7 @@ from grimoire_ai.llm.export.gguf_writer import (
     GGUFWriter,
     grimoire_to_gguf_name,
 )
-from scripts.export_gguf import export_gguf
+from scripts.export.export_gguf import export_gguf
 
 
 # ---------------------------------------------------------------------------

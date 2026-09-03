@@ -33,7 +33,7 @@ Pipeline
    ``query_batch`` does the same for many query texts at once, embedding
    them in a single ``embed_fn`` call — worth using over repeated ``query``
    calls whenever a caller already has a batch of texts on hand (see
-   ``scripts/build_retrieval_neighbors.py``).
+   ``scripts/retrieval/build_retrieval_neighbors.py``).
 """
 
 import re

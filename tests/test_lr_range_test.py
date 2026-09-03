@@ -15,7 +15,7 @@ import numpy as np
 # Load the script (scripts/ is not an importable package).
 _SPEC = importlib.util.spec_from_file_location(
     "lr_range_test",
-    Path(__file__).resolve().parent.parent / "scripts" / "lr_range_test.py",
+    Path(__file__).resolve().parent.parent / "scripts" / "train" / "lr_range_test.py",
 )
 lr_range_test = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(lr_range_test)

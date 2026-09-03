@@ -13,7 +13,7 @@ never drop them outright.
 Pure stdlib, no NER/spacy/ML dependency -- consistent with ``dedup.py``'s
 own "no external MinHash/LSH dependency" approach, and this project's
 decision not to add general-purpose NER tooling (see
-``scripts/generate_open5e_entigraph.py``, which sources entities from
+``scripts/finetune/generate_open5e_entigraph.py``, which sources entities from
 Open5e's already-structured API data instead of general NER).
 
 Item #9 from docs/architecture_optimization.md (curation half; the

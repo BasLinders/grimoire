@@ -44,8 +44,8 @@ new source.** Non-destructive — never modifies or deletes anything, just
 reports what the automatic filter in `grimoire-preprocess` would catch:
 
 ```bash
-python scripts/score_corpus_quality.py --corpus-dir data/corpus/general_qa/
-python scripts/score_corpus_quality.py --corpus-dir data/corpus/general_qa/ --report quality_preview.jsonl
+python scripts/corpus/score_corpus_quality.py --corpus-dir data/corpus/general_qa/
+python scripts/corpus/score_corpus_quality.py --corpus-dir data/corpus/general_qa/ --report quality_preview.jsonl
 ```
 
 Run this against any freshly-scraped directory before its first real
@@ -56,8 +56,8 @@ before it silently gets dropped (or worse, silently kept) at scale.
 **Near-duplicate check before merging new content into the corpus:**
 
 ```bash
-python scripts/dedup_corpus.py --corpus-dir data/corpus/saga/ --new-glob "gutenberg_*.txt"
-python scripts/dedup_corpus.py --corpus-dir data/corpus/saga/ --new-glob "gutenberg_*.txt" --threshold 0.3
+python scripts/corpus/dedup_corpus.py --corpus-dir data/corpus/saga/ --new-glob "gutenberg_*.txt"
+python scripts/corpus/dedup_corpus.py --corpus-dir data/corpus/saga/ --new-glob "gutenberg_*.txt" --threshold 0.3
 ```
 
 Lower `--threshold` = stricter (catches more near-duplicates, more false
@@ -75,7 +75,7 @@ unverified) content — the right lever when the goal is better recall of
 facts already in the corpus, not corpus *volume*:
 
 ```bash
-python scripts/generate_open5e_entigraph.py \
+python scripts/finetune/generate_open5e_entigraph.py \
     --output-dir data/corpus/saga_derived/ \
     --categories monster_condition class_weapon class_spell \
     --max-pairs-per-category 500 \
@@ -108,7 +108,7 @@ PowerShell:
 
 ```powershell
 0..4 | ForEach-Object {
-    python scripts/compare_checkpoints.py `
+    python scripts/train/compare_checkpoints.py `
         --checkpoint-a checkpoints/finetune/A/step_XXXX.pt --label-a A `
         --checkpoint-b checkpoints/finetune/B/step_XXXX.pt --label-b B `
         --vocab data/tokenizer/bpe.json `
@@ -120,7 +120,7 @@ Bash:
 
 ```bash
 for seed in 0 1 2 3 4; do
-    python scripts/compare_checkpoints.py \
+    python scripts/train/compare_checkpoints.py \
         --checkpoint-a checkpoints/finetune/A/step_XXXX.pt --label-a A \
         --checkpoint-b checkpoints/finetune/B/step_XXXX.pt --label-b B \
         --vocab data/tokenizer/bpe.json \
@@ -140,14 +140,14 @@ hand. `compare_checkpoints.py` applies one set of loop-guard flags to
 invocations, not one:
 
 ```bash
-python scripts/compare_checkpoints.py \
+python scripts/train/compare_checkpoints.py \
     --checkpoint-a checkpoints/finetune/X/step_XXXX.pt --label-a same \
     --checkpoint-b checkpoints/finetune/X/step_XXXX.pt --label-b same \
     --vocab data/tokenizer/bpe.json --seed 4 \
     --loop-guard-max-repeats 3 --loop-guard-max-period 4 \
     > before.txt
 
-python scripts/compare_checkpoints.py \
+python scripts/train/compare_checkpoints.py \
     --checkpoint-a checkpoints/finetune/X/step_XXXX.pt --label-a same \
     --checkpoint-b checkpoints/finetune/X/step_XXXX.pt --label-b same \
     --vocab data/tokenizer/bpe.json --seed 4 \
@@ -164,7 +164,7 @@ PowerShell:
 
 ```powershell
 0..4 | ForEach-Object {
-    python scripts/evaluate.py `
+    python scripts/eval/evaluate.py `
         --checkpoint checkpoints/finetune/X/step_XXXX.pt `
         --vocab data/tokenizer/bpe.json `
         --quiz-repetition-penalty 1.3 `
@@ -177,7 +177,7 @@ Bash:
 
 ```bash
 for seed in 0 1 2 3 4; do
-    python scripts/evaluate.py \
+    python scripts/eval/evaluate.py \
         --checkpoint checkpoints/finetune/X/step_XXXX.pt \
         --vocab data/tokenizer/bpe.json \
         --quiz-repetition-penalty 1.3 \
@@ -195,7 +195,7 @@ what users actually see.
 with `--val-stratified`, and the same `--val-split` it used):
 
 ```bash
-python scripts/eval_per_tier.py \
+python scripts/eval/eval_per_tier.py \
     --checkpoint checkpoints/pretrain/X/step_XXXX.pt \
     --corpus data/processed/corpus.bin \
     --val-split 0.01
@@ -206,7 +206,7 @@ format, no comparison — just "does this pretrain checkpoint produce
 coherent text"):
 
 ```bash
-python scripts/qualitative_check.py \
+python scripts/eval/qualitative_check.py \
     --checkpoint checkpoints/pretrain/X/step_XXXX.pt \
     --vocab data/tokenizer/bpe.json
 ```
@@ -217,7 +217,7 @@ python scripts/qualitative_check.py \
 before training on it:
 
 ```bash
-python scripts/validate_finetune_data.py \
+python scripts/finetune/validate_finetune_data.py \
     --data data/finetune/X.jsonl \
     --vocab data/tokenizer/bpe.json \
     --max-seq-len 512
@@ -227,7 +227,7 @@ python scripts/validate_finetune_data.py \
 outweighing the rest of the fine-tune mix):
 
 ```bash
-python scripts/downsample_jsonl.py \
+python scripts/corpus/downsample_jsonl.py \
     --input data/finetune/general_se_qa.jsonl \
     --output data/finetune/general_se_qa_downsampled.jsonl \
     --n 40000
@@ -238,7 +238,7 @@ before combining — see `training_PLAN.md`'s Step 2 note on this.
 
 ## Training utilities
 
-**Fine-tune checkpoint pruning is on by default.** `scripts/finetune_saga.py`
+**Fine-tune checkpoint pruning is on by default.** `scripts/train/finetune_saga.py`
 and `python -m grimoire_ai.llm.training.finetune` both save a checkpoint
 every 100 steps (`--save-every`) with no pruning historically — a full
 run can leave 100+ `step_*.pt` files (~290MB each) on disk when only the
@@ -259,7 +259,7 @@ hard-coded default; builds a throwaway freshly-initialized model, never
 touches a real checkpoint:
 
 ```bash
-python scripts/lr_range_test.py \
+python scripts/train/lr_range_test.py \
     --corpus data/processed/corpus.bin \
     --output lr_range_test.csv
 ```
@@ -269,8 +269,8 @@ re-runs — mirrors D&D sourcebook / textbook-encyclopedia style; see
 `synth_*` in the `--weight-pattern` list in `setup-training.md`):
 
 ```bash
-python scripts/generate_lore.py --group lore --count 3000
-python scripts/generate_lore.py --group datascience --count 2000
+python scripts/finetune/generate_lore.py --group lore --count 3000
+python scripts/finetune/generate_lore.py --group datascience --count 2000
 ```
 
 ## Tests

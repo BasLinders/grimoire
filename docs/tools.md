@@ -24,7 +24,7 @@ next agent's maintainer finds it instead of re-writing it.
 ## Planned steps
 
 - [ ] Create the `tools/` directory.
-- [ ] Move `scripts/downsample_jsonl.py` there. Already written generic
+- [ ] Move `scripts/corpus/downsample_jsonl.py` there. Already written generic
       on purpose (works on any JSONL file, no Saga/fine-tune-specific
       assumptions) — built when combining Saga's fine-tune sources
       turned up a real need (three general StackExchange sites

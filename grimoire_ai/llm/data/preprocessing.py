@@ -249,10 +249,10 @@ def preprocess(
             writes two small sidecar files next to ``output_path`` —
             ``<output>.doc_end_offsets.npy`` (cumulative end token-index of
             each document) and ``<output>.doc_weights.npy`` (weight per
-            document) — that ``scripts/build_source_weights.py`` later
+            document) — that ``scripts/finetune/build_source_weights.py`` later
             converts into a per-window ``sample_weights_path`` array for
             ``WeightedRandomSampler`` (the same mechanism
-            ``scripts/score_difficulty.py`` already uses for difficulty-based
+            ``scripts/finetune/score_difficulty.py`` already uses for difficulty-based
             weighting). When ``None`` (default), no sidecar files are
             written and behaviour is unchanged.
         on_progress: Optional callable invoked with a progress message string
@@ -414,7 +414,7 @@ def preprocess(
             f"document(s) -> {offsets_path.name}, {weights_path.name}"
         )
         _emit(
-            "      Run scripts/build_source_weights.py against these to produce "
+            "      Run scripts/finetune/build_source_weights.py against these to produce "
             "a per-window sample_weights.npy for training."
         )
 
@@ -490,7 +490,7 @@ def main() -> None:
              "'dnd_*:3' --weight-pattern 'gutenberg_*:1'. Repeatable; first "
              "matching pattern wins; unmatched files get weight 1.0. Writes "
              "<output>.doc_end_offsets.npy and <output>.doc_weights.npy "
-             "sidecar files for scripts/build_source_weights.py to consume — "
+             "sidecar files for scripts/finetune/build_source_weights.py to consume — "
              "does not change the corpus.bin itself. Omit entirely for "
              "today's unweighted behaviour.",
     )

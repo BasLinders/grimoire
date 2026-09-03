@@ -24,7 +24,7 @@ class NeighborAugmentedDataset(Dataset):
 
     Pairs each ``(input_ids, target_ids)`` window from ``base`` with the
     corresponding row of a precomputed neighbor-ids array (see
-    ``scripts/build_retrieval_neighbors.py``), aligned by index via
+    ``scripts/retrieval/build_retrieval_neighbors.py``), aligned by index via
     ``base.offsets`` — row ``i`` of ``neighbor_ids`` corresponds to
     ``base[i]``.
     """
@@ -50,7 +50,7 @@ class NeighborAugmentedDataset(Dataset):
                 f"neighbor_ids has {neighbor_ids.shape[0]} row(s) but the base "
                 f"dataset has {len(base)} window(s) — they must be built from "
                 f"the exact same corpus_path/seq_len/stride/regions "
-                f"(see scripts/build_retrieval_neighbors.py)."
+                f"(see scripts/retrieval/build_retrieval_neighbors.py)."
             )
         self._base = base
         self._neighbor_ids = neighbor_ids

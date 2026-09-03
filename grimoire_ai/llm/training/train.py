@@ -285,7 +285,7 @@ def main() -> None:
             print(f"\nError loading sample weights: {exc}", file=sys.stderr)
             print(
                 "Generate them first:\n"
-                "  python scripts/score_difficulty.py --checkpoint <ckpt> "
+                "  python scripts/finetune/score_difficulty.py --checkpoint <ckpt> "
                 "--corpus <corpus.bin> --output <weights.npy>",
                 file=sys.stderr,
             )
@@ -376,7 +376,7 @@ def _build_datasets(
 
 
 # Fixed (not time-based) seed so _build_datasets is a pure function of its
-# arguments -- a training run and a separate scripts/build_source_weights.py
+# arguments -- a training run and a separate scripts/finetune/build_source_weights.py
 # invocation must independently derive the identical split for the resulting
 # sample_weights.npy to line up with the training windows.
 _VAL_SPLIT_SEED = 0
@@ -467,7 +467,7 @@ def _split_by_tier(
         seq_len: Used only to skip tiers too small to hold out a single
             window's worth of validation data.
         seed: Fixed RNG seed for reproducibility across separate processes
-            (training and ``scripts/build_source_weights.py`` must
+            (training and ``scripts/finetune/build_source_weights.py`` must
             independently derive the identical split).
 
     Returns:

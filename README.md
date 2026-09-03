@@ -36,25 +36,22 @@ grimoire/
 │   ├── cli/                # Interactive terminal chat loop
 │   └── ui/                 # Two Gradio apps: training/eval (Preprocess/Pre-train/Fine-tune/Scale/Evaluate/Ingest/Corpus) + chat
 ├── agents.json             # Named agent configurations (checkpoint, vocab, corpus, gen defaults)
-├── scripts/
-│   ├── scrape_*.py                 # Per-source corpus scrapers: Wikipedia, Wikibooks, arXiv,
-│   │                               #   Gutenberg (+ catalog-based bulk variant), D&D Wiki, GitHub
-│   │                               #   D&D repos, Fandom wikis, Open5e, 5etools, Internet Archive
-│   │                               #   Dragon/Dungeon magazines, Stack Exchange RPG
-│   ├── dedup_corpus.py             # MinHash + LSH near-duplicate detection across the corpus
-│   ├── clean_stackexchange_markup.py  # Strip vote-score/tag/Markdown scaffolding from SE dumps
-│   ├── build_saga_corpus.py        # Seed corpus: D&D 5e SRD sections + math references
-│   ├── build_source_weights.py     # Per-window sample_weights.npy from --weight-pattern tags
-│   ├── build_finetune_data_from_qa.py  # Build fine-tune JSONL from cleaned Q&A corpus data
-│   ├── finetune_saga.py            # Fine-tune a checkpoint on a Saga JSONL dataset
-│   ├── validate_finetune_data.py   # Pre-flight check on any JSONL dataset
-│   ├── embed_tune.py               # Contrastive LoRA fine-tuning for retrieval embeddings
-│   ├── score_difficulty.py         # Difficulty-based per-window sample weighting
-│   ├── generate_open5e_entigraph.py  # EntiGraph-style entity recombination from Open5e's structured data
-│   ├── evaluate.py                 # Perplexity / retrieval hit-rate / Q&A quiz CLI
-│   ├── export_gguf.py              # Export a GQA checkpoint to GGUF for llama.cpp
-│   ├── finetune_data/              # JSONL fine-tune datasets (Saga Q&A, math tool calls, general chat)
-│   └── saga_references/            # Hand-authored math/probability reference .txt files
+├── scripts/                 # Organized by pipeline stage — see scripts/README.md
+│   ├── scrape/              # Per-source corpus scrapers: Wikipedia, Wikibooks, arXiv,
+│   │                        #   Gutenberg (+ catalog-based bulk variant), D&D Wiki, GitHub
+│   │                        #   D&D repos, Fandom wikis, Open5e, 5etools, Internet Archive
+│   │                        #   Dragon/Dungeon magazines, Stack Exchange RPG
+│   ├── corpus/              # dedup_corpus.py, clean_stackexchange_markup.py,
+│   │                        #   build_saga_corpus.py, score_corpus_quality.py, downsample_jsonl.py
+│   ├── finetune/            # build_source_weights.py, build_finetune_data_from_qa.py,
+│   │   └── data/            #   validate_finetune_data.py, score_difficulty.py, generate_*.py
+│   │                        #   data/ — JSONL fine-tune datasets (Saga Q&A, math tool calls, general chat)
+│   ├── retrieval/           # embed_tune.py, build_retrieval_neighbors.py
+│   ├── train/               # finetune_saga.py, lr_range_test.py, compare_checkpoints.py
+│   ├── eval/                # evaluate.py, eval_per_tier.py, qualitative_check.py
+│   │   └── data/            #   saga_quiz.jsonl
+│   ├── export/              # export_gguf.py — GQA checkpoint to GGUF for llama.cpp
+│   └── references/          # Hand-authored math/probability reference .txt files
 ├── docs/                   # Setup guides, roadmap, and corpus-expansion history
 ├── data/                   # Runtime data — gitignored (corpus bins, tokenizer, checkpoints)
 │   ├── raw/                # Source .txt files for pre-training corpus
@@ -99,9 +96,9 @@ Both halves run the same model, in the same learned representation space. There 
 | **BPE Tokenizer** | Byte-level Byte-Pair Encoding; default vocab 16 384; lossless round-trip for any Unicode; opt-in `extend()` grows an existing vocabulary with new merges while preserving every existing token id, so old checkpoints stay loadable | ✓ done |
 | **Corpus Scrapers** | `ingest()` dispatcher (web / PDF / DOCX / Markdown / OCR); dedicated scrapers for Wikipedia, Wikibooks, arXiv abstracts, Gutenberg (curated lists, plus a catalog-CSV-based bulk variant that filters Gutenberg's official bulk feed locally rather than scraping search pages), D&D Wiki, GitHub D&D repos, Fandom wikis, Open5e, 5etools, Internet Archive Dragon/Dungeon magazines, and Stack Exchange RPG (official data dump, not live scraping) | ✓ done |
 | **Near-Duplicate Dedup** | MinHash + LSH near-duplicate removal; word 5-gram shingling, SHA-1 hashing, union-find clustering, longest-kept policy | ✓ done |
-| **Source-Based Sample Weighting** | `--weight-pattern GLOB:WEIGHT` on `grimoire-preprocess` tags documents by filename glob; `scripts/build_source_weights.py` (or the Pre-train tab's "Build sample weights from tags" button) turns those into a per-window `sample_weights.npy` consumed by `Trainer`'s `WeightedRandomSampler` — upweight domain-specific content, downweight bulk filler, without touching `corpus.bin` itself | ✓ done |
+| **Source-Based Sample Weighting** | `--weight-pattern GLOB:WEIGHT` on `grimoire-preprocess` tags documents by filename glob; `scripts/finetune/build_source_weights.py` (or the Pre-train tab's "Build sample weights from tags" button) turns those into a per-window `sample_weights.npy` consumed by `Trainer`'s `WeightedRandomSampler` — upweight domain-specific content, downweight bulk filler, without touching `corpus.bin` itself | ✓ done |
 | **Heuristic Quality Filter** | `grimoire_ai/llm/data/quality_filter.py` — dependency-free, Gopher/C4-style document screening (char/word minimums, alpha ratio, symbol-junk ratio, mean word length, short-line ratio for nav-menu detection, 3-gram repetition); opt-in `--quality-filter` on `grimoire-preprocess` with an optional report | ✓ done |
-| **EntiGraph Entity Recombination** | `scripts/generate_open5e_entigraph.py` synthesizes training text by connecting entities from Open5e's structured API data, rather than general-purpose LLM rephrasing (evaluated and ruled out — model-collapse risk) | ✓ done |
+| **EntiGraph Entity Recombination** | `scripts/finetune/generate_open5e_entigraph.py` synthesizes training text by connecting entities from Open5e's structured API data, rather than general-purpose LLM rephrasing (evaluated and ruled out — model-collapse risk) | ✓ done |
 | **Corpus Engine** | Ingests text, indexes stemmed 4-gram multi-tokens, retrieves top-k passages by Jaccard similarity (lexical fallback) | ✓ done |
 | **Semantic Retriever** | Chunks documents into passages, embeds each with the model's own representations, and ranks by cosine similarity — the primary retrieval path | ✓ done |
 | **Persistent RAG Index** | Chunk embeddings pre-computed once and cached as a numpy memmap (optional FAISS `IndexFlatIP` for larger corpora), with MD5-hash staleness checks against source files and checkpoint — replaces per-session recomputation; "Build/Rebuild index" button in the Corpus tab | ✓ done |
@@ -121,14 +118,14 @@ Both halves run the same model, in the same learned representation space. There 
 | **int8 Quantization** | `InferenceEngine(quantize=True)` replaces all Linear layers with dynamic int8 equivalents; ~4× smaller, faster on CPU; uses `torchao` when available, falls back to `torch.ao` | ✓ done |
 | **GGUF Export** | Binary GGUF v3 writer + CLI export a GQA checkpoint for llama.cpp deployment, optional Q4_K_M quantization; MLA checkpoints aren't supported yet (`NotImplementedError` — llama.cpp's tensor/metadata conventions for that architecture weren't verifiable without a real binary to test against) | ✓ done |
 | **Conversation State** | `ConversationState` packs rolling history newest-first within the token budget, then fills remaining space with corpus context | ✓ done |
-| **Evaluation Harness** | Perplexity / BPC on held-out corpus, retrieval hit-rate over a fixed query set, keyword-recall + best-matching-window token-F1 Q&A quiz (searches all contiguous response windows against the reference, excludes question-shared vocabulary); `run_eval()` harness writes timestamped JSON to `data/eval/`; CLI at `scripts/evaluate.py` | ✓ done |
+| **Evaluation Harness** | Perplexity / BPC on held-out corpus, retrieval hit-rate over a fixed query set, keyword-recall + best-matching-window token-F1 Q&A quiz (searches all contiguous response windows against the reference, excludes question-shared vocabulary); `run_eval()` harness writes timestamped JSON to `data/eval/`; CLI at `scripts/eval/evaluate.py` | ✓ done |
 | **Math Tool** | `MathTool` detects arithmetic in queries, evaluates safely via pure-`ast` visitor (no `eval()`), injects result as context; resolves `<TOOL:python>…</TOOL>` tags from fine-tuned models; stdlib functions (factorial, exp, comb, hypot, trig, …) + scipy stats (norm_cdf, binom_pmf, t_ppf, …) with graceful fallback; `--math-tool` CLI flag; checkbox in the chat UI | ✓ done |
 | **Training/Eval UI** | Gradio app: Preprocess (BPE training, `--extend-vocab`, weight-pattern tagging), Pre-train (attention-type + MLA dimension fields, size presets, gradient checkpointing, `torch.compile` mode, Chinchilla-optimal step suggestion from corpus size, sample-weight building), Fine-tune (LoRA rank/alpha/targets, step suggestion from dataset example count), Scale (Chinchilla calculator), Evaluate, Ingest, Corpus (pre-build/rebuild semantic index) tabs | ✓ done |
 | **Chat UI** | Separate Gradio app: scrolling `gr.Chatbot` transcript, pinned input, agent selector or manual checkpoint loading, int8 toggle, adaptive temperature, retrieval controls (including reranker + CRAG threshold sliders, repetition-loop guard), math tool, dataset builder for saving exchanges as fine-tune pairs | ✓ done |
 | **Agent Registry** | `AgentRegistry` reads `agents.json`; `build_engine(key, quantize=)` returns a ready `InferenceEngine` with corpus (and, where configured, CRAG filtering) auto-loaded | ✓ done |
 | **Agent Routing** | `AgentRouter` scores each query against every registered agent's corpus and dispatches automatically when the top score clears a threshold; `MultiAgentEngine` hot-swaps the active LoRA adapter and corpus per turn (sub-second vs. minutes for a full model reload) behind one shared `InferenceEngine` | ✓ done |
-| **Saga Corpus** | `scripts/build_saga_corpus.py` builds a minimal SRD + math-reference seed; the corpus actually in use has grown far beyond that seed via the scrapers above (Gutenberg, Stack Exchange RPG, Forgotten Realms wiki, official rulebooks/adventures, Wikipedia/Wikibooks) plus MinHash dedup and source-based weighting — see [docs/expansion_PLAN.md](docs/expansion_PLAN.md) for current scale and composition | ✓ done |
-| **Saga Fine-tune Dataset** | Multiple JSONL sets in `scripts/finetune_data/` (D&D rules/math Q&A, math-tool-call examples, general conversation) plus `scripts/build_finetune_data_from_qa.py` to derive fine-tune examples from the cleaned Q&A corpus data; the production checkpoint in `agents.json` is fine-tuned on the latter, not the seed dataset alone | ✓ done |
+| **Saga Corpus** | `scripts/corpus/build_saga_corpus.py` builds a minimal SRD + math-reference seed; the corpus actually in use has grown far beyond that seed via the scrapers above (Gutenberg, Stack Exchange RPG, Forgotten Realms wiki, official rulebooks/adventures, Wikipedia/Wikibooks) plus MinHash dedup and source-based weighting — see [docs/expansion_PLAN.md](docs/expansion_PLAN.md) for current scale and composition | ✓ done |
+| **Saga Fine-tune Dataset** | Multiple JSONL sets in `scripts/finetune/data/` (D&D rules/math Q&A, math-tool-call examples, general conversation) plus `scripts/finetune/build_finetune_data_from_qa.py` to derive fine-tune examples from the cleaned Q&A corpus data; the production checkpoint in `agents.json` is fine-tuned on the latter, not the seed dataset alone | ✓ done |
 | **Integration Tests** | End-to-end: BPE train → corpus build → model pretrain → checkpoint → engine load → multi-turn `chat()` | ✓ done |
 
 ### Multi-turn prompt format
@@ -193,18 +190,18 @@ Saga is the first Grimoire agent. It focuses on:
 
 ```bash
 # 1. Build the seed corpus (downloads D&D 5e SRD ~1.5 MB, takes ~30 s)
-python scripts/build_saga_corpus.py
+python scripts/corpus/build_saga_corpus.py
 
 # 2. Pre-train a model (or use an existing checkpoint)
 python -m grimoire_ai.llm.training.train
 
 # 3. Validate a fine-tuning dataset
-python scripts/validate_finetune_data.py \
-    --data  scripts/finetune_data/saga_v1.jsonl \
+python scripts/finetune/validate_finetune_data.py \
+    --data  scripts/finetune/data/saga_v1.jsonl \
     --vocab data/tokenizer/bpe.json
 
 # 4. Fine-tune on it
-python scripts/finetune_saga.py \
+python scripts/train/finetune_saga.py \
     --checkpoint checkpoints/pretrain/step_XXXXXXX.pt \
     --vocab      data/tokenizer/bpe.json
 
@@ -213,7 +210,7 @@ python scripts/finetune_saga.py \
 python -m grimoire_ai.ui.chat_app
 ```
 
-**Reproducing the full production corpus** is a larger, ongoing effort — see [docs/expansion_PLAN.md](docs/expansion_PLAN.md) for the current source list, scale, dedup process, source-weighting scheme, and open decisions. In short: run the `scrape_*.py` scripts for whichever sources you want, `dedup_corpus.py` to catch near-duplicates, tag categories with `--weight-pattern` during `grimoire-preprocess`, and build fine-tune data with `scripts/build_finetune_data_from_qa.py` rather than the minimal `saga_v1.jsonl` alone.
+**Reproducing the full production corpus** is a larger, ongoing effort — see [docs/expansion_PLAN.md](docs/expansion_PLAN.md) for the current source list, scale, dedup process, source-weighting scheme, and open decisions. In short: run the `scrape_*.py` scripts for whichever sources you want, `dedup_corpus.py` to catch near-duplicates, tag categories with `--weight-pattern` during `grimoire-preprocess`, and build fine-tune data with `scripts/finetune/build_finetune_data_from_qa.py` rather than the minimal `saga_v1.jsonl` alone.
 
 ## Usage
 
@@ -346,7 +343,7 @@ A separate, dedicated app — not a tab in the training UI. Streaming responses 
 | `grimoire-finetune` | `python -m grimoire_ai.llm.training.finetune` |
 | `grimoire-preprocess` | `python -m grimoire_ai.llm.data.preprocessing` |
 
-Standalone scripts in `scripts/` (corpus scrapers, `evaluate.py`, `export_gguf.py`, `build_saga_corpus.py`, …) are invoked directly with `python scripts/<name>.py` — they live outside the installed package and are not registered as console scripts.
+Standalone scripts in `scripts/` (corpus scrapers, `eval/evaluate.py`, `export/export_gguf.py`, `corpus/build_saga_corpus.py`, …) are invoked directly with `python scripts/<subdir>/<name>.py` — they live outside the installed package and are not registered as console scripts. See [scripts/README.md](scripts/README.md) for the full directory layout.
 
 ## Deployment
 
@@ -384,7 +381,7 @@ The image is CPU-only (`python:3.11-slim` base, CPU build of torch), bound to `0
 ### GGUF export (llama.cpp)
 
 ```bash
-python scripts/export_gguf.py \
+python scripts/export/export_gguf.py \
     --checkpoint checkpoints/pretrain/step_0010000.pt \
     --output     models/grimoire-f16.gguf \
     --vocab      data/tokenizer/bpe.json

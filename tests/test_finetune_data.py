@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 import torch
 
-_DATA = Path(__file__).parent.parent / "scripts" / "finetune_data" / "saga_v1.jsonl"
+_DATA = Path(__file__).parent.parent / "scripts" / "finetune" / "data" / "saga_v1.jsonl"
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +164,7 @@ def test_validate_script_runs_without_error(tmp_path):
     vocab_path = str(tmp_path / "bpe.json")
     enc.save(vocab_path)
 
-    script = Path(__file__).parent.parent / "scripts" / "validate_finetune_data.py"
+    script = Path(__file__).parent.parent / "scripts" / "finetune" / "validate_finetune_data.py"
     result = subprocess.run(
         [sys.executable, str(script),
          "--data", str(_DATA),
@@ -185,7 +185,7 @@ def test_validate_script_runs_without_error(tmp_path):
 # decline to compute or state an unverified number directly contradict that
 # mechanism (see docs/PLAN.md).
 
-_DND_MATH = Path(__file__).parent.parent / "scripts" / "finetune_data" / "saga_dnd_math.jsonl"
+_DND_MATH = Path(__file__).parent.parent / "scripts" / "finetune" / "data" / "saga_dnd_math.jsonl"
 
 _DECLINE_PHRASES = (
     "i cannot reliably compute",

@@ -1,7 +1,7 @@
 # Corpus index memory scaling
 
 Not started. Scoped 2026-08-16 after live-debugging a stuck
-`scripts/evaluate.py --corpus-dir data/corpus/saga/` run; parked here for
+`scripts/eval/evaluate.py --corpus-dir data/corpus/saga/` run; parked here for
 whoever picks it up next rather than solved inline.
 
 ## The problem
@@ -49,7 +49,7 @@ Saga corpus and not D&D-shaped, not just patch this one instance.
 
 ## Immediate mitigation (already shipped, separate from this doc)
 
-`scripts/evaluate.py --corpus-limit N` samples down to N files (fixed
+`scripts/eval/evaluate.py --corpus-limit N` samples down to N files (fixed
 seed, reproducible) before reading/indexing, so an eval run doesn't need
 the full corpus resident. This is a workaround scoped to *evaluation*
 specifically — eval only needs *some* retrieval-grounding context in the

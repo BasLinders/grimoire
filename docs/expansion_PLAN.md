@@ -52,7 +52,7 @@ look like data-scarcity symptoms, not architecture-too-small symptoms.
 - [x] **Project Gutenberg catalog-based bulk expansion.** Follow-up to the
       hand-curated pass above. Gutenberg's search-result *pages* explicitly
       warn against scraping them ("you'll only get your IP blocked"), so
-      `scripts/scrape_gutenberg_catalog.py` instead downloads the official
+      `scripts/scrape/scrape_gutenberg_catalog.py` instead downloads the official
       bulk catalog CSV (`pg_catalog.csv`, cached under `data/catalogs/`) and
       filters it locally by subject keyword + language — no hand-guessed IDs.
       The current keyword set matches ~3,400 candidate English texts; ~300
@@ -93,7 +93,7 @@ recalled from model memory.
         just downloads once).
   - [x] Run near-duplicate detection (MinHash/shingling) across the new scrape
         *and* against the existing corpus before merging. Wrote
-        `scripts/dedup_corpus.py` (word-shingle MinHash, no new heavy
+        `scripts/corpus/dedup_corpus.py` (word-shingle MinHash, no new heavy
         dependency) and validated it against synthetic exact/partial-copy
         cases before trusting the result. Ran it: 0 pairs found at
         `--threshold 0.3` across all 103 Gutenberg files vs. the full
@@ -114,7 +114,7 @@ recalled from model memory.
         tiers 1-2 (1-4, 3-6, 5-8, 7-10), environments (mere lair, mead-hall
         court, archipelago, village, ruined fortress).
   - [x] Deduplicated against each other and against the full existing corpus
-        via `scripts/dedup_corpus.py` — 0 near-duplicate pairs at a loose
+        via `scripts/corpus/dedup_corpus.py` — 0 near-duplicate pairs at a loose
         threshold (0.2-0.25, smaller shingle size than the Gutenberg check,
         since these adventures deliberately reuse some monster vocabulary).
   - [x] Verified all mechanical content (monster names + CR + XP) against
@@ -203,7 +203,7 @@ to this list.
 ## Source-based sample weighting
 
 The mechanism (`--weight-pattern` on `grimoire-preprocess` → per-document
-weight sidecars → `scripts/build_source_weights.py` → `sample_weights.npy` →
+weight sidecars → `scripts/finetune/build_source_weights.py` → `sample_weights.npy` →
 `Trainer`'s `sample_weights_path`) existed before this decision but had never
 been given real values. Byte-share breakdown of `data/corpus/saga/` (403
 `gutenberg_*` files, 1,469 total) showed D&D-specific content is already the
@@ -242,7 +242,7 @@ match-wins (`grimoire_ai/llm/data/preprocessing.py`'s `_resolve_weight`).
       `corpus.bin.doc_end_offsets.npy` / `corpus.bin.doc_weights.npy` for all
       1,469 documents.
 - [x] **Build `sample_weights.npy` and use it in a real training run.** Built
-      via `scripts/build_source_weights.py` (`seq_len=1024`, `stride=512`,
+      via `scripts/finetune/build_source_weights.py` (`seq_len=1024`, `stride=512`,
       `val_split=0.0` — matching `Trainer`'s own defaults; the file assumes
       no held-out region since the run below used `val_split=0`): 252,623
       windows total, 41.6% at weight 0.5, 48.5% at weight 1.0, 9.9% at
@@ -267,7 +267,7 @@ match-wins (`grimoire_ai/llm/data/preprocessing.py`'s `_resolve_weight`).
       fragment bleeding into output — raw StackExchange dump scaffolding
       (`Score: N`, `Tags:`, `## Answer (accepted) (score: N)`, `---`
       separators) hadn't been stripped from `rpg_se_*` files.
-      `scripts/clean_stackexchange_markup.py` strips it in place across all
+      `scripts/corpus/clean_stackexchange_markup.py` strips it in place across all
       217 files (originals backed up to `data/corpus/saga_se_qa_source/`
       first, since `data/` is gitignored — later renamed from
       `saga_backup_pre_se_cleanup/` once it turned out to serve an ongoing
@@ -325,7 +325,7 @@ match-wins (`grimoire_ai/llm/data/preprocessing.py`'s `_resolve_weight`).
       corpus gets proportional validation coverage, whole documents only
       (never splits one mid-file). Exposed as:
       - `--val-stratified` on `grimoire-train` (config key
-        `"val_stratified": true`) and on `scripts/build_source_weights.py`
+        `"val_stratified": true`) and on `scripts/finetune/build_source_weights.py`
         (must match between the two, same as `--val-split` already had to)
       - A "Stratify validation by weight tags" checkbox in the Pre-train
         tab, next to Validation split
@@ -385,7 +385,7 @@ match-wins (`grimoire_ai/llm/data/preprocessing.py`'s `_resolve_weight`).
       cover.
 - [x] **Found and fixed a real regression the SE cleanup caused in a
       different pipeline.** Preparing to actually run
-      `scripts/build_finetune_data_from_qa.py` against `weighted_clean`
+      `scripts/finetune/build_finetune_data_from_qa.py` against `weighted_clean`
       surfaced it: `grimoire_ai.llm.data.qa_pairs.load_qa_pairs` (used by
       that script and by `embed_tune.py`'s `--qa-corpus-dir`) parses Q&A
       structure by keying off the exact markers
@@ -522,7 +522,7 @@ match-wins (`grimoire_ai/llm/data/preprocessing.py`'s `_resolve_weight`).
 - [ ] Phase 5 (pre-existing gap, unrelated to this plan): wire semantic/LoRA
       retrieval into the live UI — it currently only supports lexical search
       via `corpus_dirs`.
-- [x] EntiGraph-generated passages (`scripts/generate_open5e_entigraph.py`,
+- [x] EntiGraph-generated passages (`scripts/finetune/generate_open5e_entigraph.py`,
       output in `data/corpus/saga_derived/entigraph_*.txt`) needed a real
       preprocess+retrain pass to actually reach the model. Wired via
       repeatable `grimoire-preprocess --input`, weighted `entigraph_*:1`,
@@ -531,7 +531,7 @@ match-wins (`grimoire_ai/llm/data/preprocessing.py`'s `_resolve_weight`).
       43%/48% duplicate-name entries blending Open5e's official `wotc-srd`
       document with unrelated third-party rulesets (`a5e`, `kp`), yet both
       sat in the corpus's highest weight tier (`*:1.75` catch-all) as if
-      uniformly official. Re-scraped via `scripts/scrape_open5e.py
+      uniformly official. Re-scraped via `scripts/scrape/scrape_open5e.py
       --endpoints spells monsters --document-slug wotc-srd` (322/319 records,
       down from 3207/1435, zero duplicates, zero third-party leakage
       afterward) and folded into the `weighted_clean_v2` preprocess+retrain
@@ -547,7 +547,7 @@ match-wins (`grimoire_ai/llm/data/preprocessing.py`'s `_resolve_weight`).
       count). Checkpoint: `checkpoints/pretrain/weighted_clean_v2/step_0015259.pt`.
       Config: `configs/train_config_weighted_clean_v2.json`.
 - [x] **Per-tier validation loss on `weighted_clean_v2`** (new reusable tool:
-      `scripts/eval_per_tier.py`, reproduces `train.py`'s own
+      `scripts/eval/eval_per_tier.py`, reproduces `train.py`'s own
       `--val-stratified` split so results are directly comparable to what
       training itself held out): `0.5` (down-weighted) 3.5468, `1.0`
       (baseline) 3.2673, `1.75` (up-weighted) 2.3677 — monotonic ordering
@@ -561,7 +561,7 @@ match-wins (`grimoire_ai/llm/data/preprocessing.py`'s `_resolve_weight`).
       genuinely held-out measurement (0.8996 nats vs. July 3's 0.83-nat
       train-inclusive gap).
 - [x] **Qualitative completion check on `weighted_clean_v2`**
-      (`scripts/qualitative_check.py`, 2026-08-15). Coherent grammar, real
+      (`scripts/eval/qualitative_check.py`, 2026-08-15). Coherent grammar, real
       D&D terminology, no repetition loops or degenerate collapse on any
       of the 6 prompts — matches the quality bar of prior checks at this
       training stage (facts sometimes wrong/muddled, expected at ~25% of
@@ -661,7 +661,7 @@ quality filtering, dedup, weighting, preprocessing) already supports
 arbitrary new general sources as a config/parameter change.
 
 - [x] **Primary lever: more Stack Exchange sites — first round done.**
-      `scripts/scrape_stackexchange.py` takes `--site` as an open string,
+      `scripts/scrape/scrape_stackexchange.py` takes `--site` as an open string,
       not a hardcoded list. Archive.org turned out to be unreachable from
       this network (confirmed ISP-level block, not a DNS/outage issue —
       see `scrape_huggingface_stackexchange.py`'s docstring), so the
@@ -702,7 +702,7 @@ arbitrary new general sources as a config/parameter change.
       regeneration, `grimoire-preprocess`, and a pretrain/fine-tune run
       before it reaches a shipped checkpoint.
 - [ ] **Secondary lever: broader Gutenberg coverage.**
-      `scripts/scrape_gutenberg_catalog.py` already supports bulk
+      `scripts/scrape/scrape_gutenberg_catalog.py` already supports bulk
       keyword+language-filtered catalog scraping (currently a
       fantasy/mythology keyword set, ~3,400 candidates, ~300
       downloaded). Broadening the keyword list to general fiction/

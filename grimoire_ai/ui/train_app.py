@@ -342,7 +342,7 @@ def run_pretrain(
     are missing.
 
     ``sample_weights_path``, when set, points at a ``.npy`` file (built by
-    the "Build sample weights" button, or ``scripts/score_difficulty.py``)
+    the "Build sample weights" button, or ``scripts/finetune/score_difficulty.py``)
     with one weight per training window — used to build a
     ``WeightedRandomSampler`` instead of uniform shuffling. Left blank,
     training behaves exactly as before.
@@ -1675,7 +1675,7 @@ def build_train_app() -> gr.Blocks:
                     "training then uses a `WeightedRandomSampler` to see "
                     "high-weight windows more often, instead of uniform "
                     "shuffling. Also accepts a difficulty-weights file from "
-                    "`scripts/score_difficulty.py`. Leave the path blank to "
+                    "`scripts/finetune/score_difficulty.py`. Leave the path blank to "
                     "train unweighted, as before."
                 )
                 pt_sample_weights = gr.Textbox(
@@ -2026,7 +2026,7 @@ def build_train_app() -> gr.Blocks:
                 )
             ev_quiz = gr.Textbox(
                 label="Quiz file (optional)",
-                placeholder="scripts/eval_data/saga_quiz.jsonl",
+                placeholder="scripts/eval/data/saga_quiz.jsonl",
                 info=(
                     "JSONL file with {user, assistant, keywords} examples. "
                     "Defaults to the built-in Saga quiz when left blank."

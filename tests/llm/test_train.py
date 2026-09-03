@@ -4,7 +4,7 @@ Gate criteria:
 - _split_blocks produces disjoint train/val regions covering the whole corpus.
 - The val fraction (by token count) is close to the requested val_split.
 - The split is deterministic across repeated calls (required so a training
-  run and a separate scripts/build_source_weights.py invocation agree).
+  run and a separate scripts/finetune/build_source_weights.py invocation agree).
 - Val blocks are scattered rather than concentrated at one end of the corpus.
 - _split_by_tier holds out val_split fraction within *every* weight tier
   separately, so a thin tier can't end up with zero validation windows.

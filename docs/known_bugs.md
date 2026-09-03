@@ -105,7 +105,7 @@ was weighted. **The lever this rules out: further pretrain
 `--weight-pattern` tuning alone.**
 
 **Update (2026-08-23): fine-tune-data dehedging tried, real but partial
-improvement — see `training_PLAN.md`'s Step 9.** `scripts/
+improvement — see `training_PLAN.md`'s Step 9.** `scripts/finetune/
 dehedge_finetune_data.py` (new) deterministically strips the recurring
 meta-commentary openers driving this tic ("I would say that...", "As
 you can see in this answer...") from fine-tune JSONL "assistant"
