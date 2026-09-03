@@ -58,7 +58,7 @@ Mixed precision (bf16/fp16 AMP)
 
 RETRO neighbor retrieval (optional, docs/architecture_optimization.md item #3)
     When ``neighbor_ids`` is supplied (an array from
-    ``scripts/build_retrieval_neighbors.py``, aligned to
+    ``scripts/retrieval/build_retrieval_neighbors.py``, aligned to
     ``train_dataset``'s window order), ``train_dataset`` is wrapped in
     ``NeighborAugmentedDataset`` and every batch also carries retrieved
     neighbor token ids, fed into ``GrimoireTransformer.forward`` for the

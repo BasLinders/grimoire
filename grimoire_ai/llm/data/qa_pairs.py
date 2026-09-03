@@ -1,6 +1,6 @@
 """Parse StackExchange Q&A corpus files into (query, passage) training pairs.
 
-``scripts/scrape_stackexchange_rpg.py`` writes the rpg.stackexchange.com data
+``scripts/scrape/scrape_stackexchange_rpg.py`` writes the rpg.stackexchange.com data
 dump as ``.txt`` files in a fixed block format (one question with its answers
 per block, blocks separated by ``---``):
 
@@ -37,7 +37,7 @@ StackExchange question maps directly onto ``ConversationDataset``'s
 ``"user"`` field. The mismatch is the answer — community answers run
 discursive and long (median ~1200 characters across this corpus, some over
 20,000), where the model needs to learn short, direct replies (the existing
-hand-authored ``scripts/finetune_data/saga_v1.jsonl`` averages ~320
+hand-authored ``scripts/finetune/data/saga_v1.jsonl`` averages ~320
 characters). ``qa_pairs_to_finetune_examples`` bridges this by extracting two
 different-length slices of the *same* answer: a longer one as ``"context"``
 (simulating what a retriever would hand the model) and a shorter one as
@@ -239,7 +239,7 @@ def load_qa_pairs(
 # Instruction-tuning conversion
 # ---------------------------------------------------------------------------
 
-# Default budgets, chosen to land near scripts/finetune_data/saga_v1.jsonl's
+# Default budgets, chosen to land near scripts/finetune/data/saga_v1.jsonl's
 # existing style (assistant answers there run ~185-530 characters; context
 # there is the bare source rule a sentence or two shorter than the answer).
 _DEFAULT_CONTEXT_MAX_CHARS = 600

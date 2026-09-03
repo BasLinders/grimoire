@@ -28,7 +28,7 @@ but not its sibling.
 | 4 | `repetition_penalty` loop does per-token scalar tensor writes | `inference/sampler.py` | ✓ shipped — [PR #194](https://github.com/BasLinders/grimoire/pull/194) |
 | 5 | `chat_stream()` re-decodes the full sequence on every yielded token | `inference/engine.py` | ✓ shipped — [PR #195](https://github.com/BasLinders/grimoire/pull/195) |
 | 6 | `StatBlockConstraint.mask()` compounds full-redecode + per-step vocab scan | `inference/constrained_decoding.py` | ✓ shipped — [PR #196](https://github.com/BasLinders/grimoire/pull/196) (stacked on #195) |
-| 7 | RETRO neighbor-precompute script embeds one window at a time | `scripts/build_retrieval_neighbors.py` | ✓ shipped — [PR #192](https://github.com/BasLinders/grimoire/pull/192) |
+| 7 | RETRO neighbor-precompute script embeds one window at a time | `scripts/retrieval/build_retrieval_neighbors.py` | ✓ shipped — [PR #192](https://github.com/BasLinders/grimoire/pull/192) |
 | 8 | Lexical (Jaccard) corpus query is an O(N) linear scan | `corpus/corpus.py` | ✓ shipped — [PR #197](https://github.com/BasLinders/grimoire/pull/197) |
 | 9 | External-encoder (MiniLM/MPNet) index rebuilds from scratch on every UI load | `ui/chat_app.py` | ✓ shipped — [PR #193](https://github.com/BasLinders/grimoire/pull/193) |
 
@@ -212,7 +212,7 @@ for start in range(0, len(dataset), embed_batch_size):
         window_text = window_texts[local_i]
         results = retriever.query(window_text, top_k=query_k)   # one window at a time
 ```
-([`scripts/build_retrieval_neighbors.py:152-169`](../scripts/build_retrieval_neighbors.py#L152-L169))
+([`scripts/retrieval/build_retrieval_neighbors.py:152-169`](../scripts/retrieval/build_retrieval_neighbors.py#L152-L169))
 
 `SemanticRetriever.query()`
 ([`semantic.py:304`](../grimoire_ai/llm/inference/semantic.py#L304)) always
@@ -313,12 +313,12 @@ doesn't re-check them:
 - **BPE tokenizer** (`bpe.py`) — `_encode_word` memoizes per-word
   encodings in `_word_cache`; the word-split regex is compiled once at
   module scope; `decode` is a single O(n) pass.
-- **`scripts/dedup_corpus.py`** — scoped to `new_files × all_files`, not
+- **`scripts/corpus/dedup_corpus.py`** — scoped to `new_files × all_files`, not
   `all_files × all_files`; MinHash comparison is a vectorized numpy `==`
   over a 64-element signature.
-- **`scripts/build_source_weights.py` / `data/sample_weights.py`** —
+- **`scripts/finetune/build_source_weights.py` / `data/sample_weights.py`** —
   `compute_window_weights` uses `np.searchsorted`, already vectorized.
-- **`scripts/score_difficulty.py`** — already batches via `DataLoader`
+- **`scripts/finetune/score_difficulty.py`** — already batches via `DataLoader`
   over the full corpus.
 - **RoPE/causal-mask precompute** (`attention.py`) — computed once in
   `__init__`, registered as buffers, not recomputed per forward call.

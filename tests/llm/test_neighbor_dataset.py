@@ -4,7 +4,7 @@ collate_with_neighbors, and Trainer's neighbor_ids wiring.
 Completes item #3 from docs/architecture_optimization.md (see
 tests/llm/test_chunked_cross_attention.py for the model/attention side):
 this is the "feed real retrieved neighbors into a real training step" half.
-scripts/build_retrieval_neighbors.py (the offline precomputation script) is
+scripts/retrieval/build_retrieval_neighbors.py (the offline precomputation script) is
 not covered here — it depends on a live SemanticRetriever/InferenceEngine
 and is exercised manually rather than unit tested, consistent with how
 other scripts in this repo that need a real checkpoint are handled.

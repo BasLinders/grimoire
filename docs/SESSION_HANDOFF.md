@@ -44,7 +44,7 @@ compound.
    the qualitative pass, matching last time).
 2. **Fine-tune off this new checkpoint using the wider dehedge pattern
    list** (Step 10's `general_se_qa_dehedged_v2.jsonl` — regenerate if
-   it's not still on disk, via `scripts/dehedge_finetune_data.py`) —
+   it's not still on disk, via `scripts/finetune/dehedge_finetune_data.py`) —
    this is a genuinely new combination, not a repeat of any prior run.
    `saga_se_qa.jsonl`/`open5e_qa.jsonl` stay undehedged (Step 9 found
    touching `saga_se_qa.jsonl` hurts quiz scores).

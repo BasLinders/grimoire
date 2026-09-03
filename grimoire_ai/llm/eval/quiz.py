@@ -213,7 +213,7 @@ def eval_quiz(
             Checked between questions — generation for the current question
             still runs to completion since it's a single blocking call.
         seed: When set, reset the RNG to ``seed + i`` before question ``i``
-            (mirroring ``scripts/compare_checkpoints.py``'s per-prompt reset).
+            (mirroring ``scripts/train/compare_checkpoints.py``'s per-prompt reset).
             Irrelevant under the default greedy config (no sampling occurs),
             but required for a reproducible result once ``gen_config`` uses
             ``temperature > 0`` -- an unseeded stochastic quiz run produced a

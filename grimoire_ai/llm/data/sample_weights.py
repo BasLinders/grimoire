@@ -12,8 +12,8 @@ This module converts those document-level weights into a per-window weights
 array aligned to a ``TokenizedDataset``'s window order — the same array
 shape and convention ``trainer.py``'s ``sample_weights`` /
 ``WeightedRandomSampler`` already expects, and that
-``scripts/score_difficulty.py`` already produces for difficulty-based
-weighting. Used by both ``scripts/build_source_weights.py`` (CLI) and the
+``scripts/finetune/score_difficulty.py`` already produces for difficulty-based
+weighting. Used by both ``scripts/finetune/build_source_weights.py`` (CLI) and the
 Gradio UI's Pre-train tab, so the two stay in exact agreement.
 
 Each window is assigned the weight of whichever document contains its start

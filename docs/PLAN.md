@@ -59,9 +59,9 @@ Dynamic int8 quantization via `torch.quantization.quantize_dynamic` / `torchao`.
 
 - **Perplexity eval:** bits-per-character on a held-out corpus slice (`grimoire_ai/llm/eval/perplexity.py`)
 - **Retrieval hit-rate:** keyword-in-top-1 over a fixed 20-query Saga set (`grimoire_ai/llm/eval/retrieval.py`)
-- **D&D rules quiz:** 20 Q&A pairs with keyword-recall + token-F1 scoring (`grimoire_ai/llm/eval/quiz.py`, `scripts/eval_data/saga_quiz.jsonl`)
+- **D&D rules quiz:** 20 Q&A pairs with keyword-recall + token-F1 scoring (`grimoire_ai/llm/eval/quiz.py`, `scripts/eval/data/saga_quiz.jsonl`)
 - **Harness:** orchestrates all three; writes timestamped JSON to `data/eval/` (`grimoire_ai/llm/eval/harness.py`)
-- **CLI:** `python scripts/evaluate.py --checkpoint ... --vocab ...` (perplexity, retrieval, quiz flags)
+- **CLI:** `python scripts/eval/evaluate.py --checkpoint ... --vocab ...` (perplexity, retrieval, quiz flags)
 - **UI:** Evaluate tab (after Scale) — checkpoint/vocab/corpus/quiz inputs, Run button, live log stream
 
 ### 4. Math → Python CLI (Tool Calling) ✓ done
@@ -72,7 +72,7 @@ Dynamic int8 quantization via `torch.quantization.quantize_dynamic` / `torchao`.
 - **Safe evaluator:** pure `ast`-based visitor — no `eval()`, no subprocess needed; supports arithmetic operators, parentheses, and whitelisted math functions (sqrt, sin, cos, log, …)
 - **Context injection:** result prepended as a synthetic `QueryResult` with excerpt `[Math] expr = result`; flows through the existing `PromptBuilder` context slot
 - **Response-side tag resolution:** `MathTool.process_response()` replaces `<TOOL:python>…</TOOL>` tags emitted by fine-tuned models with evaluated results
-- **Fine-tune data:** 15 examples with `<TOOL:python>` format in `scripts/finetune_data/tool_call_examples.jsonl`
+- **Fine-tune data:** 15 examples with `<TOOL:python>` format in `scripts/finetune/data/tool_call_examples.jsonl`
 - **CLI:** `--math-tool` flag on `python -m grimoire_ai.cli.chat`
 - **UI:** "Enable math tool" checkbox in the chat UI (wired to both agent load and manual load)
 
@@ -84,7 +84,7 @@ Dynamic int8 quantization via `torch.quantization.quantize_dynamic` / `torchao`.
 - `save_lora()` iterates `named_modules()` directly (never clones frozen `base_weight` buffers — avoids OOM); `load_lora()` matches by module name; both validated by 29-test suite
 - `--lora-rank` / `--lora-alpha` args on `finetune.py`; `InferenceEngine.load_lora()` hot-swaps adapter without reloading base weights
 - Fine-tune UI: **Mode dropdown** (Base instruction fine-tune vs Agent LoRA adapter) — switches defaults, shows/hides agent name field, clears stale resume path; saves named `<agent>.lora` file on completion
-- 64 general-conversation pairs (`scripts/finetune_data/general_conversations.jsonl`) for base instruction fine-tuning
+- 64 general-conversation pairs (`scripts/finetune/data/general_conversations.jsonl`) for base instruction fine-tuning
 
 ### 6. Agent Routing ✓ done
 
@@ -115,7 +115,7 @@ Saga is the only agent actually built on this infrastructure so far — see [too
 **Why last:** The long-term deployment story — no Python dependency, 4-bit quantization, widest hardware support via llama.cpp.
 
 - `grimoire_ai/llm/export/gguf_writer.py`: `GGUFWriter` class — GGUF v3 binary format (header, KV metadata, tensor info, tensor data); `grimoire_to_gguf_name()` maps all GrimoireTransformer state_dict keys to GGUF tensor names
-- `scripts/export_gguf.py`: CLI — loads a `.pt` checkpoint, writes F16 or F32 GGUF with architecture metadata and optional BPE tokenizer embedding; Q4_K_M quantization is done post-export via `llama-quantize grimoire-f16.gguf grimoire-q4km.gguf Q4_K_M`
+- `scripts/export/export_gguf.py`: CLI — loads a `.pt` checkpoint, writes F16 or F32 GGUF with architecture metadata and optional BPE tokenizer embedding; Q4_K_M quantization is done post-export via `llama-quantize grimoire-f16.gguf grimoire-q4km.gguf Q4_K_M`
 - RoPE buffers (`_cos`, `_sin`) and attention mask are not exported; llama.cpp recomputes them from `rope_theta` and context length
 - Weight-tied `output_head.weight` exported once as `output.weight`; 1-D norm weights always stored as F32 for numerical stability
 - 42-test suite: name mapping, binary header correctness, dtype selection, alignment, end-to-end export with synthetic checkpoints (`tests/llm/test_export_gguf.py`)
@@ -146,12 +146,12 @@ Fine-tuning experiments converged on a conclusion that shifted priorities: the m
 
 ### Items
 
-- **Gutenberg expansion** (hand-curated, then catalog-based): grew the corpus from a handful of hand-picked public-domain texts to hundreds of files via `scripts/scrape_gutenberg_catalog.py`, which filters Gutenberg's official bulk CSV catalog locally rather than scraping search-result pages (which explicitly warn against it).
-- **Stack Exchange RPG Q&A**: `scripts/scrape_stackexchange_rpg.py` downloads the official rpg.stackexchange.com data dump (not live scraping) and pairs each question with its top answers.
-- **Near-duplicate dedup**: `scripts/dedup_corpus.py` (MinHash + LSH, word 5-gram shingling) checks new additions against the existing corpus before merging.
+- **Gutenberg expansion** (hand-curated, then catalog-based): grew the corpus from a handful of hand-picked public-domain texts to hundreds of files via `scripts/scrape/scrape_gutenberg_catalog.py`, which filters Gutenberg's official bulk CSV catalog locally rather than scraping search-result pages (which explicitly warn against it).
+- **Stack Exchange RPG Q&A**: `scripts/scrape/scrape_stackexchange_rpg.py` downloads the official rpg.stackexchange.com data dump (not live scraping) and pairs each question with its top answers.
+- **Near-duplicate dedup**: `scripts/corpus/dedup_corpus.py` (MinHash + LSH, word 5-gram shingling) checks new additions against the existing corpus before merging.
 - **Derived-adventure pilot**: hand-written D&D adventures derived from public-domain source texts, with all cited monster stats verified against the actual SRD/Open5e stat blocks rather than invented — a deliberately slow, quality-over-volume complement to bulk scraping. Not yet wired into training (`saga_derived/` sits outside `agents.json`'s `corpus_dirs`).
-- **Source-based sample weighting**: `--weight-pattern` on `grimoire-preprocess` tags documents by filename glob; `scripts/build_source_weights.py` turns tags into a per-window `sample_weights.npy` consumed by `Trainer`'s `WeightedRandomSampler`. Validated with a paired before/after pretrain comparison — reduced validation loss by ~5.5% relative at no wall-clock cost.
-- **Stack Exchange markup cleanup**: `scripts/clean_stackexchange_markup.py` strips vote-score/tag/Markdown-header scaffolding from the SE dump files — this scaffolding was observed bleeding into model generations verbatim (e.g. a literal `## Answer (score: 4)` fragment in output).
+- **Source-based sample weighting**: `--weight-pattern` on `grimoire-preprocess` tags documents by filename glob; `scripts/finetune/build_source_weights.py` turns tags into a per-window `sample_weights.npy` consumed by `Trainer`'s `WeightedRandomSampler`. Validated with a paired before/after pretrain comparison — reduced validation loss by ~5.5% relative at no wall-clock cost.
+- **Stack Exchange markup cleanup**: `scripts/corpus/clean_stackexchange_markup.py` strips vote-score/tag/Markdown-header scaffolding from the SE dump files — this scaffolding was observed bleeding into model generations verbatim (e.g. a literal `## Answer (score: 4)` fragment in output).
 - **Validation-split fix**: `_build_datasets`'s `val_split` previously held out the corpus's alphabetically-last files as "the tail," which for this corpus meant validating almost entirely on short Wikipedia/Wikibooks stub articles — not a representative sample. Fixed to hold out many small blocks scattered across the whole corpus instead (`train.py`'s `_split_blocks`).
 
 Full source list, current scale, and open decisions (target model size vs. actual token count, whether to fold `saga_derived/` into training, finer-grained weight tiers) live in [expansion_PLAN.md](expansion_PLAN.md) — that document is updated as the corpus changes; this section is a stable summary of what shipped.

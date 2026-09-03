@@ -45,7 +45,7 @@ currently paying full fp32 cost, twice, every single step, for no reason.
 This is a straight port of the pattern already proven in `Trainer.__init__`
 (autocast context, `GradScaler`, `torch.compile` wrapping) into
 `EmbedTuner.__init__`/`train_step`/`train_step_pairs`. Contained to one
-file, no interface changes for callers (`scripts/embed_tune.py`).
+file, no interface changes for callers (`scripts/retrieval/embed_tune.py`).
 
 ## 2. fp16 → bf16 for `Trainer`'s AMP
 

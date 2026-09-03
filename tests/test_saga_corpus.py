@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-_REFERENCES = Path(__file__).parent.parent / "scripts" / "saga_references"
+_REFERENCES = Path(__file__).parent.parent / "scripts" / "references"
 _REF_FILES = [
     "dice_probability.txt",
     "encounter_building.txt",
@@ -70,7 +70,7 @@ def test_dnd_math_contains_dpr_formula():
 
 def test_build_script_skip_download_copies_references(tmp_path):
     """Running build_saga_corpus.py --skip-download should copy reference files."""
-    script = Path(__file__).parent.parent / "scripts" / "build_saga_corpus.py"
+    script = Path(__file__).parent.parent / "scripts" / "corpus" / "build_saga_corpus.py"
     result = subprocess.run(
         [sys.executable, str(script), "--output-dir", str(tmp_path), "--skip-download"],
         capture_output=True,
@@ -84,7 +84,7 @@ def test_build_script_skip_download_copies_references(tmp_path):
 
 def test_build_script_output_matches_source(tmp_path):
     """Copied reference files should have identical content to originals."""
-    script = Path(__file__).parent.parent / "scripts" / "build_saga_corpus.py"
+    script = Path(__file__).parent.parent / "scripts" / "corpus" / "build_saga_corpus.py"
     subprocess.run(
         [sys.executable, str(script), "--output-dir", str(tmp_path), "--skip-download"],
         capture_output=True,

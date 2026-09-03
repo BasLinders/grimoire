@@ -5,11 +5,11 @@ writes a timestamped JSON report to ``data/eval/``.
 
 Typical usage (CLI)
 -------------------
-    python scripts/evaluate.py \\
+    python scripts/eval/evaluate.py \\
         --checkpoint checkpoints/finetune/step_0000500.pt \\
         --vocab      data/tokenizer/bpe.json \\
         --corpus-dir data/corpus/saga/ \\
-        --quiz       scripts/eval_data/saga_quiz.jsonl \\
+        --quiz       scripts/eval/data/saga_quiz.jsonl \\
         --corpus-bin data/processed/corpus.bin
 
 Typical usage (Python)
@@ -19,7 +19,7 @@ Typical usage (Python)
 
     engine = InferenceEngine(checkpoint_path=..., tokenizer_path=...)
     engine.build_semantic_corpus([...])
-    results = run_eval(engine=engine, quiz_path="scripts/eval_data/saga_quiz.jsonl")
+    results = run_eval(engine=engine, quiz_path="scripts/eval/data/saga_quiz.jsonl")
     print(results["summary"])
 """
 
@@ -65,7 +65,7 @@ def run_eval(
             also provided.
         corpus_bin: Path to a ``.bin`` corpus file for perplexity eval.
         quiz_path: Path to a JSONL quiz file.  If ``None`` and a default
-            exists at ``scripts/eval_data/saga_quiz.jsonl``, it is used.
+            exists at ``scripts/eval/data/saga_quiz.jsonl``, it is used.
         output_dir: Directory for the JSON report.  Created if absent.
         retrieval_queries: Custom query set for retrieval eval.  Falls back
             to ``SAGA_QUERIES`` when ``None``.
@@ -193,7 +193,7 @@ def run_eval(
         # Resolve quiz path: explicit → default saga quiz → skip.
         _quiz_path = quiz_path
         if not _quiz_path:
-            default = Path("scripts/eval_data/saga_quiz.jsonl")
+            default = Path("scripts/eval/data/saga_quiz.jsonl")
             if default.is_file():
                 _quiz_path = str(default)
 

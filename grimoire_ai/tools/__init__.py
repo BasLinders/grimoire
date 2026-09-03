@@ -14,7 +14,7 @@ generation.  No model fine-tuning is required for this path.
 
 Response-side use (post fine-tuning)
 -------------------------------------
-After the model is fine-tuned on ``scripts/finetune_data/tool_call_examples.jsonl``,
+After the model is fine-tuned on ``scripts/finetune/data/tool_call_examples.jsonl``,
 it learns to emit ``<TOOL:python>expression</TOOL>`` tags in its response.
 ``MathTool.process_response()`` finds those tags, evaluates each expression,
 and substitutes the result in-place — turning

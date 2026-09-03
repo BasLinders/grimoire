@@ -1,8 +1,8 @@
 # Training Resume Plan — New Fine-Tune Data Sources
 
 Picks up after [PR #175](https://github.com/BasLinders/grimoire/pull/175)
-(merged), which added `scripts/scrape_stackexchange.py` (any Stack Exchange
-site, not just rpg.SE) and `scripts/generate_open5e_qa.py` (template-based,
+(merged), which added `scripts/scrape/scrape_stackexchange.py` (any Stack Exchange
+site, not just rpg.SE) and `scripts/finetune/generate_open5e_qa.py` (template-based,
 code-verified Q&A from Open5e monster/spell fields). Neither has been run
 yet — no new data exists on disk, only the scripts to produce it. This
 document is the checklist for turning them into an actual updated Saga
@@ -18,10 +18,10 @@ Commands only — these hit the network and download multi-hundred-MB dumps,
 run them yourself rather than through an agent session:
 
 ```bash
-python scripts/scrape_stackexchange.py --site history
-python scripts/scrape_stackexchange.py --site travel
-python scripts/scrape_stackexchange.py --site skeptics
-python scripts/generate_open5e_qa.py --output data/finetune/open5e_qa.jsonl
+python scripts/scrape/scrape_stackexchange.py --site history
+python scripts/scrape/scrape_stackexchange.py --site travel
+python scripts/scrape/scrape_stackexchange.py --site skeptics
+python scripts/finetune/generate_open5e_qa.py --output data/finetune/open5e_qa.jsonl
 ```
 
 The three `--site` picks are a starting default (factual-explainer,
@@ -42,14 +42,14 @@ on disk predates this fix, regenerate it before step 2.
 ## Step 2 — Build and combine fine-tune JSONL
 
 ```bash
-python scripts/build_finetune_data_from_qa.py \
+python scripts/finetune/build_finetune_data_from_qa.py \
     --corpus-dir data/corpus/general_qa/ \
     --pattern    "*_se_*.txt" \
     --output     data/finetune/general_se_qa.jsonl
 
 # Regenerate the existing D&D Q&A data too if data/finetune/saga_se_qa.jsonl
 # isn't already present locally (data/ is gitignored, so a fresh clone or
-# worktree won't have it) — see scripts/build_finetune_data_from_qa.py's own
+# worktree won't have it) — see scripts/finetune/build_finetune_data_from_qa.py's own
 # docstring for the saga_se_qa_source/ --corpus-dir and --min-score 1 flags
 # that produced the currently-shipped checkpoint.
 
@@ -58,7 +58,7 @@ cat data/finetune/general_se_qa.jsonl \
     data/finetune/saga_se_qa.jsonl \
     > data/finetune/combined_v1.jsonl
 
-python scripts/validate_finetune_data.py \
+python scripts/finetune/validate_finetune_data.py \
     --data  data/finetune/combined_v1.jsonl \
     --vocab data/tokenizer/bpe.json
 ```
@@ -72,7 +72,7 @@ is a deliberate choice, not an accident of whatever `cat` order was used.
 The currently-shipped checkpoint
 (`checkpoints/finetune/saga-se-qa-weighted-clean-v2/step_0007288.pt`, per
 `agents.json`) was produced by **full fine-tuning**
-(`scripts/finetune_saga.py`), not LoRA — despite LoRA being fully
+(`scripts/train/finetune_saga.py`), not LoRA — despite LoRA being fully
 implemented and marked done in `PLAN.md`'s Phase 2 item 5. That item's
 stated rationale for LoRA was regularizing against catastrophic forgetting
 on a *small* dataset (29–36 hand-authored examples). `combined_v1.jsonl`
@@ -81,7 +81,7 @@ specific rationale — full fine-tuning on a large, diverse dataset is less
 prone to catastrophic forgetting in the first place. This is a real decision
 to make before training, not a default to skip past:
 
-- **Full fine-tune** (`scripts/finetune_saga.py` or
+- **Full fine-tune** (`scripts/train/finetune_saga.py` or
   `python -m grimoire_ai.llm.training.finetune` with `--lora-rank 0`):
   continues the existing checkpoint lineage, simplest to compare directly
   against `saga-se-qa-weighted-clean-v2`.
@@ -101,7 +101,7 @@ happens to be copy-pasted from a previous run.
 Full fine-tune (same shape as the run that produced the current checkpoint):
 
 ```bash
-python scripts/finetune_saga.py \
+python scripts/train/finetune_saga.py \
     --checkpoint checkpoints/pretrain/<weighted_clean checkpoint>.pt \
     --vocab      data/tokenizer/bpe.json \
     --data       data/finetune/combined_v1.jsonl \
@@ -133,7 +133,7 @@ comparison — a single aggregate metric isn't enough to catch a regression
 hiding in one slice of the data:
 
 ```bash
-python scripts/evaluate.py \
+python scripts/eval/evaluate.py \
     --checkpoint checkpoints/finetune/saga-combined-v1/<final>.pt \
     --vocab      data/tokenizer/bpe.json \
     --quiz-repetition-penalty 1.3
@@ -214,7 +214,7 @@ speed cost. **Deployed**: added `loop_guard_max_repeats: 3` /
 `loop_guard_max_period: 4` to `agents.json`'s `saga.gen_config`
 (2026-08-16) — no code change needed, the config-loading path already
 passed these through. Re-verified via the actual quiz eval
-(`scripts/evaluate.py --quiz-loop-guard-max-repeats 3`, now supported):
+(`scripts/eval/evaluate.py --quiz-loop-guard-max-repeats 3`, now supported):
 pass-rate and kw-recall unchanged for both checkpoints (quiz uses greedy
 decoding, which loops far less often than the stochastic sampling used
 in the 5-seed test), but the guard still fired on 7/49 questions for
@@ -453,7 +453,7 @@ freed) once `v3` was confirmed not worth keeping either.
 **Practical implication for next time**: if the register-drift tic is
 worth pursuing further, the lever is more likely the *fine-tune data's
 format* — e.g. blending in non-Q&A-shaped conversational examples,
-closer to `scripts/finetune_data/general_conversations.jsonl`'s original
+closer to `scripts/finetune/data/general_conversations.jsonl`'s original
 64-example set (`PLAN.md`'s LoRA item) — rather than further pretrain
 corpus reweighting, which this round showed doesn't survive fine-tuning
 on an all-Q&A dataset. Not attempted this round; flagged for a future
@@ -466,7 +466,7 @@ corpus again, this targets the fine-tune data's *format* directly: a
 large share of the SE-answer register tic is a handful of recurring
 meta-commentary openers ("I would say that...", "As you can see in this
 answer...", "You are correct that...") stapled onto the front of
-otherwise-fine answers. `scripts/dehedge_finetune_data.py` (new,
+otherwise-fine answers. `scripts/finetune/dehedge_finetune_data.py` (new,
 [PR #211](https://github.com/BasLinders/grimoire/pull/211)) strips these
 deterministically via regex — no LLM call, no invented content, same
 philosophy as `clean_stackexchange_markup.py` and
@@ -519,7 +519,7 @@ to justify it.**
 **Decision: keep `general-expansion-v1-dehedged` as the best result of
 this session's register-drift work; discard `-v2`.**
 
-**Full harness confirmation (2026-08-24)**: `scripts/evaluate.py` with
+**Full harness confirmation (2026-08-24)**: `scripts/eval/evaluate.py` with
 perplexity + retrieval + quiz together (`--corpus-bin
 data/processed/corpus.bin`, `--corpus-dir data/corpus/saga/
 --corpus-limit 200`, seed 0) against both `general-expansion-v1-dehedged`
