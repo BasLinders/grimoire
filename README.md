@@ -36,22 +36,22 @@ grimoire/
 │   ├── cli/                # Interactive terminal chat loop
 │   └── ui/                 # Two Gradio apps: training/eval (Preprocess/Pre-train/Fine-tune/Scale/Evaluate/Ingest/Corpus) + chat
 ├── agents.json             # Named agent configurations (checkpoint, vocab, corpus, gen defaults)
-├── scripts/                 # Organized by pipeline stage — see scripts/README.md
-│   ├── scrape/              # Per-source corpus scrapers: Wikipedia, Wikibooks, arXiv,
+├── scripts/                # Organized by pipeline stage — see scripts/README.md
+│   ├── scrape/             # Per-source corpus scrapers: Wikipedia, Wikibooks, arXiv,
 │   │                        #   Gutenberg (+ catalog-based bulk variant), D&D Wiki, GitHub
 │   │                        #   D&D repos, Fandom wikis, Open5e, 5etools, Internet Archive
 │   │                        #   Dragon/Dungeon magazines, Stack Exchange RPG
-│   ├── corpus/              # dedup_corpus.py, clean_stackexchange_markup.py,
-│   │                        #   build_saga_corpus.py, score_corpus_quality.py, downsample_jsonl.py
-│   ├── finetune/            # build_source_weights.py, build_finetune_data_from_qa.py,
-│   │   └── data/            #   validate_finetune_data.py, score_difficulty.py, generate_*.py
-│   │                        #   data/ — JSONL fine-tune datasets (Saga Q&A, math tool calls, general chat)
-│   ├── retrieval/           # embed_tune.py, build_retrieval_neighbors.py
-│   ├── train/               # finetune_saga.py, lr_range_test.py, compare_checkpoints.py
-│   ├── eval/                # evaluate.py, eval_per_tier.py, qualitative_check.py
-│   │   └── data/            #   saga_quiz.jsonl
-│   ├── export/              # export_gguf.py — GQA checkpoint to GGUF for llama.cpp
-│   └── references/          # Hand-authored math/probability reference .txt files
+│   ├── corpus/             # dedup_corpus.py, clean_stackexchange_markup.py,
+│   │                       #   build_saga_corpus.py, score_corpus_quality.py, downsample_jsonl.py
+│   ├── finetune/           # build_source_weights.py, build_finetune_data_from_qa.py,
+│   │   └── data/           #   validate_finetune_data.py, score_difficulty.py, generate_*.py
+│   │                       #   data/ — JSONL fine-tune datasets (Saga Q&A, math tool calls, general chat)
+│   ├── retrieval/          # embed_tune.py, build_retrieval_neighbors.py
+│   ├── train/              # finetune_saga.py, lr_range_test.py, compare_checkpoints.py
+│   ├── eval/               # evaluate.py, eval_per_tier.py, qualitative_check.py
+│   │   └── data/           #   saga_quiz.jsonl
+│   ├── export/             # export_gguf.py — GQA checkpoint to GGUF for llama.cpp
+│   └── references/         # Hand-authored math/probability reference .txt files
 ├── docs/                   # Setup guides, roadmap, and corpus-expansion history
 ├── data/                   # Runtime data — gitignored (corpus bins, tokenizer, checkpoints)
 │   ├── raw/                # Source .txt files for pre-training corpus
