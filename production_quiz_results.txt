@@ -1,0 +1,110 @@
+=== seed 0 ===
+Loading model …
+Device: cuda
+  ⚠  No corpus binary provided — skipping perplexity eval.
+  ⚠  No corpus attached to engine — skipping retrieval eval.
+─── Quiz eval ─────────────────────────────────────────
+Quiz eval: 49 questions …
+  1/49  passes: 1  kw_recall: 50.00%
+  5/49  passes: 2  kw_recall: 26.67%
+  10/49  passes: 3  kw_recall: 18.33%
+  15/49  passes: 4  kw_recall: 16.67%
+  20/49  passes: 4  kw_recall: 12.50%
+  25/49  passes: 4  kw_recall: 10.00%
+  30/49  passes: 5  kw_recall: 10.00%
+  35/49  passes: 6  kw_recall: 10.00%
+  40/49  passes: 7  kw_recall: 10.00%
+  45/49  passes: 8  kw_recall: 10.00%
+  49/49  passes: 9  kw_recall: 10.20%
+  pass_rate 18.4%  mean_kw_recall 10.20%  mean_token_f1 0.1630
+
+Report saved → data\eval\eval_20260816_220630.json
+Summary: quiz pass-rate=18.4%  kw-recall=10.20%
+=== seed 1 ===
+Loading model …
+Device: cuda
+  ⚠  No corpus binary provided — skipping perplexity eval.
+  ⚠  No corpus attached to engine — skipping retrieval eval.
+─── Quiz eval ─────────────────────────────────────────
+Quiz eval: 49 questions …
+  1/49  passes: 1  kw_recall: 50.00%
+  5/49  passes: 1  kw_recall: 16.67%
+  10/49  passes: 2  kw_recall: 13.33%
+  15/49  passes: 2  kw_recall: 8.89%
+  20/49  passes: 2  kw_recall: 6.67%
+  25/49  passes: 3  kw_recall: 7.33%
+  30/49  passes: 4  kw_recall: 7.78%
+  35/49  passes: 5  kw_recall: 8.10%
+  40/49  passes: 6  kw_recall: 8.33%
+  45/49  passes: 8  kw_recall: 10.74%
+  49/49  passes: 9  kw_recall: 10.88%
+  pass_rate 18.4%  mean_kw_recall 10.88%  mean_token_f1 0.1763
+
+Report saved → data\eval\eval_20260816_220654.json
+Summary: quiz pass-rate=18.4%  kw-recall=10.88%
+=== seed 2 ===
+Loading model …
+Device: cuda
+  ⚠  No corpus binary provided — skipping perplexity eval.
+  ⚠  No corpus attached to engine — skipping retrieval eval.
+─── Quiz eval ─────────────────────────────────────────
+Quiz eval: 49 questions …
+  1/49  passes: 0  kw_recall: 0.00%
+  5/49  passes: 1  kw_recall: 16.67%
+  10/49  passes: 2  kw_recall: 13.33%
+  15/49  passes: 2  kw_recall: 11.11%
+  20/49  passes: 3  kw_recall: 10.83%
+  25/49  passes: 3  kw_recall: 8.67%
+  30/49  passes: 3  kw_recall: 7.22%
+  35/49  passes: 3  kw_recall: 6.19%
+  40/49  passes: 4  kw_recall: 6.67%
+  45/49  passes: 5  kw_recall: 8.15%
+  49/49  passes: 5  kw_recall: 7.48%
+  pass_rate 10.2%  mean_kw_recall 7.48%  mean_token_f1 0.1980
+
+Report saved → data\eval\eval_20260816_220716.json
+Summary: quiz pass-rate=10.2%  kw-recall=7.48%
+=== seed 3 ===
+Loading model …
+Device: cuda
+  ⚠  No corpus binary provided — skipping perplexity eval.
+  ⚠  No corpus attached to engine — skipping retrieval eval.
+─── Quiz eval ─────────────────────────────────────────
+Quiz eval: 49 questions …
+  1/49  passes: 0  kw_recall: 0.00%
+  5/49  passes: 0  kw_recall: 6.67%
+  10/49  passes: 1  kw_recall: 8.33%
+  15/49  passes: 1  kw_recall: 5.56%
+  20/49  passes: 2  kw_recall: 6.67%
+  25/49  passes: 3  kw_recall: 7.33%
+  30/49  passes: 3  kw_recall: 6.11%
+  35/49  passes: 3  kw_recall: 5.24%
+  40/49  passes: 4  kw_recall: 5.83%
+  45/49  passes: 6  kw_recall: 8.52%
+  49/49  passes: 6  kw_recall: 7.82%
+  pass_rate 12.2%  mean_kw_recall 7.82%  mean_token_f1 0.1503
+
+Report saved → data\eval\eval_20260816_220741.json
+Summary: quiz pass-rate=12.2%  kw-recall=7.82%
+=== seed 4 ===
+Loading model …
+Device: cuda
+  ⚠  No corpus binary provided — skipping perplexity eval.
+  ⚠  No corpus attached to engine — skipping retrieval eval.
+─── Quiz eval ─────────────────────────────────────────
+Quiz eval: 49 questions …
+  1/49  passes: 0  kw_recall: 0.00%
+  5/49  passes: 1  kw_recall: 16.67%
+  10/49  passes: 1  kw_recall: 8.33%
+  15/49  passes: 1  kw_recall: 5.56%
+  20/49  passes: 2  kw_recall: 6.67%
+  25/49  passes: 3  kw_recall: 7.33%
+  30/49  passes: 4  kw_recall: 7.78%
+  35/49  passes: 5  kw_recall: 8.10%
+  40/49  passes: 6  kw_recall: 8.33%
+  45/49  passes: 8  kw_recall: 10.74%
+  49/49  passes: 8  kw_recall: 9.86%
+  pass_rate 16.3%  mean_kw_recall 9.86%  mean_token_f1 0.1841
+
+Report saved → data\eval\eval_20260816_220804.json
+Summary: quiz pass-rate=16.3%  kw-recall=9.86%

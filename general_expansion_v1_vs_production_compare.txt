@@ -1,0 +1,255 @@
+=== seed 0 ===
+Loading general-expansion-v1: checkpoints/finetune/general-expansion-v1/step_0013213.pt
+Loading production: checkpoints/finetune/saga-se-qa-weighted-clean-v2/step_0007288.pt
+
+=== What happens when a creature is grappled? ===
+[general-expansion-v1] The creature is grappled (and therefore still under the effect) by the spell. The creature is incapacitated, and then can't move until the spell ends. The creature takes 1d6 bludgeoning damage to every 10 feet it takes, and the creature takes 1d6 bludgeoning damage.
+[production] The rules for grappled are (emphasis mine): A grappled creature can't move or speak, but it must succeed on a Strength saving throw or be blinded by the mind of the mind of that Mind. The Player's Handbook describes how to read this :
+
+=== What does the Fireball spell do? ===
+[general-expansion-v1] You're correct, the spell is not a creature . It's a creatures type. You are using your action to attack with a melee weapon at all times. The rules on "Attack" state: "The target must make a ranged touch attack against you."  You can't use any of those attacks when making an attack with a weapon.
+[production] You're correct. Fireball is a fireball spell, not a fireball spell, and so does not have any kind of damage. The Fireball spell has no effect on the targets. If you cast Fireball for that, then it's a fireball spell and it's just another one.
+
+=== What is a cantrip? ===
+[general-expansion-v1] There are a number of cantrip options in the PHB, for the spell that you cast and you can choose from. I would recommend against it's own usage.
+[production] There are a few spells in the PHB, but I will have to work with your DM. The Player's Handbook is not the same as the 5e PHB for D&D 5E . However, I'd say that there's no way around a cantrip, and there isn't any particular kind of cantrip available.
+
+=== How is a monster's Challenge Rating determined? ===
+[general-expansion-v1] How is a monster's Challenge Rating determined? What I would like to add to the answer that it depends on whether you're looking for something in D&D 5e. This is what we want to do, and you are looking for something else entirely. As such, I'd suggest you look at this table as "The Monster Manual" .
+[production] It is up to the DM, but it's a GM call. There are two things that should be used in combat: An encounter of an NPC who can't cast spells at all on a round has no effect for a save when they are at 0 HP. This gives you the option of creating monsters that could normally do one or more rounds.
+
+=== Describe what the party finds when they enter a dragon's lair. ===
+[general-expansion-v1] You should be able to find an item in the Dungeon Master's Guide (p. 5): I'd like it, but it seems to fit your needs: you can get a NPC from any dragon's lair to give you its entry on. The "Family" section of the Player's Handbook states (emphasis mine) : You can make the adventure up and take the adventurers’ actions as normal.
+[production] You should be able to figure out what the party finds when they enter a dragon's lair. I'd suggest that you can check this to see if it has any of the characters in question.
+
+=== A rogue is sneaking through a crypt. What should they watch out for? ===
+[general-expansion-v1] A rogue is classified as a trap. There are several options for that, but one can work with the DM. The easiest way to do this is to have an in-game encounter that will be found in the adventure "Dearing Game" (PHB p.286).
+[production] A rogue is scrying through a Hallow spell. It's just that, but it doesn't have any effect on its surface. The ability to see invisible (and only) would not give the rogue an Arcane Trickster. The ability to see invisible (and only) would be for this character and would gain her own Arcane Trickster class features with her Arcane Trickster.
+
+=== What is the difference between a short rest and a long rest? ===
+[general-expansion-v1] The difference between long rest and short rest is that both long rest are stingy. If you have a long rest, there will be no longer than one sleep.
+[production] The short rest is a long rest. You can spend 1 minute sleep in any one-sided area or section of the character's space (which isn't much).
+
+=== What is an opportunity attack? ===
+[general-expansion-v1] I've been toying the game for years now, and it is very easy. It doesn't have to do with your DM's control. If you can't make an opportunity attack after a certain point of action, this makes no sense for the players (as long as they are within 5 feet).
+[production] There is no such thing as a opportunity attack in D&D, but it's not necessarily a game term. For example, if you had a 15-foot reach weapon, you could have an enemy with 30 feet of reach and 20 feet of reach (as of the combat rules) would hit and that by 10' away from you and then with 10'.
+
+=== How does advantage work in 5e? ===
+[general-expansion-v1] The key thing is to remember that when a creature takes an action, its reaction can't be used at the time of casting. You can only use one bonus action on your turn if you have both levels in one or two. If it's not a spell slot, then there isn't any reason why this would be work.
+[production] The advantage of the Advantage is that you are a Bard, as you have levels. So if a Rogue gets an extra at 5th level or higher, they don't get to attack again until it's up again.
+
+=== What is the armor class of a Goblin? ===
+[general-expansion-v1] What is the armor class of a Goblin (D&D 3.5) with a melee weapon of any kind, in terms of its armor class. It's a type of an enemy that has the ranged and ranged weapons. However it doesn't really do what you want, since they don’t say anything about what the armor can be made with.
+[production] What is the armor class of a Goblin (D&D) game? It's about how much of this in 5e's lore, but it's more than just a way to get your answer: A goblins and goblins are fighting the same as goblin and goblin.
+
+=== What is a saving throw DC? ===
+[general-expansion-v1] What is a saving throw DC? I'm going to answer this by using the general rule that you need to roll, but it's not explicitly stated in your description. There are two ways you could do that. You could use it as an action to try to find something that might be too difficult.
+[production] What is a saving throw DC The saving throw is made against the effect of an ability check that has been dealt by the character, not hit. This is because I am using the optional rule on p290 in Chapter 8.
+
+=== What is the difference between mean and median? ===
+[general-expansion-v1] What is the difference between mean and me, and I don't know what it means. It's a word of thumb for people who are both equal in number: The usage is a little more than "the" if you can find the phrase in the first place but not in the second place.
+[production] A "native" answer is to avoid some of the things we are going about. If you want to kill a player, then try and play it with them. The idea is that a "native" answer will not be a problem. It's like it's just an hour or so.
+=== seed 1 ===
+Loading general-expansion-v1: checkpoints/finetune/general-expansion-v1/step_0013213.pt
+Loading production: checkpoints/finetune/saga-se-qa-weighted-clean-v2/step_0007288.pt
+
+=== What happens when a creature is grappled? ===
+[general-expansion-v1] If the creature is not able to use its action or attack roll, it doesn't make a Dexterity saving throw. (PHB p. 268)
+[production] You're correct. The creature is grappled as long as it has a 30 ft line of sight, but he can still be affected by the spell at all times (unless otherwise specified). To be more than 1 on your turn, you are incapacitated and not in any way disadvantage, and so forth if a character or monster uses the ability to move around, she can't just run through her space with her turn.
+
+=== What does the Fireball spell do? ===
+[general-expansion-v1] The spell doesn't say anything about the target. If you are a spellcaster and not using a spell, then it is cast on them without the spell itself. The only effect of the spell is when you cast it as if you were casting a spell, and you can do that in this way by making a saving throw to avoid being casting a spell.
+[production] There are a number of spells which allow you to make an attack roll, and what's important for it (and/or the effect). If this is something that causes an attack roll. If I'm reading in the description of fireball
+
+=== What is a cantrip? ===
+[general-expansion-v1] It's up to the DM It's up to the GM and it's up to the GM. In this case, I'd say that "The" is correct: if you're using a spell slot, then you are able to use it at one of your options. The second option does not allow it as per spell slots (in other words) .
+[production] It is a cantrip. It is not, or at least... The first quote is from the feature description of it: You can use your action to create an effect that allows you to create a spell-like ability for a wizard (or other caster). As part of this bonus action, any creature within 10 feet of you may create one spell that fits in
+
+=== How is a monster's Challenge Rating determined? ===
+[general-expansion-v1] You should be able to figure out what your monster is. There are two stats I can think of: Figure the D&D4e, and how it looks like that is true. It's a CR 1/2 encounter for an NPC that uses the CR1 encounter difficulty table (detail). You can make it up with the number of encounters you have in mind...
+[production] You are correct that the CR is based on a monster's Challenge Rating (from MM2, pg. 217): CR 2: 5 1/3: 3 4 1/5: 3 4 1/6 = 61 / 5 1/7 = 7 or 9/s = 81 / 5 1 / 4 1 / 10 + 11 = 4*T = 8
+
+=== Describe what the party finds when they enter a dragon's lair. ===
+[general-expansion-v1] The only way to get the dragon's lair is through some of the following: The dragon uses its breath weapon and is hit by a ranged attack.
+[production] The campaign is a bit like this: The dragon's lair is an ancient green dragon that lives in the swamp of the Rainbow Falls. (It is said to have seen it and there is no light on the ground, but I'll add it).
+
+=== A rogue is sneaking through a crypt. What should they watch out for? ===
+[general-expansion-v1] The rogue is there, not really. You can't see the rogue in any way (or even just a laser) or if you want to be a rogue and use it as a sneak attack . The rogue's sneaky sneak attack works as normal with an unarmed strike as well - but that doesn’t make much of it clear how far away you are from the rogue.
+[production] The rogue is hiding through a crypt. What should they watch out for? The hidden action doesn't mean that you can sneak through the study of the unseen unseen and unseen unseen within range, but there's no reason why it would be able to sneak through the reading, or to the other players at all .
+
+=== What is the difference between a short rest and a long rest? ===
+[general-expansion-v1] There is nothing to give you a long rest in the day. You will see that there are no short rests at all, and it doesn't matter how much it takes, unless the time has passed for something other than the duration of the spell's casting.
+[production] There is nothing in the rules that allows this to be used as a short rest. It doesn't have any specific rules or wording, it doesn't say anything about it's duration: This spell has no effect on other characters or objects that are more than one size category larger than the character.
+
+=== What is an opportunity attack? ===
+[general-expansion-v1] The opportunity attack is a reaction, so it can't be used again for that turn. It's an action to cast at the start of your next turn - it can take one bonus action on your turn or one during its entire round.
+[production] The opportunity attack is an opportunity attack. If you have the provoke attack of Opportunity, you can make a melee basic Attack with your reaction (in which case the trigger was to be provoking an enemy). The opportunity attack does not specify that opportunity attacks and opportunity attacks from an adjacent target are not provoke.
+
+=== How does advantage work in 5e? ===
+[general-expansion-v1] The DM does not need to use an action, but if the GM allows it as a bonus action then this is called "if you don't have the bonus action on your turn" - meaning that the player could choose to take the bonus action each time and when they want.
+[production] The DM decides whether you have advantage or disadvantage on a saving throw. For example, if a character has advantage in order to make an ability check, it is the same as two rolls, and has both both. The attacker's attack roll applies each of theirs, but only both together.
+
+=== What is the armor class of a Goblin? ===
+[general-expansion-v1] What is the armor class of a Goblin (or rather "rare" in general) that has the weapon type, and which isn't as well-based.
+[production] What is the armor class of a Goblin is in the "Packed" tags. The basic rules for Goblin are to be found as: Tridents of the D&D game, or GAEE.
+
+=== What is a saving throw DC? ===
+[general-expansion-v1] A saving throw DC is a spell save, and the DM can roll an attack roll. If you are interested in using a ruling on this issue, I would recommend you to make your own rolls against the target's AC if it is a creature. The AC of your attacks and damage rolls are calculated as follows:
+[production] A saving throw is a spell attack roll, not an ability check. The save DC for the effect is: On a failed save, the target takes half damage on a failure and no other creature or object hit by it (this can be reduced to 0 by this magic or from another magic item).
+
+=== What is the difference between mean and median? ===
+[general-expansion-v1] What is the difference between mean andorrect, both mean and convey.
+[production] What is the difference between mean andli, both for each and every. The other two are not only game-mechanical reasons, but even more than if you have a specific example: A specialist, or a general rule that can affect a given attack roll, such as on the same spell cast multiple times in a single action (e.g., when they're able to make an Attack of Opportunity).
+=== seed 2 ===
+Loading general-expansion-v1: checkpoints/finetune/general-expansion-v1/step_0013213.pt
+Loading production: checkpoints/finetune/saga-se-qa-weighted-clean-v2/step_0007288.pt
+
+=== What happens when a creature is grappled? ===
+[general-expansion-v1] What happens when a creature is grappled by the creature, and if it's able to do anything, it doesn't have any way of getting the grappled condition. The only one I can find is that you're not there with your grapple.
+[production] There are two separate cases. The spell description says: A creature can move or act as a move action, but not both the same as in the PHB. If you are able to move through an enemy's space and have someone else’s movement, they do not stack. However, the description of the spell reads (p. 12):
+
+=== What does the Fireball spell do? ===
+[general-expansion-v1] It doesn't say "it is not a fireball". I don't think there are any rules that can be used for this, but the spell description says: It is an magical effect which can't be cast at will . That's what it does. The target has to make a saving throw against all of them. If the save isn’t successful, you have advantage on attack rolls with disadvantage.
+[production] It doesn't matter. So, it can be cast as a spell. It does not matter. For the purposes of this, I'd say that you can't use an "Action spell" action to cast as a fireball (or any other effect). The Glyph is on targets, so all creatures within reach. If they are within range (a 20'x caster) then no
+
+=== What is a cantrip? ===
+[general-expansion-v1] You can use a cantrip to make it up. But, there is also an option for the spell: You create a level 2 cantrip that you can cast, but you can also use it as your spell level to cast this spell on it. The "leveling" of your spells are not limited by class level.
+[production] You are correct that the cantrip cantrip is cantrips. The PHB says you can choose a spell from your class, race or level. (PHB p212) for which you have slots: You have spell slots to cast and know them on any spell list . For example, it's 3rd-level spell.
+
+=== How is a monster's Challenge Rating determined? ===
+[general-expansion-v1] How is a monster's Challenge Rating determined? The monster's challenge rating, the monsters' challenge rating, and its XP budget of that CR. (It is the same as that in this case.)
+[production] The monster is a CR, and the challenge rating determines it. The monsters of its CR are simply CRs. There's no reason for that if you did not use the Challenge Rating rolled. But there is nothing in the way that makes sense of this: it is an NPC or NPC. It is an NPC or NPC/PC, so it should be treated as 'a monster' .
+
+=== Describe what the party finds when they enter a dragon's lair. ===
+[general-expansion-v1] The Dragonlance has a section called the "Equipment" in its entry for dragon's lair. The rules on dragon level state: It’s an adventure and is usually available to characters of any kind.
+[production] The Dragonlance has a lair in the dragon's domain. It is described as follows: Rising from the Last War (1) "D breath weapon" or similar to the dragon's breath weapon . The dragon's breath weapon says that it creates an additional 1d6+2d6 fire damage at its base attack bonus and its effects on critical hits.
+
+=== A rogue is sneaking through a crypt. What should they watch out for? ===
+[general-expansion-v1] I've been to a similar situation in one of the previous answers, but I can't find anything that's true here. The rogue is also sometimes called "Turn-by" (which has some similar meaning).
+[production] A rogue is sneaking through a locked door, in an open room, or container. It's pretty big of that, because it's not a specific thing (that I do when I have an actual question). The character gets sneak attack damage if they're hiding and you can't see.
+
+=== What is the difference between a short rest and a long rest? ===
+[general-expansion-v1] The short rest is a long rest. If you have an old rest, that's not something that is about to happen at the end of your life (not being in your situation), then it depends on the amount of time and the duration of the rest, even if there are things which aren't. The amount of time is the length of the character's turn when their body is dead - they're just
+[production] The short rest is a long rest. If you do not have a short rest, you can only use it once per day and a long rest. This means that the character must be able to recover from the Short Rest and then take the long rest and gain the benefits of the Long Rest and then. The character must be able to heal
+
+=== What is an opportunity attack? ===
+[general-expansion-v1] What is an opportunity attack (if any) It's a melee weapon, and if you use it as an improvised weapon in the same way you would like. It doesn't say "any action" which can be used to make a ranged weapon attack against your enemy. If you are not using this definition of "use or make one ranged weapon", you could say: "Any action"
+[production] What is an opportunity attack (or at least one) if you are trying to hit someone. If so, the attacker's enemy could not be hit by a melee or ranged attack as they are being hit by a melee or ranged spell. They would only do damage in a given-manage sense, such that they can't see through their familiar's eyes.
+
+=== How does advantage work in 5e? ===
+[general-expansion-v1] How does advantage work in 5e? I'm pretty sure this is a case of "no problem". It's just that there are things you can do, but I don't think it would be reasonable to say. You could use it as an example: When I'm going with a specific question about the situation I'll be able to understand what the RAW rules will apply and how it should apply.
+[production] How advantage does advantage work in 5e. The advantage is that you get advantage on your saving throw against the effect, and if it isn't your saving throw they are going to be. If you have an ability check or a saving throw you can then add the disadvantage to your save (with Advantage).
+
+=== What is the armor class of a Goblin? ===
+[general-expansion-v1] What is the armor class of a Goblin, and which has its own proficiency bonus from its stat block.
+[production] A Goblin is a humanoid (AC 10) and has the Armor Class of 16. A goblin takes a statistic at first level. The goblin's AC is 14. The goblin's AC is 15. A goblin's AC is 13. The goblin's AC is 14. The goblin's AC is 17.
+
+=== What is a saving throw DC? ===
+[general-expansion-v1] What is a saving throw DC? A Saving Throws (PHB, p. 275) On a successful save, a character can make another ability check to change its AC. When the spell ends for you, your Dexterity modifier becomes an attack roll... This attack has been made before that creature's turn. It now has a +1 bonus on attack rolls and damage rolls. The rules don't say what you are trying to do here.
+[production] What is a saving throw DC is the ability score for a character with a level of spellcasting that has been used to cast a spell. In this case, it would be the same as using the 1st-level spell from the same name and that the spell has been used to cast (and therefore can't use).
+
+=== What is the difference between mean and median? ===
+[general-expansion-v1] What is the difference between mean andoice. This can be used as a noun, but it does not have an adjective or noun: I am not going to work out in the hope of that we are doing so.
+[production] What is the difference between mean andns, or can a character with average Strength (or Dexterity) + strength (or Dex) or Constitution (or Con),  or: Strength (or Dex).
+=== seed 3 ===
+Loading general-expansion-v1: checkpoints/finetune/general-expansion-v1/step_0013213.pt
+Loading production: checkpoints/finetune/saga-se-qa-weighted-clean-v2/step_0007288.pt
+
+=== What happens when a creature is grappled? ===
+[general-expansion-v1] It's up to the DM, not the DM. I'll assume it is the case that a creature would be grappled (and then another one of its own), since that is what happens with a creature and only if a creature was grappling or grappling. The Rules Compendium page 106 says:
+[production] It happens when it is grappled, or rather than 5 feet. The first quote is from the description of the condition: The creature has to move up and down on a turn, but otherwise he can't make a move (with any other speed). This means that the creature cannot move into his space without taking an action.
+
+=== What does the Fireball spell do? ===
+[general-expansion-v1] You know it's the spell effect, but not that it would be an area. You can't cast a fireball with it and then go through them at any point in time for the caster to have no concentration on their own spell, so they wouldn’t need to be able to cast it.
+[production] You are correct that the Fireball spell does not say that it would be an area effect, or a location effect. And there is also another point of view: Fire Bolt , fireball , fireball :  fireball , fireball , shoot
+
+=== What is a cantrip? ===
+[general-expansion-v1] What is a cantrip? (from the PHB) 1: A level, spell or feature that you can cast. The spells in the class description are similar to each of your levels. This means if there is no list available then they don't stack.
+[production] What you want to do is make a cantrip. You can use your action to create it, but the spell text says: If you create this illusion for that reason or you are casting it again and then using the spell on yourself or another object of your choice (if you're proficient with it)
+
+=== How is a monster's Challenge Rating determined? ===
+[general-expansion-v1] The monster's Challenge Rating determined by the type of creature it is. The monster's challenge rating increases with a +1 bonus to AC, and that means it can't be used to attack anything more than 1 or 2 creatures.
+[production] The monster's Challenge Rating determined by the type of monsters is its CR, and it doesn't have any rules for that. The Monster Manual (p. 260) says: A monster's Challenge rating determines whether the monster has an appropriate challenge rating or a roll in combat to determine which of its abilities is relevant .
+
+=== Describe what the party finds when they enter a dragon's lair. ===
+[general-expansion-v1] I've been in a similar situation, but the party (and one) is not quite sure what it's worth. I'll give you more information here:
+[production] The adventure doesn't give you any information about the party that they enter a dragon's lair. The DMG has this to say: The dragon's lair is where most people are, so it can be seen through by other dragons or magical means.
+
+=== A rogue is sneaking through a crypt. What should they watch out for? ===
+[general-expansion-v1] The rogue is playing a rogue, so there are two sheafs of the same class: a rogue who does not like her. (This doesn't make it harder to get into an attack roll.) The fighter is casting a spell that allows the rogue to cast spells and cast spells from her school. The wizard must use the spell on a different plane as well
+[production] The rogue is sneaking through aEldritch Knight, and sneak attack power points. The sneaky ability of an eldritch knight has a sneak attack that deals sneak attack damage.
+
+=== What is the difference between a short rest and a long rest? ===
+[general-expansion-v1] What is the difference between a short rest and a long rest, in which case there are two short rests. When you are more than one hour at the same time, it has to be in between the last and 1 minute. If you were to start your first visit (e.g., I'm not sure if you will) you could have either a short rest or long rest, but the duration of a short rest is less than 4 hours (or 8 hours).
+[production] The short rest is a long rest, but the time period of downtime has been spent. In some cases when the characters are out of combat and at least 1 hour in their sleep or rest (the character takes an amount of action to gain).
+
+=== What is an opportunity attack? ===
+[general-expansion-v1] What is an opportunity attack? "A creature can't take a standard action (or any other bonus action) to do so." So, if the monster is taking a standard action or some other means of moving in combat that allows it to take actions as part of movement for its own turn.
+[production] What is an opportunity attack? It depends on what the "in" of the melee class you're using in combat, rather than your ranged attacks. The target's melee basic attack will be a melee or ranged weapon attack that doesn't hit much (at least for ranged characters), and it is not.
+
+=== How does advantage work in 5e? ===
+[general-expansion-v1] Automated spells can be used, and no longer have the same spell level. If you want to make a ranged spell attack with something, you need a melee spell attack with a higher level than the spell's level.
+[production] A "I advantage on a attack" roll is an opposed roll. The result of the enemy's attack is the success, so that they will have to make a save. As they are making your first hit (1) as you are making your second-attack and then you get to make a save. You may be able to choose which creature to hit (2) for 1 minute or less before
+
+=== What is the armor class of a Goblin? ===
+[general-expansion-v1] What is the armor class of a Goblin, and the Gary Gygax (the other player) has been in this position. I don't think there's any way to get it from the character sheet but you have your own stats.
+[production] What is the armor class of a Goblin, in the context of the D&D game. It's entirely different from a standard character, but it's also different than that. (1) A goblin with an ornate hand and one eye can use his reaction to get out of the melee range.
+
+=== What is a saving throw DC? ===
+[general-expansion-v1] What is a saving throw DC? The attack has the save, and damage rolls are both rolls. You have to roll for your AC before you can hit, but you're not using it until the end of your turn. It's a level 1 spell, so if you roll a 20 or higher on a d20 you'll get a +1 bonus (as the target would be affected by an attack) and it will make a Constitution save.
+[production] It is not the DC or saving throw. This is a d20 roll, which has been made for 3D by 1 in 5e (6E): Rolling 20 on any ability check is needed to determine success with Advantage. The result of that roll is an Orange, but-20% chance of success and you have advantage. The results of that roll is an Orange, but-20% chance of failure and you have advantage.
+
+=== What is the difference between mean and median? ===
+[general-expansion-v1] What is the difference between mean and beauty .
+[production] It is the difference between mean andal. For example, we know that we're talking about a specific case of "-1" or "y", where X happens. And where Y happens. Now since our group has all three together, we know them in different ways: The first hit the second was in the second round with the second, and one of them.
+=== seed 4 ===
+Loading general-expansion-v1: checkpoints/finetune/general-expansion-v1/step_0013213.pt
+Loading production: checkpoints/finetune/saga-se-qa-weighted-clean-v2/step_0007288.pt
+
+=== What happens when a creature is grappled? ===
+[general-expansion-v1] You are correct that the rules don't make sense for a creature to be grappled. You can't grapple, and you can't Grab them with it, so you can't move it without your speed. This doesn’t mean it makes sense for the creature to have it in its space, but it is not movement at all (though they may be able to move).
+[production] You are correct that the rules don't make a distinction between "on' or ' ' (lower in', with no additional difference to the rules) and how you get it. The rules have no specific rule or general definition, which I am aware of in feet, but for each one I know.
+
+=== What does the Fireball spell do? ===
+[general-expansion-v1] The spell is a magical effect, and the result can be a magic item. The same thing happens when an object is created from one of your classes or other characters in the same class that you are using.
+[production] The Fireball spell does not target creatures. The Fireball spell says: "All of the targets" you can target is a creature, but that isn't an area of effect. If it hits, and there's hit points for the effect, then this spell will work: " All of the targets" means "All of them." (This is not a game term in D&D, so it has no meaning).
+
+=== What is a cantrip? ===
+[general-expansion-v1] The spell is a cantrip. It's the level 1 spell you're using to cast it, but with your choice that's not how long you can cast it. You have at least one option: cantrip . The rest of this feature allows you to cast up a single cantrip and cast it as part of casting the spells as you cast it. The spell gives you more options for doing so if they are on your class or
+[production] The cantrip is a cantrip. It's a spell attack, so it can be cast as if it were a cantrip: Range 1 minute (1/20 chance of casting), range 20 feet (10+5) = 15 minutes (2d10+3). Pick the spell in your mind and then have it make an ability check. The text for the
+
+=== How is a monster's Challenge Rating determined? ===
+[general-expansion-v1] How is a monster's Challenge Rating determined? The Monster Manual (p. 131) says: A monster's challenge rating, as it doesn't matter how well it looks, has the challenge rating of its challenge rating. It's not a monster's challenge rating because it isn’t an NPC and that is the CR. If a player wants to be more than one size larger or smaller, there are no enemies
+[production] The challenge rating is based on the monster stat block. The Monster Manual (p. 6) says: In humanoid form, its CR becomes 1/4 as well as its Challenge Rating. As an example of how to deal with a monster's challenge rating (as described in chapter 8), it will be a CR 2 or lower by a CR 4 monster for all purposes.
+
+=== Describe what the party finds when they enter a dragon's lair. ===
+[general-expansion-v1] The DM can easily figure out how to create a dragon's lair, but that could be something they are looking for. The "D&D" section of the PHB describes this: A dragons' stat block is an ability check that gives them the bonus on saving throws and ability checks against it. (PHB p. 196)
+[production] The dragon's lair is defined by the type of dragons, as described in the Monster Manual: A monster’s lair has a range of 30 feet. Its description describes what this dragon's lair action can be used to determine its place on the breath and its lair. It uses its breath weapon
+
+=== A rogue is sneaking through a crypt. What should they watch out for? ===
+[general-expansion-v1] The DM has a right to do this. It is up to the DM how their characters are going through this process, and if they don't know it'll probably make sense for them, then you can always use some of the time as normal for these cases .
+[production] The rogue is sneaky. What should they watch out for? The rogue is sneaky. If the wizard has a hidden enemy, he or she can't be in his space as you are surprised by the rogue . So the rogue will not get to attack when their opponent has been surprised (the rogue gets his sneak attack).
+
+=== What is the difference between a short rest and a long rest? ===
+[general-expansion-v1] What is the difference between a short rest and a long rest, a period of time or even hours. This is where there are several things that can be done: Spend some time in the last few days.
+[production] The short rest is a long rest. The Short Rest rules state: You can't have more than one hit point per character, but you gain the benefit of that level if you are at least 5 or higher. You also don't get much time as they are designed for combat in-world situations.
+
+=== What is an opportunity attack? ===
+[general-expansion-v1] A creature within 5 feet of the creature can make an attack roll. The creature can't attack again until it is at least 10 feet away from you . When you make a ranged weapon attack against your target, you must take a –2 penalty to attack rolls and damage rolls and damage dice. (PHB p. 240)
+[production] Aiming an opportunity attack doesn't require an action. It's an Action: you can make a melee or ranged attack as part of the Attackers' Range. The action is a move action, which includes movement and movement for the round and the character who wants to cast it. In that round, you do not get any actions.
+
+=== How does advantage work in 5e? ===
+[general-expansion-v1] What's up to you - a level 1 fighter/fighter. D&D 5e doesn't do what it is a class feature, so we'll be able to get an E6 character per day instead of having the same level in that system (e.g., with the +1 bonus), or 4 level in 3 characters with level in both classes and abilities: 1 for each class, 2 for each class, etc
+[production] What's the problem for you, your DM. You've got a thing in play that doesn't do what you want. I dont think there is an advantage/disadvantage/ failure, but I know it does not matter because of that, so it's not going to be anything .
+
+=== What is the armor class of a Goblin? ===
+[general-expansion-v1] What is the armor class of a Goblin? This feat has been changed, but was removed from the Unearthed Arcana. As you can see in this answer , I would suggest that it's available to players and DM to use as many magic items as they like (as far as possible) and have found a way around these kinds of items.
+[production] It is not the armor class of a Goblin, and it's no specific effect. For example, Goblin has AC 10 in Dexterity (Stealth) or 15 on its turn: Roll 20 (one d20 + 1). If you have a proficient with this stat, you can add your proficiency bonus to one ability check and attack roll made using that stat.
+
+=== What is a saving throw DC? ===
+[general-expansion-v1] It's a good idea to consider the way it is done. A saving throw DC of 1/2 or 2/3/1 = 2 (a) + 3.5(dice). The rules for a spell do not have a save file; it says: You can make an attack roll using a d20 . The DM has rules that you might be able to use this as a "failure".
+[production] It is a saving throw DC . It has no effect on a save or roll. For the purposes of the rules, you have to use your ability modifier (which the bonus applies to all saves).
+
+=== What is the difference between mean and median? ===
+[general-expansion-v1] The difference is that in the original sentence, a sentence would be better. The word "positive" was used to describe two things as one or more things: an X-Wayer (and/or other people) used to say something like this : [the following example] - 1) I'd have taken some work on my car and it was not something I've had been there .
+[production] The most likely difference between mean and each of a kind is the other. The general wording is pretty much that this answer can be used to resolve in any order. The common reading on it being that you are corrected is: "A" means A - A - B, C means A - B means A - B and C = A means A - B mean A - B means A - B means B . A means A - B means A - B, C means A - B means A - B, C means A - B means A - B S means A - B means A - B G means A - B means A - B
