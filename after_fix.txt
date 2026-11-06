@@ -1,0 +1,50 @@
+Loading same: checkpoints/finetune/saga-combined-v1/step_0011339.pt
+Loading same: checkpoints/finetune/saga-combined-v1/step_0011339.pt
+
+=== What happens when a creature is grappled? ===
+[same] You are correct that the rules don't make a distinction between 'choices' and 'lies', as per the description of "the monster's statistics" which is described in the rules. It only makes sense if there isn’t enough room to actually be the source of the information, not even so for example at the end of the encounter.
+[same] You are correct that the rules don't make a distinction between 'choices' and 'lies', as per the description of "the monster's statistics" which is described in the rules. It only makes sense if there isn’t enough room to actually be the source of the information, not even so for example at the end of the encounter.
+
+=== What does the Fireball spell do? ===
+[same] What does the Fireball spell do is a cantrip that can be cast at will. The Fire Bolt spell description says: You create an invisible, unennvable, oredy-popular creature within range for the first time on a long rest. This spell also gives you advantage on any saving throw against any other effect, such as poison and psychic damage .
+[same] What does the Fireball spell do is a cantrip that can be cast at will. The Fire Bolt spell description says: You create an invisible, unennvable, oredy-popular creature within range for the first time on a long rest. This spell also gives you advantage on any saving throw against any other effect, such as poison and psychic damage .
+
+=== What is a cantrip? ===
+[same] The cantrip is a cantrip that doesn't use your own spell attack roll, so it should not be any more. The cantrips are the same thing that don't use your own spell attack rolls, so they can only be of what you have at at around (eb) and the other spells cast using your own spell attack roll, so they can only be of what you have at at around (e.g., for example).
+[same] The cantrip is a cantrip that doesn't use your own spell attack roll, so it should not be any more. The cantrips are the same thing that don't use your own spell attack rolls, so they can only be of what you have at at around (eb) and the other spells cast using your own spell attack roll, so they can only be of what you have at at around (e.g., for example).
+
+=== How is a monster's Challenge Rating determined? ===
+[same] There is nothing in the Dungeon Master's Guide to represent that it is a monster. It doesn't have to be any type, but it doesn’t have to be any type: either of those are not specific or they don’t.
+[same] There is nothing in the Dungeon Master's Guide to represent that it is a monster. It doesn't have to be any type, but it doesn’t have to be any type: either of those are not specific or they don’t.
+
+=== Describe what the party finds when they enter a dragon's lair. ===
+[same] The DMG page 215 describes the section "Hillion" (p. 203). A monster's lair is a small, open space that you can see in your example of an area where there are no more creatures and only need to be inside the warded creature.
+[same] The DMG page 215 describes the section "Hillion" (p. 203). A monster's lair is a small, open space that you can see in your example of an area where there are no more creatures and only need to be inside the warded creature.
+
+=== A rogue is sneaking through a crypt. What should they watch out for? ===
+[same] A rogue is searching for a nearby location. It’s up to the DM if that would be useful when you ask. The first thing about the site is that I know, this is my question here .
+[same] A rogue is searching for a nearby location. It’s up to the DM if that would be useful when you ask. The first thing about the site is that I know, this is my question here .
+
+=== What is the difference between a short rest and a long rest? ===
+[same] What is the difference between a short rest and a long rest, depends on how many of your available slots are. The character has not hit points for every encounter that they are at. The character's level (note that you can get hit points for every encounter that they are at).
+[same] What is the difference between a short rest and a long rest, depends on how many of your available slots are. The character has not hit points for every encounter that they are at. The character's level (note that you can get hit points for every encounter that they are at).
+
+=== What is an opportunity attack? ===
+[same] A "A" is a supernatural ability, not an attack roll. The creature can't attack as many as the above and for any other side, but only if it has one or more. The creature must succeed at a DC 5 check. If you make this choice to you later on in your next round, then the target gets a +2 bonus on its saving throw against your own spell
+[same] A "A" is a supernatural ability, not an attack roll. The creature can't attack as many as the above and for any other side, but only if it has one or more. The creature must succeed at a DC 5 check. If you make this choice to you later on in your next round, then the target gets a +2 bonus on its saving throw against your own spell
+
+=== How does advantage work in 5e? ===
+[same] What you're describing is the way that advantage works in 5e, but a DM might want to give it. In fact, I don't think there's any way for me to make this work in 5e (and, to be honesty, I'm not even sure why).
+[same] What you're describing is the way that advantage works in 5e, but a DM might want to give it. In fact, I don't think there's any way for me to make this work in 5e (and, to be honesty, I'm not even sure why).
+
+=== What is the armor class of a Goblin? ===
+[same] What is the armor class of a Goblin? (and other answers have mentioned in my question, as it does not appear to be an Armor Class or similar, but you may have the following: AC: AC = 12. AC: 13 + Dex. CR = 10 + Dex bonus. CR = 14 + Str bonus (if any) +1 (for the armor class description says it, so if you take the same result on an armor class'
+[same] What is the armor class of a Goblin? (and other answers have mentioned in my question, as it does not appear to be an Armor Class or similar, but you may have the following: AC: AC = 12. AC: 13 + Dex. CR = 10 + Dex bonus. CR = 14 + Str bonus (if any) +1 (for the armor class description says it, so if you take the same result on an armor class'
+
+=== What is a saving throw DC? ===
+[same] What is a saving throw DC is the character’s save DC, if any. The rules are specific about who you have to make that check (and that in the description of where they say). This means there's no rule for how far you have to make that check (or even with the rules) in this case.
+[same] What is a saving throw DC is the character’s save DC, if any. The rules are specific about who you have to make that check (and that in the description of where they say). This means there's no rule for how far you have to make that check (or even with the rules) in this case.
+
+=== What is the difference between mean and median? ===
+[same] The most recent version of the spell is written in its description. The following quote on page 73: A character who can cast a spell as a ritual if it's an arcane-focused spell must have a level or lower, he or she must have a level or higher."
+[same] The most recent version of the spell is written in its description. The following quote on page 73: A character who can cast a spell as a ritual if it's an arcane-focused spell must have a level or lower, he or she must have a level or higher."
