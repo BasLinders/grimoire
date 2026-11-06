@@ -30,9 +30,17 @@ Pieces
 - ``save_gate`` / ``load_gate``: persistence, tagged with the checkpoint the
   gate was fitted on. A gate is only valid for the hidden-state geometry it
   was fitted to; loading it against a different checkpoint is an error.
+- ``KNNLM`` / ``KNNSession`` / ``context_span``: generation-time wiring.
+  ``generate``, ``generate_stream`` and ``InferenceEngine`` take
+  ``knn_lm=KNNLM(...)``; each generation opens a ``KNNSession`` that builds
+  the store from the prompt pass and rescores every step's logits.
 
-Wiring into the sampler and ``InferenceEngine`` is a separate step (PR 2 in
-``docs/KNN_LM.md``). Nothing here touches the model or the sampler.
+Usage
+-----
+    from grimoire_ai.llm.inference.knn_lm import KNNLM, checkpoint_tag
+
+    knn = KNNLM.load("ckpt.knn_gate.pt", expected_checkpoint_tag=checkpoint_tag(ckpt))
+    engine = InferenceEngine(ckpt, tok, corpus=retriever, knn_lm=knn)
 """
 
 from __future__ import annotations
@@ -45,6 +53,7 @@ import torch
 import torch.nn as nn
 
 from grimoire_ai.llm.inference.rag_index import _md5
+from grimoire_ai.llm.tokenizer.special_tokens import BOS_ID, SEP_ID
 
 _GATE_FORMAT_VERSION = 1
 
@@ -346,10 +355,176 @@ def fused_logprobs(
     lm_lp = lm_logits.float().log_softmax(-1)
     if store is None or store.size == 0:
         return lm_lp
+    return _fuse_with_store(lm_lp, hidden, store, gate, cfg)[0]
+
+
+def _fuse_with_store(
+    lm_lp: torch.Tensor,
+    hidden: torch.Tensor,
+    store: ScopedStore,
+    gate: LambdaGate,
+    cfg: KNNConfig,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Core of ``fused_logprobs`` for a non-empty store; also returns λ."""
     D, I = store.search(hidden, cfg.k)
     p_knn = knn_distribution(D, I, store.values, lm_lp.size(-1), gate.temperature)
     lam = gate(D, lm_lp)
-    return fuse(lm_lp, p_knn, lam, cfg.eps)
+    return fuse(lm_lp, p_knn, lam, cfg.eps), lam
+
+
+# ---------------------------------------------------------------------------
+# Generation-time wiring
+# ---------------------------------------------------------------------------
+
+
+def context_span(prompt_ids: "list[int]") -> Optional[tuple[int, int]]:
+    """Locate the retrieved-context block in a Grimoire prompt.
+
+    Both prompt builders (``PromptBuilder.build`` and
+    ``ConversationState.build_prompt_ids``) emit
+    ``[BOS, SEP, *context, SEP, ...]`` when there is context, and never put a
+    ``SEP`` at index 1 otherwise. BPE never produces the reserved special ids,
+    so the first ``SEP`` after index 1 closes the block.
+
+    Args:
+        prompt_ids: The prompt as fed to the model (after any left-truncation;
+            a prompt truncated past its ``<BOS><SEP>`` has no usable span).
+
+    Returns:
+        ``(start, end)`` such that ``prompt_ids[start:end]`` is the context
+        tokens, or ``None`` when there's no non-empty context block.
+    """
+    if len(prompt_ids) < 3 or prompt_ids[0] != BOS_ID or prompt_ids[1] != SEP_ID:
+        return None
+    try:
+        end = prompt_ids.index(SEP_ID, 2)
+    except ValueError:
+        return None
+    return (2, end) if end > 2 else None
+
+
+class KNNLM:
+    """A fitted gate + config, ready to attach to generation.
+
+    Pass one to ``generate`` / ``generate_stream`` / ``InferenceEngine``
+    (``knn_lm=``). Each generation call opens its own ``KNNSession``, so the
+    per-query store never leaks between calls.
+
+    The gate is only valid for the weights it was fitted on. That includes any
+    LoRA adapter active at fitting time, which ``checkpoint_tag`` does not
+    capture; fit with the same adapter you generate with.
+    """
+
+    def __init__(self, gate: LambdaGate, cfg: Optional[KNNConfig] = None) -> None:
+        self.gate = gate.eval()
+        self.cfg = cfg if cfg is not None else KNNConfig(lam_max=gate.lam_max)
+
+    @classmethod
+    def load(
+        cls, path: "str | Path", expected_checkpoint_tag: Optional[str] = None
+    ) -> "KNNLM":
+        """Load a gate written by ``save_gate`` (see ``load_gate``)."""
+        gate, cfg, _ = load_gate(path, expected_checkpoint_tag)
+        return cls(gate, cfg)
+
+    def session(self) -> "KNNSession":
+        """Fresh per-generation state."""
+        return KNNSession(self)
+
+
+class KNNSession:
+    """Per-generation state: the scoped store and the λ trace.
+
+    The sampler drives it with ``prefill`` (once, on the prompt) and ``step``
+    (once per generated token). Both run the model with a forward hook on
+    ``model.final_norm`` registered for that single call only, so the hook
+    never fires on unrelated forwards such as ``engine.embed()`` (which also
+    runs ``final_norm``).
+
+    ``prefill`` builds the store from the prompt pass's own hidden states over
+    the context block, so keys come from the same in-prompt context the
+    decoding queries do, at zero extra forward passes. Prompts without a
+    context block get no store, and every step returns the LM's logits
+    unchanged.
+
+    Rescored logits are fused log-probs shifted by the LM logits'
+    ``logsumexp``. The shift doesn't change the distribution, but it keeps
+    values on the raw-logit scale, so the sampler's downstream processing
+    (repetition penalty in particular, which treats positive and negative
+    logits differently) behaves as it does without kNN when λ is small.
+
+    Attributes:
+        store: The ``ScopedStore`` built at prefill, or ``None``.
+        lambdas: λ used at each rescored step, in order (empty without a
+            store). Diagnostic for evals: mean λ shows how much the gate
+            actually leaned on the store.
+    """
+
+    def __init__(self, knn_lm: KNNLM) -> None:
+        self._knn = knn_lm
+        self.store: Optional[ScopedStore] = None
+        self.lambdas: list[float] = []
+        self._hidden: Optional[torch.Tensor] = None
+
+    def _hook(self, _module, _inputs, output) -> None:
+        self._hidden = output.detach()
+
+    def _forward(self, model, input_ids: torch.Tensor, **kwargs):
+        handle = model.final_norm.register_forward_hook(self._hook)
+        try:
+            return model(input_ids, **kwargs)
+        finally:
+            handle.remove()
+
+    @torch.no_grad()
+    def _rescore(self, next_logits: torch.Tensor) -> torch.Tensor:
+        if self.store is None:
+            return next_logits
+        logits = next_logits.float()
+        lm_lp = logits.log_softmax(-1)
+        h_last = self._hidden[0, -1]
+        gate = self._knn.gate
+        if gate.log_temp.device != h_last.device:
+            gate.to(h_last.device)
+        fused, lam = _fuse_with_store(
+            lm_lp[None], h_last[None], self.store, gate, self._knn.cfg
+        )
+        self.lambdas.append(float(lam[0]))
+        return fused[0] + torch.logsumexp(logits, -1)
+
+    @torch.no_grad()
+    def prefill(
+        self, model, prompt_tensor: torch.Tensor
+    ) -> tuple[torch.Tensor, list]:
+        """Run the prompt pass, build the store, return rescored logits.
+
+        Args:
+            model: The ``GrimoireTransformer``.
+            prompt_tensor: ``(1, T)`` prompt ids exactly as fed to the model.
+
+        Returns:
+            ``(next_logits, past_kvs)``: ``(vocab,)`` float logits for the
+            first generated token and the KV cache.
+        """
+        logits, past_kvs = self._forward(model, prompt_tensor, use_cache=True)
+        ids = prompt_tensor[0].tolist()
+        span = context_span(ids)
+        if span is not None:
+            hidden = self._hidden[0]
+            store = ScopedStore(hidden.size(-1), device=hidden.device)
+            store.add_transitions(hidden, ids, *span)
+            self.store = store
+        return self._rescore(logits[0, -1, :].float().clone()), past_kvs
+
+    @torch.no_grad()
+    def step(
+        self, model, token_tensor: torch.Tensor, past_kvs: list
+    ) -> tuple[torch.Tensor, list]:
+        """One cached decoding step; same return shape as ``prefill``."""
+        logits, past_kvs = self._forward(
+            model, token_tensor, past_kvs=past_kvs, use_cache=True
+        )
+        return self._rescore(logits[0, -1, :].float().clone()), past_kvs
 
 
 # ---------------------------------------------------------------------------
