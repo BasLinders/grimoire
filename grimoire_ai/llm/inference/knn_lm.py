@@ -287,6 +287,28 @@ class LambdaGate(nn.Module):
         self.log_temp.copy_(torch.tensor(t).log())
         return t
 
+    @staticmethod
+    def features(D: torch.Tensor, lm_logp: torch.Tensor) -> torch.Tensor:
+        """The gate's input features, ``(B, 3)``.
+
+        ``[log1p(d_min), log1p(d_mean), LM entropy]``. Non-finite entries of
+        ``D`` (padding for missing neighbors) are excluded from ``d_mean``, so
+        features don't depend on how far ``k`` was padded.
+
+        Split out from ``forward`` so gate fitting can compute features once
+        and reuse them across epochs (see ``grimoire_ai.llm.training.knn_gate``).
+        """
+        lm_logp = lm_logp.float()
+        D = D.float()
+        ent = -(lm_logp.exp() * lm_logp).nan_to_num(0.0).sum(-1)
+        finite = torch.isfinite(D)
+        d_mean = D.nan_to_num(0.0, posinf=0.0).sum(-1) / finite.sum(-1).clamp(min=1)
+        return torch.stack([torch.log1p(D[:, 0]), torch.log1p(d_mean), ent], dim=-1)
+
+    def lambda_from_features(self, feats: torch.Tensor) -> torch.Tensor:
+        """λ in ``(0, lam_max)`` from precomputed ``features``, ``(B,)``."""
+        return self.lam_max * torch.sigmoid(self.lin(feats)).squeeze(-1)
+
     def forward(self, D: torch.Tensor, lm_logp: torch.Tensor) -> torch.Tensor:
         """Compute λ for each row.
 
@@ -297,11 +319,7 @@ class LambdaGate(nn.Module):
         Returns:
             ``(B,)`` interpolation weights in ``(0, lam_max)``.
         """
-        lm_logp = lm_logp.float()
-        D = D.float()
-        ent = -(lm_logp.exp() * lm_logp).nan_to_num(0.0).sum(-1)
-        feats = torch.stack([torch.log1p(D[:, 0]), torch.log1p(D.mean(-1)), ent], dim=-1)
-        return self.lam_max * torch.sigmoid(self.lin(feats)).squeeze(-1)
+        return self.lambda_from_features(self.features(D, lm_logp))
 
 
 def fuse(
