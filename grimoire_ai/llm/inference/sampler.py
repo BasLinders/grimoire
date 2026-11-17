@@ -43,6 +43,7 @@ from grimoire_ai.llm.tokenizer.special_tokens import EOS_ID
 
 if TYPE_CHECKING:
     from grimoire_ai.llm.inference.constrained_decoding import StatBlockConstraint
+    from grimoire_ai.llm.inference.knn_lm import KNNLM
     from grimoire_ai.llm.tokenizer.bpe import BytePairEncoder
 
 
@@ -208,6 +209,7 @@ def generate_stream(
     device: str = "cpu",
     stat_block_constraint: Optional["StatBlockConstraint"] = None,
     tokenizer: Optional["BytePairEncoder"] = None,
+    knn_lm: Optional["KNNLM"] = None,
 ):
     """Like ``generate`` but yields one token id at a time as it is sampled.
 
@@ -224,6 +226,13 @@ def generate_stream(
             values to well-formed continuations. Requires ``tokenizer``.
         tokenizer: Required when ``stat_block_constraint`` is set — used to
             decode the generated-so-far text at each step.
+        knn_lm: Optional ``KNNLM`` (see ``knn_lm.py``). When set, a scoped
+            kNN store is built from the prompt's ``<SEP>``-delimited context
+            block during the prompt pass, and every step's logits are
+            rescored against it before any of the processing below
+            (repetition penalty, constraints, temperature, top-k/top-p).
+            A no-op for prompts without a context block. ``None`` (default)
+            leaves generation exactly as before.
 
     Raises:
         ValueError: If ``prompt_ids`` is empty, or if
@@ -246,10 +255,13 @@ def generate_stream(
     prompt_context = ids[-max_seq:]
     prompt_tensor = torch.tensor([prompt_context], dtype=torch.long, device=device)
 
+    knn = knn_lm.session() if knn_lm is not None else None
     with torch.no_grad():
-        logits, past_kvs = model(prompt_tensor, use_cache=True)
-
-    next_logits = logits[0, -1, :].float().clone()
+        if knn is not None:
+            next_logits, past_kvs = knn.prefill(model, prompt_tensor)
+        else:
+            logits, past_kvs = model(prompt_tensor, use_cache=True)
+            next_logits = logits[0, -1, :].float().clone()
 
     with torch.no_grad():
         for _ in range(config.max_new_tokens):
@@ -313,8 +325,11 @@ def generate_stream(
                 ]
 
             token_tensor = torch.tensor([[next_token]], dtype=torch.long, device=device)
-            logits, past_kvs = model(token_tensor, past_kvs=past_kvs, use_cache=True)
-            next_logits = logits[0, -1, :].float().clone()
+            if knn is not None:
+                next_logits, past_kvs = knn.step(model, token_tensor, past_kvs)
+            else:
+                logits, past_kvs = model(token_tensor, past_kvs=past_kvs, use_cache=True)
+                next_logits = logits[0, -1, :].float().clone()
 
 
 def generate(
@@ -324,6 +339,7 @@ def generate(
     device: str = "cpu",
     stat_block_constraint: Optional["StatBlockConstraint"] = None,
     tokenizer: Optional["BytePairEncoder"] = None,
+    knn_lm: Optional["KNNLM"] = None,
 ) -> list[int]:
     """Generate tokens autoregressively from a prompt.
 
@@ -341,6 +357,13 @@ def generate(
             values to well-formed continuations. Requires ``tokenizer``.
         tokenizer: Required when ``stat_block_constraint`` is set — used to
             decode the generated-so-far text at each step.
+        knn_lm: Optional ``KNNLM`` (see ``knn_lm.py``). When set, a scoped
+            kNN store is built from the prompt's ``<SEP>``-delimited context
+            block during the prompt pass, and every step's logits are
+            rescored against it before any of the processing below
+            (repetition penalty, constraints, temperature, top-k/top-p).
+            A no-op for prompts without a context block. ``None`` (default)
+            leaves generation exactly as before.
 
     Returns:
         A list of *newly generated* token ids (not including the prompt).
@@ -369,10 +392,13 @@ def generate(
     prompt_context = ids[-max_seq:]
     prompt_tensor = torch.tensor([prompt_context], dtype=torch.long, device=device)
 
+    knn = knn_lm.session() if knn_lm is not None else None
     with torch.no_grad():
-        logits, past_kvs = model(prompt_tensor, use_cache=True)
-
-    next_logits = logits[0, -1, :].float().clone()
+        if knn is not None:
+            next_logits, past_kvs = knn.prefill(model, prompt_tensor)
+        else:
+            logits, past_kvs = model(prompt_tensor, use_cache=True)
+            next_logits = logits[0, -1, :].float().clone()
 
     # --- Autoregressive generation loop (one token at a time) -----------
     # After the prompt pass we feed only the single newly sampled token on
@@ -447,7 +473,10 @@ def generate(
 
             # Feed the single new token with the updated cache.
             token_tensor = torch.tensor([[next_token]], dtype=torch.long, device=device)
-            logits, past_kvs = model(token_tensor, past_kvs=past_kvs, use_cache=True)
-            next_logits = logits[0, -1, :].float().clone()
+            if knn is not None:
+                next_logits, past_kvs = knn.step(model, token_tensor, past_kvs)
+            else:
+                logits, past_kvs = model(token_tensor, past_kvs=past_kvs, use_cache=True)
+                next_logits = logits[0, -1, :].float().clone()
 
     return generated

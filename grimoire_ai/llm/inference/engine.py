@@ -50,6 +50,7 @@ from grimoire_ai.llm.training.checkpoint import load_checkpoint
 if TYPE_CHECKING:
     from grimoire_ai.llm.inference.constrained_decoding import StatBlockConstraint
     from grimoire_ai.llm.inference.crag import CragFilter
+    from grimoire_ai.llm.inference.knn_lm import KNNLM
     from grimoire_ai.llm.inference.reranker import Reranker
     from grimoire_ai.tools.math_tool import MathTool
 
@@ -110,6 +111,7 @@ class InferenceEngine:
         rerank_candidates: int = 20,
         crag_filter: Optional["CragFilter"] = None,
         corrective_retry: bool = False,
+        knn_lm: Optional["KNNLM"] = None,
     ) -> None:
         """Load model and tokenizer from disk and prepare the engine.
 
@@ -184,6 +186,14 @@ class InferenceEngine:
                 otherwise the original results stand. At most one retry
                 per call, never a loop. Requires ``crag_filter`` to be
                 set — the confidence check is undefined without it.
+            knn_lm: Optional ``KNNLM`` (see ``knn_lm.py``) — when set, every
+                generation call (``respond``, ``chat``, ``chat_stream``)
+                builds a scoped kNN store from the retrieved context block
+                and rescores next-token logits against it. Load with
+                ``KNNLM.load(path, expected_checkpoint_tag=checkpoint_tag(
+                checkpoint_path))`` so a gate fitted to other weights is
+                rejected. A no-op for turns with no retrieved context.
+                ``None`` (default) leaves generation unchanged.
 
         Raises:
             ValueError: If ``corrective_retry`` is ``True`` but
@@ -232,6 +242,7 @@ class InferenceEngine:
         self.rerank_candidates = rerank_candidates
         self.crag_filter = crag_filter
         self.corrective_retry = corrective_retry
+        self.knn_lm = knn_lm
 
     @property
     def checkpoint_path(self) -> str:
@@ -437,6 +448,7 @@ class InferenceEngine:
             device=self.device,
             stat_block_constraint=self.stat_block_constraint,
             tokenizer=self.tokenizer,
+            knn_lm=self.knn_lm,
         )
 
         response = self.tokenizer.decode(new_token_ids).strip()
@@ -587,6 +599,7 @@ class InferenceEngine:
             device=self.device,
             stat_block_constraint=self.stat_block_constraint,
             tokenizer=self.tokenizer,
+            knn_lm=self.knn_lm,
         )
 
         response = self.tokenizer.decode(new_token_ids).strip()
@@ -638,6 +651,7 @@ class InferenceEngine:
             device=self.device,
             stat_block_constraint=self.stat_block_constraint,
             tokenizer=self.tokenizer,
+            knn_lm=self.knn_lm,
         ):
             generated_ids.append(token_id)
             committed += decoder.push(token_id)

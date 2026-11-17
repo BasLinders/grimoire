@@ -81,8 +81,8 @@ sentence is a poor chat reply.
 
 | PR | Scope | Who runs it | Status |
 |---|---|---|---|
-| 1 | `knn_lm.py`: torch `ScopedStore`, `knn_distribution`, `LambdaGate` (median-distance init), `fuse`, gate save/load + checkpoint tag. Unit tests. No engine changes | Code + unit tests | in progress |
-| 2 | Sampler logit hook; store built from prefill hidden states over the `<SEP>` span; `InferenceEngine(knn_lm=...)`. Test: λ forced to 0 + fixed seed is token-identical to plain `generate()` | Code + unit tests | not started |
+| 1 | `knn_lm.py`: torch `ScopedStore`, `knn_distribution`, `LambdaGate` (median-distance init), `fuse`, gate save/load + checkpoint tag. Unit tests. No engine changes | Code + unit tests | ✓ merged (#215) |
+| 2 | Sampler logit hook; store built from prefill hidden states over the `<SEP>` span; `InferenceEngine(knn_lm=...)`. Test: λ forced to 0 + fixed seed is token-identical to plain `generate()` | Code + unit tests | in progress |
 | 3 | `scripts/eval/fit_knn_gate.py`: prompt-conditioned gate fitting on `{user, assistant, context}` records; prints LM vs fused NLL; saves gate. **Go/no-go** | User (GPU, checkpoint) | not started |
 | 4 | `evaluate.py` ablation: `--knn-gate PATH`, `--best-of-n N`, `copy_ratio` column. 4-row table: plain / +kNN / +BoN / +both | User | not started |
 | 5 | Best-of-N with the fixed grounding score; `InferenceEngine(n_candidates=N)` reusing `generate()` | Code + unit tests | not started |
