@@ -29,7 +29,8 @@ retrieval/    build_retrieval_neighbors.py, embed_tune.py — RETRO-style neighb
 
 train/        finetune_saga.py, lr_range_test.py, compare_checkpoints.py.
 
-eval/         evaluate.py, eval_per_tier.py, qualitative_check.py.
+eval/         evaluate.py, eval_per_tier.py, qualitative_check.py,
+              fit_knn_gate.py (fits the kNN-LM gate; see docs/KNN_LM.md).
   data/       saga_quiz.jsonl — the Q&A quiz used by evaluate.py.
 
 export/       export_gguf.py — export a GQA checkpoint to GGUF for llama.cpp.

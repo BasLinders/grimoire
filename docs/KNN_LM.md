@@ -82,8 +82,8 @@ sentence is a poor chat reply.
 | PR | Scope | Who runs it | Status |
 |---|---|---|---|
 | 1 | `knn_lm.py`: torch `ScopedStore`, `knn_distribution`, `LambdaGate` (median-distance init), `fuse`, gate save/load + checkpoint tag. Unit tests. No engine changes | Code + unit tests | ✓ merged (#215) |
-| 2 | Sampler logit hook; store built from prefill hidden states over the `<SEP>` span; `InferenceEngine(knn_lm=...)`. Test: λ forced to 0 + fixed seed is token-identical to plain `generate()` | Code + unit tests | in progress |
-| 3 | `scripts/eval/fit_knn_gate.py`: prompt-conditioned gate fitting on `{user, assistant, context}` records; prints LM vs fused NLL; saves gate. **Go/no-go** | User (GPU, checkpoint) | not started |
+| 2 | Sampler logit hook; store built from prefill hidden states over the `<SEP>` span; `InferenceEngine(knn_lm=...)`. Test: λ forced to 0 + fixed seed is token-identical to plain `generate()` | Code + unit tests | ✓ merged (#216) |
+| 3 | `scripts/eval/fit_knn_gate.py`: prompt-conditioned gate fitting on `{user, assistant, context}` records; prints LM vs fused NLL; saves gate. **Go/no-go** | User (GPU, checkpoint) | in progress |
 | 4 | `evaluate.py` ablation: `--knn-gate PATH`, `--best-of-n N`, `copy_ratio` column. 4-row table: plain / +kNN / +BoN / +both | User | not started |
 | 5 | Best-of-N with the fixed grounding score; `InferenceEngine(n_candidates=N)` reusing `generate()` | Code + unit tests | not started |
 
@@ -107,10 +107,19 @@ on its own either way.
 
 - **Gate-fitting dev set must not be SFT training data.** On memorized
   examples the plain LM looks so good that the gate learns to ignore kNN.
-  `scripts/finetune/data/saga_v1.jsonl` has only 31 records with `context`;
-  `data/finetune/saga_se_qa.jsonl` is untracked (regenerate with
-  `scripts/finetune/build_finetune_data_from_qa.py`). Hold a slice out of
-  both SFT and gate fitting.
+  As of 2026-11-17, every question in `data/finetune/saga_se_qa.jsonl` and
+  `open5e_qa.jsonl` is also in `combined_v3_dehedged.jsonl`, so neither is
+  held out. `data/finetune/saga_expanded.jsonl` (248 records with
+  `context`) is not, and is the only held-out D&D set on disk. Pass the
+  fine-tune mix via `fit_knn_gate.py --exclude` so overlaps are dropped
+  automatically.
+- **Prefer retrieved context over record context.** With `--corpus-dir`,
+  `fit_knn_gate.py` retrieves passages per question exactly as inference
+  does, so the gate also learns to back off on irrelevant retrieval.
+  Record `context` fields are cleaner than real retrieval and bias λ up.
+- **`general_se_qa.jsonl` is unsafe in record-context mode.** In ~6% of
+  records `context` is the answer verbatim. `fit_knn_gate.py` drops records
+  whose answer appears in their context by default.
 - **`scripts/eval/data/saga_quiz.jsonl` (49 items) is the test set.** Never
   fit or tune on it.
 - The retrieval corpus overlaps the pretraining corpus, so the bundle's
